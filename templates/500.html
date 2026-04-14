@@ -1,0 +1,21 @@
+<!doctype html>
+<html data-theme="dark-blue" style="--accent: #3b82f6">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>500 - Server Error</title>
+    <link rel="icon" href="/static/logo.svg" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="card error-card">
+        <i class="bx bxs-error-circle error-icon"></i>
+        <h1>500</h1>
+        <p class="error-message">{{.Message}}</p>
+        <p class="error-details">The server encountered an internal error and was unable to complete your request.</p>
+      </div>
+    </div>
+  </body>
+</html>

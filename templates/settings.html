@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html data-theme="{{if .Settings}}{{.Settings.Theme}}{{else}}dark-blue{{end}}" style="--accent: {{if .Settings}}{{.Settings.AccentColor}}{{else}}#3b82f6{{end}};">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .T.settings}}{{index .T.settings "title"}}{{else}}Settings{{end}} - FileLine</title>
+    <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/">
+                <img src="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" class="logo-img" id="navbar-logo" alt="FileLine"> 
+                FileLine
+            </a>
+        </div>
+        <button class="hamburger" id="hamburger" aria-label="Menu">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+        <div class="nav-links">
+            <a href="/">{{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+            <a href="/files">{{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+            <a href="/settings" class="active">{{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+            <a href="/logout" class="btn btn-outline btn-sm">{{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+        </div>
+    </nav>
+    <div class="nav-overlay" id="navOverlay"></div>
+    <div class="mobile-nav" id="mobileNav">
+        <a href="/"><i class='bx bxs-dashboard'></i> {{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+        <a href="/files"><i class='bx bxs-folder'></i> {{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+        <a href="/settings" class="active"><i class='bx bxs-cog'></i> {{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+        <a href="/logout"><i class='bx bx-log-out'></i> {{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+    </div>
+    <div class="container">
+        <div class="card">
+            <h2><i class="bx bxs-cog"></i> {{if .T.settings}}{{index .T.settings "title"}}{{else}}Settings{{end}}</h2>
+            <!-- Success Messages -->
+            {{if eq .Success "password"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "password_changed"}}{{else}}Password changed successfully!{{end}}</div>
+            {{end}}
+            {{if eq .Success "2fa"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "2fa_enabled_success"}}{{else}}Two-factor authentication enabled!{{end}}</div>
+            {{end}}
+            {{if eq .Success "2fa_disabled"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "2fa_disabled_success"}}{{else}}Two-factor authentication disabled.{{end}}</div>
+            {{end}}
+            {{if eq .Success "theme"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "theme_saved"}}{{else}}Theme settings saved!{{end}}</div>
+            {{end}}
+            {{if eq .Success "language"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "language_saved"}}{{else}}Language settings saved!{{end}}</div>
+            {{end}}
+            {{if eq .Success "upload"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "upload_saved"}}{{else}}Upload settings saved!{{end}}</div>
+            {{end}}
+            {{if eq .Success "backup_code"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "backup_code_reset"}}{{else}}Backup code regenerated!{{end}}</div>
+            {{end}}
+            <!-- Password Change -->
+            <div class="settings-section">
+                <h3><i class="bx bxs-key"></i> {{if .T.settings}}{{index .T.settings "change_password"}}{{else}}Change Password{{end}}</h3>
+                {{if .PasswordError}}
+                <div class="alert alert-error">{{.PasswordError}}</div>
+                {{end}}
+                <form method="POST" action="/settings/password">
+                    <div class="form-group">
+                        <label for="current_password">{{if .T.settings}}{{index .T.settings "current_password"}}{{else}}Current Password{{end}}</label>
+                        <input type="password" id="current_password" name="current_password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="new_password">{{if .T.settings}}{{index .T.settings "new_password"}}{{else}}New Password{{end}}</label>
+                        <input type="password" id="new_password" name="new_password" required minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label for="confirm_password">{{if .T.settings}}{{index .T.settings "confirm_password"}}{{else}}Confirm New Password{{end}}</label>
+                        <input type="password" id="confirm_password" name="confirm_password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "change_password_btn"}}{{else}}Change Password{{end}}</button>
+                </form>
+            </div>
+            <!-- 2FA Settings -->
+            <div class="settings-section">
+                <h3><i class="bx bxs-lock-alt"></i> {{if .T.settings}}{{index .T.settings "two_factor"}}{{else}}Two-Factor Authentication{{end}}</h3>
+                {{if .TwoFAEnabled}}
+                <p class="text-muted">{{if .T.settings}}{{index .T.settings "2fa_enabled"}}{{else}}2FA is currently enabled.{{end}}</p>
+                <a href="/settings/2fa" class="btn btn-primary settings-action">{{if .T.settings}}{{index .T.settings "manage_2fa"}}{{else}}Manage 2FA{{end}}</a>
+                {{else}}
+                <p class="text-muted">{{if .T.settings}}{{index .T.settings "2fa_disabled"}}{{else}}Add an extra layer of security to your account.{{end}}</p>
+                <a href="/settings/2fa/setup" class="btn btn-primary settings-action">{{if .T.settings}}{{index .T.settings "enable_2fa"}}{{else}}Enable 2FA{{end}}</a>
+                {{end}}
+            </div>
+            <!-- Theme Settings -->
+            <div class="settings-section">
+                <h3><i class="bx bxs-palette"></i> {{if .T.settings}}{{index .T.settings "appearance"}}{{else}}Appearance{{end}}</h3>
+                <form method="POST" action="/settings/theme" enctype="multipart/form-data">
+                    <div class="form-group">
+                        <label for="theme">{{if .T.settings}}{{index .T.settings "theme"}}{{else}}Theme{{end}}</label>
+                        <select id="theme" name="theme">
+                            <option value="dark-blue" {{if eq .Settings.Theme "dark-blue"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_blue"}}{{else}}Dark Blue{{end}}</option>
+                            <option value="dark-green" {{if eq .Settings.Theme "dark-green"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_green"}}{{else}}Dark Green{{end}}</option>
+                            <option value="dark-orange" {{if eq .Settings.Theme "dark-orange"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_orange"}}{{else}}Dark Orange{{end}}</option>
+                            <option value="dark-purple" {{if eq .Settings.Theme "dark-purple"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_purple"}}{{else}}Dark Purple{{end}}</option>
+                            <option value="light" {{if eq .Settings.Theme "light"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_light"}}{{else}}Light{{end}}</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="accent_hex">{{if .T.settings}}{{index .T.settings "accent_color"}}{{else}}Accent Color{{end}}</label>
+                        <div class="color-row">
+                            <input type="color" id="accent_color" name="accent_color" value="{{.Settings.AccentColor}}" class="color-preview">
+                            <input type="text" id="accent_hex" name="accent_hex" value="{{.Settings.AccentColor}}" pattern="#[0-9A-Fa-f]{6}" style="width: 100px; font-family: monospace;">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="custom_logo">{{if .T.settings}}{{index .T.settings "custom_logo"}}{{else}}Custom Logo{{end}}</label>
+                        <div class="logo-upload-panel">
+                            <div class="logo-preview-box">
+                                <img id="customLogoPreview"
+                                     src="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}"
+                                     alt="Logo preview"
+                                     class="logo-preview-image">
+                            </div>
+                            <div class="logo-upload-controls">
+                                <input type="file" id="custom_logo" name="custom_logo" accept="image/png,image/jpeg,image/webp">
+                                <small class="form-hint">{{if .T.settings}}{{index .T.settings "custom_logo_hint"}}{{else}}Upload PNG, JPG, or WebP file (max 2MB). Leave empty to keep current logo.{{end}}</small>
+                                <small class="form-hint logo-file-meta" id="customLogoFilename"></small>
+                                {{if .Settings.CustomLogo}}
+                                <button type="submit" name="reset_logo" value="true" class="btn btn-sm btn-outline logo-reset-btn"><i class='bx bx-trash'></i> {{if .T.settings}}{{index .T.settings "reset_logo"}}{{else}}Reset to Default Logo{{end}}</button>
+                                {{end}}
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_appearance"}}{{else}}Save Appearance{{end}}</button>
+                </form>
+            </div>
+            <!-- Language Settings -->
+            <div class="settings-section">
+                <h3><i class="bx bx-globe"></i> {{if .T.settings}}{{index .T.settings "language"}}{{else}}Language{{end}}</h3>
+                <form method="POST" action="/settings/language">
+                    <div class="form-group">
+                        <select id="language" name="language">
+                            <option value="en" {{if eq .Settings.Language "en"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_en"}}{{else}}English{{end}}</option>
+                            <option value="pl" {{if eq .Settings.Language "pl"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_pl"}}{{else}}Polski{{end}}</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_language"}}{{else}}Save Language{{end}}</button>
+                </form>
+            </div>
+            <!-- Upload Settings -->
+            <div class="settings-section">
+                <h3><i class="bx bxs-cloud-upload"></i> {{if .T.settings}}{{index .T.settings "upload_settings"}}{{else}}Upload Settings{{end}}</h3>
+                <form method="POST" action="/settings/upload">
+                    <div class="form-group">
+                        <label for="max_file_size">{{if .T.settings}}{{index .T.settings "max_file_size"}}{{else}}Max File Size (MB){{end}}</label>
+                        <input type="number" id="max_file_size" name="max_file_size" 
+                               value="{{divide .Settings.MaxFileSize 1048576}}" min="0">
+                        <small class="form-hint">{{if .T.settings}}{{index .T.settings "max_file_size_hint"}}{{else}}0 = unlimited{{end}}</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="chunk_threshold">{{if .T.settings}}{{index .T.settings "chunk_threshold"}}{{else}}Chunked Upload Threshold (MB){{end}}</label>
+                        <input type="number" id="chunk_threshold" name="chunk_threshold" 
+                               value="{{divide .Settings.ChunkThreshold 1048576}}" min="1">
+                        <small class="form-hint">{{if .T.settings}}{{index .T.settings "chunk_threshold_hint"}}{{else}}Files larger than this will be uploaded in chunks{{end}}</small>
+                    </div>
+                    <div class="form-group">
+                        <label for="chunk_size">{{if .T.settings}}{{index .T.settings "chunk_size"}}{{else}}Chunk Size (MB){{end}}</label>
+                        <input type="number" id="chunk_size" name="chunk_size" 
+                               value="{{divide .Settings.ChunkSizeBytes 1048576}}" min="1">
+                        <small class="form-hint">{{if .T.settings}}{{index .T.settings "chunk_size_hint"}}{{else}}Size of each chunk for large file uploads{{end}}</small>
+                    </div>
+                    <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_upload"}}{{else}}Save Upload Settings{{end}}</button>
+                </form>
+            </div>
+            <!-- Account Recovery -->
+            <div class="settings-section">
+                <h3><i class="bx bxs-shield"></i> {{if .T.settings}}{{index .T.settings "account_recovery"}}{{else}}Account Recovery{{end}}</h3>
+                <p class="text-muted">{{if .T.settings}}{{index .T.settings "backup_code_info"}}{{else}}Your backup code can be used to reset your password if you forget it.{{end}}</p>
+                <div class="backup-code-display" id="backupCodeDisplay" style="display: none;">
+                    <code id="backupCode"></code>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="copyBackupCode()"><i class='bx bx-copy'></i></button>
+                </div>
+                <button type="button" class="btn btn-primary settings-action" onclick="regenerateBackupCode()">
+                    <i class='bx bx-refresh'></i> {{if .T.settings}}{{index .T.settings "regenerate_backup"}}{{else}}Regenerate Backup Code{{end}}
+                </button>
+                <p class="text-warning" style="margin-top: 0.5rem;"><i class='bx bxs-error'></i> {{if .T.settings}}{{index .T.settings "backup_code_warning"}}{{else}}Store this code securely. It will only be shown once.{{end}}</p>
+            </div>
+            <!-- Passkeys -->
+            <div class="settings-section">
+                <h3><i class="bx bx-fingerprint"></i> {{if .T.settings}}{{index .T.settings "passkeys"}}{{else}}Passkeys{{end}}</h3>
+                <p class="text-muted">{{if .T.settings}}{{index .T.settings "passkeys_info"}}{{else}}Use your device's biometric authentication or security key to sign in.{{end}}</p>
+                <div id="passkeyList" style="margin-top: 1rem;"></div>
+                <button type="button" class="btn btn-primary settings-action" onclick="registerPasskey()">
+                    <i class='bx bx-plus'></i> {{if .T.settings}}{{index .T.settings "add_passkey"}}{{else}}Add Passkey{{end}}
+                </button>
+            </div>
+        </div>
+    </div>
+    <script>
+        // Hamburger menu
+        const hamburger = document.getElementById('hamburger');
+        const mobileNav = document.getElementById('mobileNav');
+        const navOverlay = document.getElementById('navOverlay');
+        hamburger.addEventListener('click', () => {
+            hamburger.classList.toggle('active');
+            mobileNav.classList.toggle('active');
+            navOverlay.classList.toggle('active');
+        });
+        navOverlay.addEventListener('click', () => {
+            hamburger.classList.remove('active');
+            mobileNav.classList.remove('active');
+            navOverlay.classList.remove('active');
+        });
+        // Sync color picker and hex input
+        const colorInput = document.getElementById('accent_color');
+        const hexInput = document.getElementById('accent_hex');
+        colorInput.addEventListener('input', () => {
+            hexInput.value = colorInput.value;
+        });
+        hexInput.addEventListener('input', () => {
+            if (/^#[0-9A-Fa-f]{6}$/.test(hexInput.value)) {
+                colorInput.value = hexInput.value;
+            }
+        });
+        const customLogoInput = document.getElementById('custom_logo');
+        const customLogoPreview = document.getElementById('customLogoPreview');
+        const customLogoFilename = document.getElementById('customLogoFilename');
+        if (customLogoInput && customLogoPreview && customLogoFilename) {
+            customLogoInput.addEventListener('change', () => {
+                const file = customLogoInput.files && customLogoInput.files[0];
+                if (!file) {
+                    customLogoFilename.textContent = '';
+                    return;
+                }
+                customLogoFilename.textContent = file.name;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    customLogoPreview.src = String(reader.result);
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+        // Backup code functions
+        function regenerateBackupCode() {
+            if (!confirm('{{if .T.settings}}{{index .T.settings "backup_code_confirm"}}{{else}}Are you sure? Your old backup code will no longer work.{{end}}')) {
+                return;
+            }
+            fetch('/settings/backup-code', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('backupCode').textContent = data.backup_code;
+                    document.getElementById('backupCodeDisplay').style.display = 'flex';
+                })
+                .catch(err => console.error('Error:', err));
+        }
+        function copyBackupCode() {
+            const code = document.getElementById('backupCode').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+                alert('{{if .T.settings}}{{index .T.settings "backup_code_copied"}}{{else}}Backup code copied to clipboard!{{end}}');
+            });
+        }
+        // Passkey functions
+        async function loadPasskeys() {
+            try {
+                const resp = await fetch('/settings/passkey/list');
+                const passkeys = await resp.json();
+                const list = document.getElementById('passkeyList');
+                if (passkeys.length === 0) {
+                    list.innerHTML = '<p class="text-muted"><i class="bx bx-info-circle"></i> {{if .T.settings}}{{index .T.settings "no_passkeys"}}{{else}}No passkeys registered{{end}}</p>';
+                } else {
+                    list.innerHTML = passkeys.map(pk => `
+                        <div class="passkey-item" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
+                            <div>
+                                <div style="font-weight: 500;"><i class='bx bxs-fingerprint'></i> ${pk.name}</div>
+                                <div class="text-muted" style="font-size: 0.85rem; margin-top: 0.25rem;">Created: ${new Date(pk.created_at).toLocaleDateString()}</div>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline" onclick="deletePasskey('${pk.id}')">
+                                <i class='bx bx-trash'></i>
+                            </button>
+                        </div>
+                    `).join('');
+                }
+            } catch (err) {
+                console.error('Failed to load passkeys:', err);
+            }
+        }
+        async function registerPasskey() {
+            try {
+                // Begin registration
+                const beginResp = await fetch('/settings/passkey/register/begin');
+                if (!beginResp.ok) throw new Error('Failed to begin registration');
+                const options = await beginResp.json();
+                // Convert base64url to ArrayBuffer
+                options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+                options.publicKey.user.id = base64urlToBuffer(options.publicKey.user.id);
+                if (options.publicKey.excludeCredentials) {
+                    options.publicKey.excludeCredentials = options.publicKey.excludeCredentials.map(cred => ({
+                        ...cred,
+                        id: base64urlToBuffer(cred.id)
+                    }));
+                }
+                // Create credential
+                const credential = await navigator.credentials.create(options);
+                // Convert to JSON
+                const credentialJSON = {
+                    id: credential.id,
+                    rawId: bufferToBase64url(credential.rawId),
+                    response: {
+                        attestationObject: bufferToBase64url(credential.response.attestationObject),
+                        clientDataJSON: bufferToBase64url(credential.response.clientDataJSON)
+                    },
+                    type: credential.type
+                };
+                // Finish registration
+                const finishResp = await fetch('/settings/passkey/register/finish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(credentialJSON)
+                });
+                if (!finishResp.ok) throw new Error('Failed to register passkey');
+                alert('{{if .T.settings}}{{index .T.settings "passkey_added"}}{{else}}Passkey added successfully!{{end}}');
+                loadPasskeys();
+            } catch (err) {
+                alert('Failed to register passkey: ' + err.message);
+            }
+        }
+        async function deletePasskey(id) {
+            if (!confirm('{{if .T.settings}}{{index .T.settings "passkey_delete_confirm"}}{{else}}Are you sure you want to remove this passkey?{{end}}')) {
+                return;
+            }
+            try {
+                const resp = await fetch('/settings/passkey/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: 'id=' + encodeURIComponent(id)
+                });
+                if (!resp.ok) throw new Error('Failed to delete passkey');
+                alert('{{if .T.settings}}{{index .T.settings "passkey_deleted"}}{{else}}Passkey removed{{end}}');
+                loadPasskeys();
+            } catch (err) {
+                alert('Failed to delete passkey: ' + err.message);
+            }
+        }
+        function base64urlToBuffer(base64url) {
+            const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+            }
+            return bytes.buffer;
+        }
+        function bufferToBase64url(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            const base64 = btoa(binary);
+            return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        }
+        // Load passkeys on page load
+        loadPasskeys();
+        // Check URL params for success message
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('success')) {
+            // Already handled by template
+        }
+    </script>
+</body>
+</html>

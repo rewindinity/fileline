@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html data-theme="{{if .Settings}}{{.Settings.Theme}}{{else}}dark-blue{{end}}" style="--accent: {{if .Settings}}{{.Settings.AccentColor}}{{else}}#3b82f6{{end}};">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}} - FileLine</title>
+    <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="/static/style.css">
+    <script>
+        window.SETTINGS = {
+            chunk_threshold: 104857600,
+            chunk_size_bytes: 10485760,
+            max_file_size: 0
+        };
+    </script>
+</head>
+<body data-chunk-threshold="{{if .Settings}}{{.Settings.ChunkThreshold}}{{else}}104857600{{end}}" data-chunk-size-bytes="{{if .Settings}}{{.Settings.ChunkSizeBytes}}{{else}}10485760{{end}}" data-max-file-size="{{if .Settings}}{{.Settings.MaxFileSize}}{{else}}0{{end}}">
+    <nav class="navbar">
+        <div class="nav-brand">
+            <a href="/"><img src="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" class="logo-img" id="navbar-logo" alt="FileLine"> FileLine</a>
+        </div>
+        <button class="hamburger" id="hamburger" aria-label="Menu">
+            <span></span>
+            <span></span>
+            <span></span>
+        </button>
+        <div class="nav-links">
+            <a href="/" class="active">{{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+            <a href="/files">{{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+            <a href="/settings">{{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+            <a href="/logout" class="btn btn-outline btn-sm">{{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+        </div>
+    </nav>
+    <div class="nav-overlay" id="navOverlay"></div>
+    <div class="mobile-nav" id="mobileNav">
+        <a href="/" class="active"><i class='bx bxs-dashboard'></i> {{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+        <a href="/files"><i class='bx bxs-folder'></i> {{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+        <a href="/settings"><i class='bx bxs-cog'></i> {{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+        <a href="/logout"><i class='bx bx-log-out'></i> {{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+    </div>
+    <div class="container">
+        <!-- Stats Section -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <i class='bx bxs-file stat-icon'></i>
+                <div class="stat-content">
+                    <div class="stat-value" id="file-count">-</div>
+                    <div class="stat-label">{{if .T.home}}{{index .T.home "total_files"}}{{else}}Total Files{{end}}</div>
+                </div>
+            </div>
+            <div class="stat-card">
+                <i class='bx bxs-data stat-icon'></i>
+                <div class="stat-content">
+                    <div class="stat-value" id="total-size">-</div>
+                    <div class="stat-label">{{if .T.home}}{{index .T.home "total_size"}}{{else}}Total Size{{end}}</div>
+                </div>
+            </div>
+        </div>
+        <!-- Upload Section -->
+        <div class="card">
+            <h2><i class='bx bxs-cloud-upload'></i> {{if .T.home}}{{index .T.home "upload_file"}}{{else}}Upload File{{end}}</h2>
+            <!-- Drag & Drop Zone -->
+            <div class="drop-zone" id="dropZone">
+                <i class='bx bxs-cloud-upload drop-zone-icon'></i>
+                <div class="drop-zone-text">
+                    <strong>{{if .T.home}}{{index .T.home "drop_files"}}{{else}}Drop files here{{end}}</strong> {{if .T.home}}{{index .T.home "or_click"}}{{else}}or click to select{{end}}
+                </div>
+            </div>
+            <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data" class="upload-form">
+                <input type="file" id="fileInput" name="file" style="display:none">
+                <div class="form-group">
+                    <label for="custom_link">{{if .T.home}}{{index .T.home "custom_link"}}{{else}}Custom Link (optional){{end}}</label>
+                    <input type="text" id="custom_link" name="custom_link" placeholder="{{if .T.home}}{{index .T.home "leave_empty"}}{{else}}Leave empty for random{{end}}" pattern="[A-Za-z0-9]+">
+                    <small class="form-hint">{{if .T.home}}{{index .T.home "custom_link_hint"}}{{else}}Only A-Z, a-z, 0-9 allowed{{end}}</small>
+                </div>
+                <div class="form-group">
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <span class="toggle-label">{{if .T.home}}{{index .T.home "is_public"}}{{else}}Is public?{{end}} <span class="toggle-status private" id="privacyStatus">{{if .T.home}}{{index .T.home "no"}}{{else}}No{{end}}</span></span>
+                        <label class="toggle-switch">
+                            <input type="checkbox" name="public" id="publicCheck">
+                            <div class="toggle-switch-background">
+                                <div class="toggle-switch-handle"></div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="progressStatus">{{if .T.home}}{{index .T.home "uploading"}}{{else}}Uploading...{{end}}</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary" id="uploadBtn" style="width: 100%;"><i class='bx bxs-cloud-upload'></i> {{if .T.home}}{{index .T.home "upload"}}{{else}}Upload{{end}}</button>
+            </form>
+        </div>
+        <!-- Recent Files Section -->
+        <div class="card">
+            <h2><i class='bx bxs-time'></i> {{if .T.home}}{{index .T.home "recent_files"}}{{else}}Recent Files{{end}}</h2>
+            {{if .Files}}
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th class="file-name-col">{{if .T.files}}{{index .T.files "name"}}{{else}}Name{{end}}</th>
+                            <th>{{if .T.files}}{{index .T.files "upload_date"}}{{else}}Upload Date{{end}}</th>
+                            <th>{{if .T.files}}{{index .T.files "size"}}{{else}}Size{{end}}</th>
+                            <th>{{if .T.files}}{{index .T.files "privacy"}}{{else}}Privacy{{end}}</th>
+                            <th>{{if .T.files}}{{index .T.files "actions"}}{{else}}Actions{{end}}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Files}}
+                        <tr>
+                            <td class="file-name-col">
+                                <a href="/f/{{.Link}}" class="file-link" target="_blank" title="{{.Name}}"><i class='bx bxs-file'></i> <span>{{truncate .Name 58}}</span></a>
+                            </td>
+                            <td>{{formatDate .UploadedAt}}</td>
+                            <td>{{formatSize .Size}}</td>
+                            <td>
+                                {{if .IsPrivate}}
+                                <span class="badge badge-private"><i class='bx bxs-lock-alt'></i> {{if $.T.files}}{{index $.T.files "private"}}{{else}}Private{{end}}</span>
+                                {{else}}
+                                <span class="badge badge-public"><i class='bx bxs-lock-open-alt'></i> {{if $.T.files}}{{index $.T.files "public"}}{{else}}Public{{end}}</span>
+                                {{end}}
+                            </td>
+                            <td class="actions">
+                                <a href="/file/edit/{{.ID}}" class="btn btn-sm btn-outline"><i class='bx bxs-edit'></i> {{if $.T.files}}{{index $.T.files "edit"}}{{else}}Edit{{end}}</a>
+                                <form method="POST" action="/file/delete/{{.ID}}" class="inline-action-form" onsubmit="return confirm('{{if $.T.files}}{{index $.T.files "delete_confirm"}}{{else}}Delete this file?{{end}}')">
+                                    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                                    <button type="submit" class="btn btn-sm btn-danger"><i class='bx bxs-trash'></i> {{if $.T.files}}{{index $.T.files "delete"}}{{else}}Delete{{end}}</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            <!-- Mobile Cards -->
+            <div class="mobile-cards">
+                {{range .Files}}
+                <div class="mobile-card">
+                    <div class="mobile-card-header">
+                        <div class="mobile-card-title">
+                            <a href="/f/{{.Link}}" target="_blank"><i class='bx bxs-file'></i> {{.Name}}</a>
+                        </div>
+                        {{if .IsPrivate}}
+                        <span class="badge badge-private"><i class='bx bxs-lock-alt'></i></span>
+                        {{else}}
+                        <span class="badge badge-public"><i class='bx bxs-lock-open-alt'></i></span>
+                        {{end}}
+                    </div>
+                    <div class="mobile-card-meta">
+                        <span><i class='bx bx-calendar'></i> {{formatDate .UploadedAt}}</span>
+                        <span><i class='bx bx-data'></i> {{formatSize .Size}}</span>
+                    </div>
+                    <div class="mobile-card-actions">
+                        <a href="/file/edit/{{.ID}}" class="btn btn-sm btn-outline"><i class='bx bxs-edit'></i> {{if $.T.files}}{{index $.T.files "edit"}}{{else}}Edit{{end}}</a>
+                        <form method="POST" action="/file/delete/{{.ID}}" class="inline-action-form" onsubmit="return confirm('{{if $.T.files}}{{index $.T.files "delete_confirm"}}{{else}}Delete this file?{{end}}')">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="btn btn-sm btn-danger"><i class='bx bxs-trash'></i> {{if $.T.files}}{{index $.T.files "delete"}}{{else}}Delete{{end}}</button>
+                        </form>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="empty-state">
+                <i class='bx bxs-inbox'></i>
+                <p>{{if .T.home}}{{index .T.home "no_files"}}{{else}}No files uploaded yet.{{end}}</p>
+            </div>
+            {{end}}
+            
+            {{if .Files}}
+            <div class="card-footer">
+                <a href="/files" class="btn btn-outline" style="width: 100%;"><i class='bx bx-list-ul'></i> {{if .T.home}}{{index .T.home "view_all"}}{{else}}View All Files{{end}}</a>
+            </div>
+            {{end}}
+        </div>
+    </div>
+    <script>
+        // Translations for JS
+        const TRANS = {
+            yes: '{{if .T.home}}{{index .T.home "yes"}}{{else}}Yes{{end}}',
+            no: '{{if .T.home}}{{index .T.home "no"}}{{else}}No{{end}}'
+        };
+        const bodyDataset = document.body.dataset;
+        window.SETTINGS = {
+            chunk_threshold: Number(bodyDataset.chunkThreshold) || 104857600,
+            chunk_size_bytes: Number(bodyDataset.chunkSizeBytes) || 10485760,
+            max_file_size: Number(bodyDataset.maxFileSize) || 0
+        };
+        // Hamburger menu
+        const hamburger = document.getElementById('hamburger');
+        const mobileNav = document.getElementById('mobileNav');
+        const navOverlay = document.getElementById('navOverlay');
+        hamburger.addEventListener('click', () => {
+            hamburger.classList.toggle('active');
+            mobileNav.classList.toggle('active');
+            navOverlay.classList.toggle('active');
+        });
+        navOverlay.addEventListener('click', () => {
+            hamburger.classList.remove('active');
+            mobileNav.classList.remove('active');
+            navOverlay.classList.remove('active');
+        });
+        // Toggle privacy status text
+        const publicCheck = document.getElementById('publicCheck');
+        const privacyStatus = document.getElementById('privacyStatus');
+        function updatePrivacyStatus() {
+            if (publicCheck.checked) {
+                privacyStatus.textContent = TRANS.yes;
+                privacyStatus.className = 'toggle-status public';
+            } else {
+                privacyStatus.textContent = TRANS.no;
+                privacyStatus.className = 'toggle-status private';
+            }
+        }
+        publicCheck.checked = false;
+        updatePrivacyStatus();
+        publicCheck.addEventListener('change', updatePrivacyStatus);
+        // Load stats
+        fetch('/api/stats')
+            .then(res => res.json())
+            .then(data => {
+                document.getElementById('file-count').textContent = data.file_count;
+                document.getElementById('total-size').textContent = data.total_size_text;
+            })
+            .catch(() => {
+                document.getElementById('file-count').textContent = '0';
+                document.getElementById('total-size').textContent = '0 B';
+            });
+        // Drag & Drop
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const uploadForm = document.getElementById('uploadForm');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressFill = document.getElementById('progressFill');
+        const progressStatus = document.getElementById('progressStatus');
+        const progressPercent = document.getElementById('progressPercent');
+        const uploadBtn = document.getElementById('uploadBtn');
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                handleFile(e.dataTransfer.files[0]);
+            }
+        });
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length) {
+                handleFile(fileInput.files[0]);
+            }
+        });
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!fileInput.files.length) {
+                alert('Please select a file');
+                return;
+            }
+            // Upload the file based on size
+            const file = fileInput.files[0];
+            const settings = window.SETTINGS || { chunk_threshold: 104857600, chunk_size_bytes: 10485760, max_file_size: 0 };
+            const threshold = settings.chunk_threshold || 104857600;
+            const chunkSize = settings.chunk_size_bytes || 10485760;
+            if (file.size > threshold) {
+                await uploadChunked(file, chunkSize);
+            } else {
+                await uploadRegular(file);
+            }
+        });
+        async function handleFile(file) {
+            const settings = window.SETTINGS || { chunk_threshold: 104857600, chunk_size_bytes: 10485760, max_file_size: 0 };
+            const threshold = settings.chunk_threshold || 104857600;
+            const maxFileSize = settings.max_file_size || 0;
+            // Check max file size
+            if (maxFileSize > 0 && file.size > maxFileSize) {
+                alert('{{if .T.home}}{{index .T.home "file_too_large"}}{{else}}File is too large. Maximum size is{{end}} ' + formatSize(maxFileSize));
+                return;
+            }
+            dropZone.querySelector('.drop-zone-text').innerHTML = `<strong>${file.name}</strong><br>${formatSize(file.size)}`;
+            // Just set the file, don't auto-upload
+            const dt = new DataTransfer();
+            dt.items.add(file);
+            fileInput.files = dt.files;
+        }
+        async function uploadRegular(file) {
+            const customLink = document.getElementById('custom_link').value;
+            const isPrivate = !document.getElementById('publicCheck').checked;
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('custom_link', customLink);
+            if (isPrivate) {
+                // Don't append 'public' if private
+            } else {
+                formData.append('public', 'on');
+            }
+            progressContainer.classList.add('active');
+            uploadBtn.disabled = true;
+            progressStatus.textContent = '{{if .T.home}}{{index .T.home "uploading"}}{{else}}Uploading...{{end}}';
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressFill.style.width = percent + '%';
+                        progressPercent.textContent = percent + '%';
+                    }
+                });
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200 || xhr.status === 303) {
+                        progressStatus.textContent = '{{if .T.home}}{{index .T.home "upload_complete"}}{{else}}Upload complete!{{end}}';
+                        // Reset form before reload
+                        uploadForm.reset();
+                        publicCheck.checked = false;
+                        updatePrivacyStatus();
+                        setTimeout(() => location.reload(), 1000);
+                        resolve();
+                    } else {
+                        progressStatus.textContent = 'Error: ' + xhr.statusText;
+                        progressFill.style.background = 'var(--danger)';
+                        uploadBtn.disabled = false;
+                        reject(new Error(xhr.statusText));
+                    }
+                });
+                xhr.addEventListener('error', () => {
+                    progressStatus.textContent = '{{if .T.home}}{{index .T.home "upload_error"}}{{else}}Upload failed{{end}}';
+                    progressFill.style.background = 'var(--danger)';
+                    uploadBtn.disabled = false;
+                    reject(new Error('Upload failed'));
+                });
+                xhr.open('POST', '/upload');
+                xhr.send(formData);
+            });
+        }
+        async function uploadChunked(file, chunkSize) {
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            const customLink = document.getElementById('custom_link').value;
+            const isPrivate = !document.getElementById('publicCheck').checked;
+            progressContainer.classList.add('active');
+            uploadBtn.disabled = true;
+            try {
+                const initRes = await fetch('/api/upload/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_name: file.name,
+                        total_size: file.size,
+                        total_chunks: totalChunks,
+                        is_private: isPrivate,
+                        custom_link: customLink
+                    })
+                });
+                if (!initRes.ok) throw new Error(await initRes.text());
+                const { upload_id } = await initRes.json();
+                for (let i = 0; i < totalChunks; i++) {
+                    const start = i * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+                    const formData = new FormData();
+                    formData.append('upload_id', upload_id);
+                    formData.append('chunk_index', i);
+                    formData.append('chunk', chunk);
+                    const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+                    if (!chunkRes.ok) throw new Error('Failed to upload chunk ' + i);
+                    const percent = Math.round(((i + 1) / totalChunks) * 100);
+                    progressFill.style.width = percent + '%';
+                    progressPercent.textContent = percent + '%';
+                    progressStatus.textContent = `Uploading chunk ${i + 1}/${totalChunks}...`;
+                }
+                progressStatus.textContent = 'Finalizing...';
+                const completeRes = await fetch('/api/upload/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ upload_id })
+                });
+                if (!completeRes.ok) throw new Error('Failed to complete upload');
+                progressStatus.textContent = '{{if .T.home}}{{index .T.home "upload_complete"}}{{else}}Upload complete!{{end}}';
+                // Reset form before reload
+                uploadForm.reset();
+                publicCheck.checked = false;
+                updatePrivacyStatus();
+                setTimeout(() => location.reload(), 1000);
+            } catch (err) {
+                progressStatus.textContent = '{{if .T.home}}{{index .T.home "upload_error"}}{{else}}Error{{end}}: ' + err.message;
+                progressFill.style.background = 'var(--danger)';
+                uploadBtn.disabled = false;
+            }
+        }
+        function formatSize(bytes) {
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let i = 0;
+            while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+            return bytes.toFixed(1) + ' ' + units[i];
+        }
+    </script>
+</body>
+</html>

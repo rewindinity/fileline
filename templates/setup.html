@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{.Theme}}" style="--accent: #3b82f6;">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .T.setup}}{{index .T.setup "title"}}{{else}}Setup{{end}} - FileLine</title>
+    <link rel="icon" href="/static/logo.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card setup-card">
+            <div class="logo">
+                <img src="/static/logo.svg" class="logo-icon" alt="FileLine">
+                <h1>FileLine</h1>
+                <p class="subtitle">{{if .T.setup}}{{index .T.setup "title"}}{{else}}Initial Setup{{end}}</p>
+            </div>
+            
+            {{if .Error}}
+            <div class="alert alert-error"><i class='bx bxs-error-circle'></i> {{.Error}}</div>
+            {{end}}
+            
+            <form method="POST" action="/setup" id="setupForm">
+                <!-- Username and password fields -->
+                <div class="form-group">
+                    <label for="username">{{if .T.setup}}{{index .T.setup "username"}}{{else}}Username{{end}}</label>
+                    <input type="text" id="username" name="username" required autofocus>
+                </div>
+                <div class="form-group">
+                    <label for="password">{{if .T.setup}}{{index .T.setup "password"}}{{else}}Password{{end}}</label>
+                    <input type="password" id="password" name="password" required minlength="6">
+                </div>
+                <div class="form-group">
+                    <label for="confirm_password">{{if .T.setup}}{{index .T.setup "confirm_password"}}{{else}}Confirm Password{{end}}</label>
+                    <input type="password" id="confirm_password" name="confirm_password" required>
+                </div>
+                <!-- Theme selector -->
+                <div class="form-group">
+                    <label for="theme">{{if .T.setup}}{{index .T.setup "theme"}}{{else}}Theme{{end}}</label>
+                    <select id="theme" name="theme">
+                        <option value="dark-blue" {{if eq .Theme "dark-blue"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_blue"}}{{else}}Dark Blue{{end}}</option>
+                        <option value="dark-green" {{if eq .Theme "dark-green"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_green"}}{{else}}Dark Green{{end}}</option>
+                        <option value="dark-orange" {{if eq .Theme "dark-orange"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_orange"}}{{else}}Dark Orange{{end}}</option>
+                        <option value="dark-purple" {{if eq .Theme "dark-purple"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_dark_purple"}}{{else}}Dark Purple{{end}}</option>
+                        <option value="light" {{if eq .Theme "light"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "theme_light"}}{{else}}Light{{end}}</option>
+                    </select>
+                </div>
+                <!-- Language selector -->
+                <div class="form-group">
+                    <label for="language">{{if .T.setup}}{{index .T.setup "language"}}{{else}}Language{{end}}</label>
+                    <select id="language" name="language">
+                        <option value="en" {{if eq .Lang "en"}}selected{{end}}>English</option>
+                        <option value="pl" {{if eq .Lang "pl"}}selected{{end}}>Polski</option>
+                    </select>
+                </div>
+                <!-- Database type selector -->
+                <div class="form-group">
+                    <label for="database">{{if .T.setup}}{{index .T.setup "database_type"}}{{else}}Database Type{{end}}</label>
+                    <select id="database" name="database">
+                        <option value="sqlite">{{if .T.setup}}{{index .T.setup "database_sqlite"}}{{else}}SQLite{{end}}</option>
+                        <option value="mongodb">{{if .T.setup}}{{index .T.setup "database_mongodb"}}{{else}}MongoDB{{end}}</option>
+                        <option value="postgresql">{{if .T.setup}}{{index .T.setup "database_postgresql"}}{{else}}PostgreSQL{{end}}</option>
+                    </select>
+                    <small class="form-hint">{{if .T.setup}}{{index .T.setup "database_hint"}}{{else}}Cannot be changed after setup{{end}}</small>
+                </div>
+                <!-- MongoDB-specific fields -->
+                <div class="form-group db-config" id="mongodb-config" style="display: none;">
+                    <label for="mongo_url">{{if .T.setup}}{{index .T.setup "mongo_url"}}{{else}}MongoDB URL{{end}}</label>
+                    <input type="text" id="mongo_url" name="mongo_url" placeholder="mongodb://localhost:27017">
+                    <small class="form-hint">{{if .T.setup}}{{index .T.setup "mongo_url_hint"}}{{else}}Example: mongodb://localhost:27017{{end}}</small>
+                </div>
+                <!-- PostgreSQL-specific fields -->
+                <div class="form-group db-config" id="postgresql-config" style="display: none;">
+                    <label for="pg_host">{{if .T.setup}}{{index .T.setup "pg_host"}}{{else}}Host:Port{{end}}</label>
+                    <input type="text" id="pg_host" name="pg_host" placeholder="localhost:5432">
+                    <label for="pg_user" style="margin-top: 10px;">{{if .T.setup}}{{index .T.setup "pg_user"}}{{else}}User:Password{{end}}</label>
+                    <input type="text" id="pg_user" name="pg_user" placeholder="user:password">
+                    <label for="pg_database" style="margin-top: 10px;">{{if .T.setup}}{{index .T.setup "pg_database"}}{{else}}Database Name{{end}}</label>
+                    <input type="text" id="pg_database" name="pg_database" placeholder="fileline">
+                    <small class="form-hint">{{if .T.setup}}{{index .T.setup "pg_hint"}}{{else}}Database must exist beforehand{{end}}</small>
+                </div>
+                <!-- Submit button -->
+                <button type="submit" class="btn btn-primary btn-full">{{if .T.setup}}{{index .T.setup "create_account"}}{{else}}Create Account{{end}}</button>
+            </form>
+        </div>
+    </div>
+    <script>
+        // Preview theme on change
+        const themeSelect = document.getElementById('theme');
+        themeSelect.addEventListener('change', () => {
+            document.documentElement.setAttribute('data-theme', themeSelect.value);
+        });
+        // Database type selector - show/hide specific config fields
+        const dbSelect = document.getElementById('database');
+        const dbConfigs = document.querySelectorAll('.db-config');
+        function updateDBConfig() {
+            const dbType = dbSelect.value;
+            // Hide all db-specific configs
+            dbConfigs.forEach(config => config.style.display = 'none');
+            // Show relevant config
+            if (dbType === 'mongodb') {
+                document.getElementById('mongodb-config').style.display = 'block';
+                document.getElementById('mongo_url').required = true;
+            } else {
+                document.getElementById('mongo_url').required = false;
+            }
+            if (dbType === 'postgresql') {
+                document.getElementById('postgresql-config').style.display = 'block';
+                document.getElementById('pg_host').required = true;
+                document.getElementById('pg_user').required = true;
+                document.getElementById('pg_database').required = true;
+            } else {
+                document.getElementById('pg_host').required = false;
+                document.getElementById('pg_user').required = false;
+                document.getElementById('pg_database').required = false;
+            }
+        }
+        dbSelect.addEventListener('change', updateDBConfig);
+        updateDBConfig(); // Initialize on page load
+        // Reload page on language change to get new translations
+        const langSelect = document.getElementById('language');
+        let preventReload = false;
+        langSelect.addEventListener('change', () => {
+            if (preventReload) return;
+            // Save current form values to preserve user input
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const confirmPassword = document.getElementById('confirm_password').value;
+            const theme = themeSelect.value;
+            const database = dbSelect.value;
+            const mongoUrl = document.getElementById('mongo_url').value;
+            const pgHost = document.getElementById('pg_host').value;
+            const pgUser = document.getElementById('pg_user').value;
+            const pgDatabase = document.getElementById('pg_database').value;
+            // Store in sessionStorage
+            sessionStorage.setItem('setupForm', JSON.stringify({
+                username, password, confirmPassword, theme, database,
+                mongoUrl, pgHost, pgUser, pgDatabase
+            }));
+            // Reload with new language
+            const params = new URLSearchParams();
+            params.set('language', langSelect.value);
+            window.location.href = '/setup?' + params.toString();
+        });
+        // Restore form values after language change
+        window.addEventListener('load', () => {
+            const savedData = sessionStorage.getItem('setupForm');
+            if (savedData) {
+                preventReload = true;
+                const data = JSON.parse(savedData);
+                if (data.username) document.getElementById('username').value = data.username;
+                if (data.password) document.getElementById('password').value = data.password;
+                if (data.confirmPassword) document.getElementById('confirm_password').value = data.confirmPassword;
+                if (data.theme) themeSelect.value = data.theme;
+                if (data.database) {
+                    dbSelect.value = data.database;
+                    updateDBConfig();
+                }
+                if (data.mongoUrl) document.getElementById('mongo_url').value = data.mongoUrl;
+                if (data.pgHost) document.getElementById('pg_host').value = data.pgHost;
+                if (data.pgUser) document.getElementById('pg_user').value = data.pgUser;
+                if (data.pgDatabase) document.getElementById('pg_database').value = data.pgDatabase;
+                sessionStorage.removeItem('setupForm');
+                setTimeout(() => {
+                    preventReload = false;
+                }, 100);
+            }
+        });
+    </script>
+</body>
+</html>

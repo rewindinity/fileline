@@ -1,0 +1,59 @@
+<!doctype html>
+<html data-theme="{{.Theme}}" style="--accent: #3b82f6">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{if .T.setup_complete}}{{index .T.setup_complete "title"}}{{else}}Setup Complete{{end}} - FileLine</title>
+    <link rel="icon" href="/static/logo.svg" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="card setup-card">
+        <div class="logo">
+          <img src="/static/logo.svg" class="logo-icon" alt="FileLine" />
+          <h1>FileLine</h1>
+          <p class="subtitle">{{if .T.setup_complete}}{{index .T.setup_complete "title"}}{{else}}Setup Complete!{{end}}</p>
+        </div>
+        <div class="alert alert-success">
+          <i class="bx bxs-check-circle"></i> {{if .T.setup_complete}}{{index .T.setup_complete "message"}}{{else}}Your account has been created. Please save your backup code
+          below.{{end}}
+        </div>
+        <div class="settings-section">
+          <h3><i class="bx bxs-key"></i> {{if .T.setup_complete}}{{index .T.setup_complete "backup_code"}}{{else}}Your Backup Code{{end}}</h3>
+          <div class="backup-code-display" style="margin: 1rem 0">
+            <code id="backupCode">{{.BackupCode}}</code>
+            <button type="button" class="btn btn-sm btn-outline" onclick="copyBackupCode()" title="Copy backup code">
+              <i class="bx bx-copy" id="copyIcon"></i>
+            </button>
+          </div>
+          <div class="alert alert-warning">
+            <i class="bx bxs-error-circle"></i> {{if .T.setup_complete}}{{index .T.setup_complete "warning"}}{{else}}This code will only be shown once. Store it in a safe
+            place.{{end}}
+          </div>
+        </div>
+        <a href="/" class="btn btn-primary btn-full">
+          <i class="bx bxs-home"></i> {{if .T.setup_complete}}{{index .T.setup_complete "continue"}}{{else}}Continue to Dashboard{{end}}
+        </a>
+      </div>
+    </div>
+    <script>
+      function copyBackupCode() {
+        const code = document.getElementById("backupCode").textContent;
+        navigator.clipboard
+          .writeText(code)
+          .then(() => {
+            const icon = document.getElementById("copyIcon");
+            icon.className = "bx bx-check";
+            setTimeout(() => {
+              icon.className = "bx bx-copy";
+            }, 2000);
+          })
+          .catch(() => {
+            alert("Backup code: " + code);
+          });
+      }
+    </script>
+  </body>
+</html>

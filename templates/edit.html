@@ -1,0 +1,121 @@
+<!doctype html>
+<html data-theme="{{if .Settings}}{{.Settings.Theme}}{{else}}dark-blue{{end}}" style="--accent: {{if .Settings}}{{.Settings.AccentColor}}{{else}}#3b82f6{{end}};">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{if .T.edit}}{{index .T.edit "title"}}{{else}}Edit File{{end}} - FileLine</title>
+    <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <nav class="navbar">
+      <div class="nav-brand">
+        <a href="/">
+          <img src="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" class="logo-img" id="navbar-logo" alt="FileLine" />
+          FileLine
+        </a>
+      </div>
+      <button class="hamburger" id="hamburger" aria-label="Menu">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <div class="nav-links">
+        <a href="/">{{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+        <a href="/files">{{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+        <a href="/settings">{{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+        <a href="/logout" class="btn btn-outline btn-sm">{{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+      </div>
+    </nav>
+    <div class="nav-overlay" id="navOverlay"></div>
+    <div class="mobile-nav" id="mobileNav">
+      <a href="/"><i class="bx bxs-dashboard"></i> {{if .T.nav}}{{index .T.nav "dashboard"}}{{else}}Dashboard{{end}}</a>
+      <a href="/files"><i class="bx bxs-folder"></i> {{if .T.nav}}{{index .T.nav "all_files"}}{{else}}All Files{{end}}</a>
+      <a href="/settings"><i class="bx bxs-cog"></i> {{if .T.nav}}{{index .T.nav "settings"}}{{else}}Settings{{end}}</a>
+      <a href="/logout"><i class="bx bx-log-out"></i> {{if .T.nav}}{{index .T.nav "logout"}}{{else}}Logout{{end}}</a>
+    </div>
+    <div class="container">
+      <div class="card" style="max-width: 600px; margin: 0 auto">
+        <h2><i class="bx bxs-edit"></i> {{if .T.edit}}{{index .T.edit "title"}}{{else}}Edit File{{end}}</h2>
+
+        {{if .Error}}
+        <div class="alert alert-error"><i class="bx bxs-error-circle"></i> {{.Error}}</div>
+        {{end}}
+
+        <form method="POST" action="/file/edit/{{.File.ID}}">
+          <!-- File name -->
+          <div class="form-group">
+            <label for="name">{{if .T.edit}}{{index .T.edit "file_name"}}{{else}}File Name{{end}}</label>
+            <input type="text" id="name" name="name" value="{{.File.Name}}" required />
+          </div>
+          <!-- Custom link -->
+          <div class="form-group">
+            <label for="link">{{if .T.edit}}{{index .T.edit "custom_link"}}{{else}}Custom Link{{end}}</label>
+            <div class="input-group">
+              <span class="input-prefix">/f/</span>
+              <input type="text" id="link" name="link" value="{{.File.Link}}" required pattern="[A-Za-z0-9]+" />
+            </div>
+            <small class="form-hint">{{if .T.edit}}{{index .T.edit "link_hint"}}{{else}}Only A-Z, a-z, 0-9 allowed{{end}}</small>
+          </div>
+          <!-- Privacy toggle -->
+          <div class="form-group">
+            <div style="display: flex; align-items: center; gap: 0.75rem">
+              <span class="toggle-label">{{if .T.home}}{{index .T.home "is_public"}}{{else}}Is public?{{end}}</span>
+              <input type="hidden" name="is_private" id="isPrivateValue" value="{{if .File.IsPrivate}}1{{else}}0{{end}}" />
+              <label class="toggle-switch">
+                <input type="checkbox" name="public" id="publicCheck" {{if not .File.IsPrivate}}checked{{end}} />
+                <div class="toggle-switch-background">
+                  <div class="toggle-switch-handle"></div>
+                </div>
+              </label>
+              <span class="toggle-status {{if .File.IsPrivate}}private{{else}}public{{end}}" id="privacyStatus">
+                {{if .File.IsPrivate}}{{if .T.home}}{{index .T.home "no"}}{{else}}No{{end}}{{else}}{{if .T.home}}{{index .T.home "yes"}}{{else}}Yes{{end}}{{end}}
+              </span>
+            </div>
+          </div>
+          <!-- Form actions -->
+          <div class="form-actions">
+            <a href="/files" class="btn btn-outline">{{if .T.edit}}{{index .T.edit "cancel"}}{{else}}Cancel{{end}}</a>
+            <button type="submit" class="btn btn-primary">{{if .T.edit}}{{index .T.edit "save_changes"}}{{else}}Save Changes{{end}}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+      // Translations
+      const TRANS = {
+        yes: '{{if .T.home}}{{index .T.home "yes"}}{{else}}Yes{{end}}',
+        no: '{{if .T.home}}{{index .T.home "no"}}{{else}}No{{end}}',
+      };
+      // Hamburger menu
+      const hamburger = document.getElementById("hamburger");
+      const mobileNav = document.getElementById("mobileNav");
+      const navOverlay = document.getElementById("navOverlay");
+      hamburger.addEventListener("click", () => {
+        hamburger.classList.toggle("active");
+        mobileNav.classList.toggle("active");
+        navOverlay.classList.toggle("active");
+      });
+      navOverlay.addEventListener("click", () => {
+        hamburger.classList.remove("active");
+        mobileNav.classList.remove("active");
+        navOverlay.classList.remove("active");
+      });
+      const publicCheck = document.getElementById("publicCheck");
+      const privacyStatus = document.getElementById("privacyStatus");
+      const isPrivateValue = document.getElementById("isPrivateValue");
+      publicCheck.addEventListener("change", () => {
+        if (publicCheck.checked) {
+          privacyStatus.textContent = TRANS.yes;
+          privacyStatus.className = "toggle-status public";
+          isPrivateValue.value = "0";
+        } else {
+          privacyStatus.textContent = TRANS.no;
+          privacyStatus.className = "toggle-status private";
+          isPrivateValue.value = "1";
+        }
+      });
+    </script>
+  </body>
+</html>

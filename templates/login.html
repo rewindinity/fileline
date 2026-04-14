@@ -1,0 +1,116 @@
+<!doctype html>
+<html data-theme="{{if .Settings}}{{.Settings.Theme}}{{else}}dark-blue{{end}}" style="--accent: {{if .Settings}}{{.Settings.AccentColor}}{{else}}#3b82f6{{end}};">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{if .T.login}}{{index .T.login "title"}}{{else}}Login{{end}} - FileLine</title>
+    <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="card login-card">
+        <div class="logo">
+          <img src="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" class="logo-icon" alt="FileLine" />
+          {{if not (and .Settings .Settings.CustomLogo)}}
+          <h1>FileLine</h1>
+          {{end}}
+          <p class="subtitle">{{if .T.login}}{{index .T.login "title"}}{{else}}Sign in to continue{{end}}</p>
+        </div>
+
+        {{if .Error}}
+        <div class="alert alert-error"><i class="bx bxs-error-circle"></i> {{.Error}}</div>
+        {{end}}
+
+        <form method="POST" action="/login">
+          <div class="form-group">
+            <label for="username">{{if .T.login}}{{index .T.login "username"}}{{else}}Username{{end}}</label>
+            <input type="text" id="username" name="username" required autofocus />
+          </div>
+          <div class="form-group">
+            <label for="password">{{if .T.login}}{{index .T.login "password"}}{{else}}Password{{end}}</label>
+            <input type="password" id="password" name="password" required />
+          </div>
+          <button type="submit" class="btn btn-primary btn-full">{{if .T.login}}{{index .T.login "sign_in"}}{{else}}Sign In{{end}}</button>
+        </form>
+        <div class="login-divider">
+          <span>or</span>
+        </div>
+        <button type="button" class="btn btn-outline btn-full" id="passkeyLogin">
+          <i class="bx bxs-fingerprint"></i> {{if .T.login}}{{index .T.login "sign_in_passkey"}}{{else}}Sign in with Passkey{{end}}
+        </button>
+        <div class="login-footer">
+          <a href="/reset-password" class="link-muted"><i class="bx bxs-key"></i> {{if .T.login}}{{index .T.login "forgot_password"}}{{else}}Forgot password?{{end}}</a>
+        </div>
+      </div>
+    </div>
+    <script>
+      // Passkey login
+      document.getElementById("passkeyLogin").addEventListener("click", async () => {
+        try {
+          // Begin authentication
+          const beginResp = await fetch("/api/passkey/auth/begin");
+          if (!beginResp.ok) {
+            throw new Error("Failed to begin passkey authentication");
+          }
+          const { options, sessionId } = await beginResp.json();
+          // Convert base64url to ArrayBuffer
+          options.publicKey.challenge = base64urlToBuffer(options.publicKey.challenge);
+          options.publicKey.allowCredentials = options.publicKey.allowCredentials.map((cred) => ({
+            ...cred,
+            id: base64urlToBuffer(cred.id),
+          }));
+          // Get credential from authenticator
+          const credential = await navigator.credentials.get(options);
+          // Convert credential to format expected by server
+          const credentialJSON = {
+            id: credential.id,
+            rawId: bufferToBase64url(credential.rawId),
+            response: {
+              authenticatorData: bufferToBase64url(credential.response.authenticatorData),
+              clientDataJSON: bufferToBase64url(credential.response.clientDataJSON),
+              signature: bufferToBase64url(credential.response.signature),
+              userHandle: credential.response.userHandle ? bufferToBase64url(credential.response.userHandle) : null,
+            },
+            type: credential.type,
+          };
+          // Send credential to server
+          const finishResp = await fetch("/api/passkey/auth/finish?sessionId=" + sessionId, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(credentialJSON),
+          });
+          const result = await finishResp.json();
+          if (!finishResp.ok) {
+            throw new Error(result.error || "Passkey authentication failed");
+          }
+          if (result.success) {
+            window.location.href = result.redirect || "/";
+          }
+        } catch (err) {
+          console.error("Passkey error:", err);
+          alert("Passkey authentication failed: " + err.message);
+        }
+      });
+      function base64urlToBuffer(base64url) {
+        const base64 = base64url.replace(/-/g, "+").replace(/_/g, "/");
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes.buffer;
+      }
+      function bufferToBase64url(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const base64 = btoa(binary);
+        return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+      }
+    </script>
+  </body>
+</html>

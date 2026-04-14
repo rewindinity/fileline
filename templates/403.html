@@ -1,0 +1,21 @@
+<!doctype html>
+<html data-theme="{{if .Settings}}{{.Settings.Theme}}{{else}}dark-blue{{end}}" style="--accent: {{if .Settings}}{{.Settings.AccentColor}}{{else}}#3b82f6{{end}};">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{if .T.error}}{{index .T.error "access_denied"}}{{else}}Access Denied{{end}} - FileLine</title>
+    <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" />
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="card error-card">
+        <i class="bx bxs-lock-alt error-icon"></i>
+        <h1>403</h1>
+        <p class="error-message">{{if .ErrorMessage}}{{.ErrorMessage}}{{else if .T.error}}{{index .T.error "private_link"}}{{else}}Private link, access denied{{end}}</p>
+        <a href="/" class="btn btn-primary"><i class="bx bxs-home"></i> {{if .T.error}}{{index .T.error "go_home"}}{{else}}Go Home{{end}}</a>
+      </div>
+    </div>
+  </body>
+</html>
