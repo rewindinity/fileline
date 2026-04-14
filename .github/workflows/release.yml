@@ -10,35 +10,30 @@ permissions:
 
 jobs:
   build:
-    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    name: Build (${{ matrix.asset_name }})
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       matrix:
         include:
-          - goos: linux
+          - runner: ubuntu-latest
+            goos: linux
             goarch: amd64
             asset_name: linux-amd64
 
-          - goos: linux
+          - runner: ubuntu-latest
+            goos: linux
             goarch: arm64
             asset_name: linux-arm64
+            cc: aarch64-linux-gnu-gcc
 
-          - goos: windows
-            goarch: amd64
-            asset_name: windows-amd64
-            ext: .exe
-
-          - goos: windows
-            goarch: arm64
-            asset_name: windows-arm64
-            ext: .exe
-
-          - goos: darwin
+          - runner: macos-13
+            goos: darwin
             goarch: amd64
             asset_name: macos-intel
 
-          - goos: darwin
+          - runner: macos-latest
+            goos: darwin
             goarch: arm64
             asset_name: macos-arm
 
@@ -52,28 +47,28 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Set binary name
-        id: vars
-        run: |
-          echo "binary=fileline-${{ matrix.asset_name }}${{ matrix.ext }}" >> $GITHUB_OUTPUT
+      - name: Install ARM64 cross-compiler (Linux ARM64 only)
+        if: matrix.goarch == 'arm64' && matrix.goos == 'linux'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
         run: |
           go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o "${{ steps.vars.outputs.binary }}" \
+            -o "fileline-${{ matrix.asset_name }}" \
             .
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.vars.outputs.binary }}
-          path: ${{ steps.vars.outputs.binary }}
+          name: fileline-${{ matrix.asset_name }}
+          path: fileline-${{ matrix.asset_name }}
           retention-days: 1
 
   release:
