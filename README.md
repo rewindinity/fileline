@@ -58,7 +58,7 @@ fileline-windows-amd64.exe
 Requirements: Go (version from `go.mod`)
 
 ```bash
-git clone https://github.com/<your-user>/fileline.git
+git clone https://github.com/rewindinity/fileline.git
 cd fileline
 go build -o fileline .
 ./fileline
