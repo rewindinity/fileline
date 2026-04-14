@@ -27,11 +27,6 @@ jobs:
             asset_name: linux-arm64
             cc: aarch64-linux-gnu-gcc
 
-          - runner: macos-13
-            goos: darwin
-            goarch: amd64
-            asset_name: macos-intel
-
           - runner: macos-latest
             goos: darwin
             goarch: arm64
