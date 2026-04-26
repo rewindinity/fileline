@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{if .T.settings}}{{index .T.settings "title"}}{{else}}Settings{{end}} - FileLine</title>
     <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}">
-    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="/static/icons.css" />
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -193,7 +193,7 @@
                 <p class="text-muted">{{if .T.settings}}{{index .T.settings "passkeys_info"}}{{else}}Use your device's biometric authentication or security key to sign in.{{end}}</p>
                 <div id="passkeyList" style="margin-top: 1rem;"></div>
                 <button type="button" class="btn btn-primary settings-action" onclick="registerPasskey()">
-                    <i class='bx bx-plus'></i> {{if .T.settings}}{{index .T.settings "add_passkey"}}{{else}}Add Passkey{{end}}
+                    <i class='bx bx-plus-circle'></i> {{if .T.settings}}{{index .T.settings "add_passkey"}}{{else}}Add Passkey{{end}}
                 </button>
             </div>
         </div>
@@ -273,7 +273,7 @@
                     list.innerHTML = passkeys.map(pk => `
                         <div class="passkey-item" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.75rem;">
                             <div>
-                                <div style="font-weight: 500;"><i class='bx bxs-fingerprint'></i> ${pk.name}</div>
+                                <div style="font-weight: 500;"><i class='bx bx-fingerprint'></i> ${pk.name}</div>
                                 <div class="text-muted" style="font-size: 0.85rem; margin-top: 0.25rem;">Created: ${new Date(pk.created_at).toLocaleDateString()}</div>
                             </div>
                             <button type="button" class="btn btn-sm btn-outline" onclick="deletePasskey('${pk.id}')">

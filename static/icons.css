@@ -1,0 +1,167 @@
+.bx {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  background-color: currentColor;
+  color: inherit;
+  mask-repeat: no-repeat;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: 100% 100%;
+}
+.bx-arrow-back {
+  mask-image: url("/static/icons/bx-arrow-back.svg");
+  -webkit-mask-image: url("/static/icons/bx-arrow-back.svg");
+}
+.bx-calendar {
+  mask-image: url("/static/icons/bx-calendar.svg");
+  -webkit-mask-image: url("/static/icons/bx-calendar.svg");
+}
+.bx-check {
+  mask-image: url("/static/icons/bx-check.svg");
+  -webkit-mask-image: url("/static/icons/bx-check.svg");
+}
+.bx-copy {
+  mask-image: url("/static/icons/bx-copy.svg");
+  -webkit-mask-image: url("/static/icons/bx-copy.svg");
+}
+.bx-data {
+  mask-image: url("/static/icons/bx-data.svg");
+  -webkit-mask-image: url("/static/icons/bx-data.svg");
+}
+.bx-fingerprint {
+  mask-image: url("/static/icons/bx-fingerprint.svg");
+  -webkit-mask-image: url("/static/icons/bx-fingerprint.svg");
+}
+.bx-globe {
+  mask-image: url("/static/icons/bx-globe.svg");
+  -webkit-mask-image: url("/static/icons/bx-globe.svg");
+}
+.bx-info-circle {
+  mask-image: url("/static/icons/bx-info-circle.svg");
+  -webkit-mask-image: url("/static/icons/bx-info-circle.svg");
+}
+.bx-list-ul {
+  mask-image: url("/static/icons/bx-list-ul.svg");
+  -webkit-mask-image: url("/static/icons/bx-list-ul.svg");
+}
+.bx-log-in {
+  mask-image: url("/static/icons/bx-log-in.svg");
+  -webkit-mask-image: url("/static/icons/bx-log-in.svg");
+}
+.bx-log-out {
+  mask-image: url("/static/icons/bx-log-out.svg");
+  -webkit-mask-image: url("/static/icons/bx-log-out.svg");
+}
+.bx-plus-circle {
+  mask-image: url("/static/icons/bx-plus-circle.svg");
+  -webkit-mask-image: url("/static/icons/bx-plus-circle.svg");
+}
+.bx-plus {
+  mask-image: url("/static/icons/bx-plus-circle.svg");
+  -webkit-mask-image: url("/static/icons/bx-plus-circle.svg");
+}
+.bx-refresh {
+  mask-image: url("/static/icons/bx-refresh.svg");
+  -webkit-mask-image: url("/static/icons/bx-refresh.svg");
+}
+.bx-trash-alt {
+  mask-image: url("/static/icons/bx-trash-alt.svg");
+  -webkit-mask-image: url("/static/icons/bx-trash-alt.svg");
+}
+.bx-trash {
+  mask-image: url("/static/icons/bx-trash-alt.svg");
+  -webkit-mask-image: url("/static/icons/bx-trash-alt.svg");
+}
+.bxs-check-circle {
+  mask-image: url("/static/icons/bxs-check-circle.svg");
+  -webkit-mask-image: url("/static/icons/bxs-check-circle.svg");
+}
+.bxs-cloud-upload {
+  mask-image: url("/static/icons/bxs-cloud-upload.svg");
+  -webkit-mask-image: url("/static/icons/bxs-cloud-upload.svg");
+}
+.bxs-cog {
+  mask-image: url("/static/icons/bxs-cog.svg");
+  -webkit-mask-image: url("/static/icons/bxs-cog.svg");
+}
+.bxs-dashboard {
+  mask-image: url("/static/icons/bxs-dashboard.svg");
+  -webkit-mask-image: url("/static/icons/bxs-dashboard.svg");
+}
+.bxs-data {
+  mask-image: url("/static/icons/bxs-data.svg");
+  -webkit-mask-image: url("/static/icons/bxs-data.svg");
+}
+.bxs-edit {
+  mask-image: url("/static/icons/bxs-edit.svg");
+  -webkit-mask-image: url("/static/icons/bxs-edit.svg");
+}
+.bxs-error {
+  mask-image: url("/static/icons/bxs-error.svg");
+  -webkit-mask-image: url("/static/icons/bxs-error.svg");
+}
+.bxs-error-circle {
+  mask-image: url("/static/icons/bxs-error-circle.svg");
+  -webkit-mask-image: url("/static/icons/bxs-error-circle.svg");
+}
+.bxs-file {
+  mask-image: url("/static/icons/bxs-file.svg");
+  -webkit-mask-image: url("/static/icons/bxs-file.svg");
+}
+.bxs-fingerprint {
+  mask-image: url("/static/icons/bx-fingerprint.svg");
+  -webkit-mask-image: url("/static/icons/bx-fingerprint.svg");
+}
+.bxs-folder {
+  mask-image: url("/static/icons/bxs-folder.svg");
+  -webkit-mask-image: url("/static/icons/bxs-folder.svg");
+}
+.bxs-folder-open {
+  mask-image: url("/static/icons/bxs-folder-open.svg");
+  -webkit-mask-image: url("/static/icons/bxs-folder-open.svg");
+}
+.bxs-home {
+  mask-image: url("/static/icons/bxs-home.svg");
+  -webkit-mask-image: url("/static/icons/bxs-home.svg");
+}
+.bxs-inbox {
+  mask-image: url("/static/icons/bxs-inbox.svg");
+  -webkit-mask-image: url("/static/icons/bxs-inbox.svg");
+}
+.bxs-key {
+  mask-image: url("/static/icons/bxs-key.svg");
+  -webkit-mask-image: url("/static/icons/bxs-key.svg");
+}
+.bxs-lock-alt {
+  mask-image: url("/static/icons/bxs-lock-alt.svg");
+  -webkit-mask-image: url("/static/icons/bxs-lock-alt.svg");
+}
+.bxs-lock-open-alt {
+  mask-image: url("/static/icons/bxs-lock-open-alt.svg");
+  -webkit-mask-image: url("/static/icons/bxs-lock-open-alt.svg");
+}
+.bxs-map {
+  mask-image: url("/static/icons/bxs-map.svg");
+  -webkit-mask-image: url("/static/icons/bxs-map.svg");
+}
+.bxs-palette {
+  mask-image: url("/static/icons/bxs-palette.svg");
+  -webkit-mask-image: url("/static/icons/bxs-palette.svg");
+}
+.bxs-shield {
+  mask-image: url("/static/icons/bxs-shield.svg");
+  -webkit-mask-image: url("/static/icons/bxs-shield.svg");
+}
+.bxs-shield-alt-2 {
+  mask-image: url("/static/icons/bxs-shield-alt-2.svg");
+  -webkit-mask-image: url("/static/icons/bxs-shield-alt-2.svg");
+}
+.bxs-time {
+  mask-image: url("/static/icons/bxs-time.svg");
+  -webkit-mask-image: url("/static/icons/bxs-time.svg");
+}
+.bxs-trash {
+  mask-image: url("/static/icons/bxs-trash.svg");
+  -webkit-mask-image: url("/static/icons/bxs-trash.svg");
+}

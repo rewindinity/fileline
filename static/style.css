@@ -139,6 +139,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+i.bx {
+  line-height: 1;
+}
+
 /* Container */
 .container {
   max-width: 1200px;
@@ -146,7 +150,7 @@ body {
   padding: 2rem 1.5rem;
 }
 
-/* ===== NAVBAR ===== */
+/*  Navbar */
 .navbar {
   background: var(--card-bg);
   border-bottom: 1px solid var(--border);
@@ -312,7 +316,7 @@ body {
   font-size: 1.25rem;
 }
 
-/* ===== CARDS ===== */
+/* Card */
 .card {
   background: var(--card-bg);
   border-radius: var(--radius);
@@ -490,7 +494,7 @@ body {
   line-height: 1.6;
 }
 
-/* ===== STATS ===== */
+/* Stats */
 .stats-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -537,7 +541,7 @@ body {
   font-weight: 500;
 }
 
-/* ===== FORMS ===== */
+/* Forms */
 .form-group {
   margin-bottom: 1.25rem;
 }
@@ -708,7 +712,7 @@ body {
   flex-wrap: wrap;
 }
 
-/* ===== BUTTONS ===== */
+/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -824,7 +828,7 @@ body {
   font-size: 1.125rem;
 }
 
-/* ===== TABLES ===== */
+/* Tables */
 .table-responsive {
   overflow-x: auto;
   margin: 0 -1.75rem;
@@ -962,7 +966,7 @@ body {
   font-family: "Monaco", "Consolas", monospace;
 }
 
-/* ===== BADGES ===== */
+/* Badges */
 .badge {
   display: inline-flex;
   align-items: center;
@@ -991,7 +995,7 @@ body {
   border: 1px solid rgba(34, 197, 94, 0.2);
 }
 
-/* ===== ALERTS ===== */
+/* Alerts */
 .alert {
   padding: 1rem 1.25rem;
   border-radius: var(--radius-sm);
@@ -1025,7 +1029,7 @@ body {
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
-/* ===== DRAG & DROP ===== */
+/* DRAG & DROP */
 .drop-zone {
   border: 2px dashed var(--border);
   border-radius: var(--radius);
@@ -1092,7 +1096,7 @@ body {
   color: var(--text-muted);
 }
 
-/* ===== PROGRESS ===== */
+/* Progress */
 .progress-container {
   margin-top: 1.25rem;
   display: none;
@@ -1125,7 +1129,7 @@ body {
   justify-content: space-between;
 }
 
-/* ===== SETTINGS ===== */
+/* Settings */
 .settings-section {
   margin-bottom: 2rem;
   padding-bottom: 2rem;
@@ -1278,7 +1282,7 @@ body {
   border-bottom-color: var(--accent);
 }
 
-/* ===== MOBILE CARDS ===== */
+/* Mobile Cards */
 .mobile-cards {
   display: none;
 }
@@ -1355,7 +1359,7 @@ body {
   width: 100%;
 }
 
-/* ===== UTILITY ===== */
+/* Utility */
 .text-muted {
   color: var(--text-muted);
 }
@@ -1391,7 +1395,7 @@ body {
   font-size: 1rem;
 }
 
-/* ===== RESPONSIVE ===== */
+/* Responsive */
 @media (max-width: 768px) {
   .container {
     padding: 1rem;

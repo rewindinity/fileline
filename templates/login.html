@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{if .T.login}}{{index .T.login "title"}}{{else}}Login{{end}} - FileLine</title>
     <link rel="icon" href="{{if and .Settings .Settings.CustomLogo}}{{safeURL .Settings.CustomLogo}}{{else}}/static/logo.svg{{end}}" />
-    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/icons.css" />
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
@@ -38,7 +38,7 @@
           <span>or</span>
         </div>
         <button type="button" class="btn btn-outline btn-full" id="passkeyLogin">
-          <i class="bx bxs-fingerprint"></i> {{if .T.login}}{{index .T.login "sign_in_passkey"}}{{else}}Sign in with Passkey{{end}}
+          <i class="bx bx-fingerprint"></i> {{if .T.login}}{{index .T.login "sign_in_passkey"}}{{else}}Sign in with Passkey{{end}}
         </button>
         <div class="login-footer">
           <a href="/reset-password" class="link-muted"><i class="bx bxs-key"></i> {{if .T.login}}{{index .T.login "forgot_password"}}{{else}}Forgot password?{{end}}</a>
