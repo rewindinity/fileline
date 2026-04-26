@@ -35,6 +35,7 @@ var uploadLimiter = &uploadLimiterStore{
 func AllowUploadRequest(r *http.Request) bool {
 	sessionID := GetSessionCookie(r)
 	if sessionID == "" {
+		Debugf("Upload request rejected: missing session cookie")
 		return false
 	}
 
@@ -49,10 +50,15 @@ func AllowUploadRequest(r *http.Request) bool {
 			lastSeen: now,
 		}
 		uploadLimiter.sessions[sessionID] = state
+		Debugf("Created upload limiter for session")
 	}
 
 	state.lastSeen = now
-	return state.limiter.Allow()
+	allowed := state.limiter.Allow()
+	if !allowed {
+		Debugf("Upload request rate-limited for session")
+	}
+	return allowed
 }
 
 // CleanupUploadLimiters removes stale limiter entries for inactive sessions.
@@ -60,15 +66,21 @@ func CleanupUploadLimiters() {
 	cutoff := time.Now().Add(-20 * time.Minute)
 	uploadLimiter.mu.Lock()
 	defer uploadLimiter.mu.Unlock()
+	removed := 0
 	for sessionID, state := range uploadLimiter.sessions {
 		if state.lastSeen.Before(cutoff) {
 			delete(uploadLimiter.sessions, sessionID)
+			removed++
 		}
+	}
+	if removed > 0 {
+		Debugf("Cleaned up %d stale upload limiter entries", removed)
 	}
 }
 
 // StartUploadLimiterCleanupRoutine runs periodic cleanup for in-memory upload limiter state.
 func StartUploadLimiterCleanupRoutine() {
+	Debugf("Starting upload limiter cleanup routine")
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()

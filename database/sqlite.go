@@ -24,8 +24,16 @@ type SQLiteDB struct {
 */
 func (s *SQLiteDB) Load() error {
 	var err error
+	Debugf("Connecting to SQLite database file=%s", models.DBFileSQLite)
 	s.db, err = sql.Open("sqlite3", models.DBFileSQLite)
 	if err != nil {
+		Debugf("Failed to open SQLite database: %v", err)
+		return err
+	}
+	if err := s.db.Ping(); err != nil {
+		Debugf("Failed to ping SQLite database: %v", err)
+		_ = s.db.Close()
+		s.db = nil
 		return err
 	}
 	// Create tables if they don't exist
@@ -71,6 +79,11 @@ func (s *SQLiteDB) Load() error {
 			created_at TEXT NOT NULL
 		);
 	`)
+	if err != nil {
+		Debugf("Failed to initialize SQLite schema: %v", err)
+		return err
+	}
+	Debugf("SQLite database connected and schema ready")
 	return err
 }
 

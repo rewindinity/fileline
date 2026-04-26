@@ -22,27 +22,40 @@ type PostgreSQLDB struct {
   @returns error - An error if the operation fails.
 */
 func (p *PostgreSQLDB) Load() error {
+	if p.pool != nil {
+		Debugf("Disconnecting previous PostgreSQL pool before reconnect")
+		p.pool.Close()
+		p.pool = nil
+	}
 	// Parse connection details from config
 	// PgHost format: "host:port"
 	// PgUser format: "user:password"
 	hostPort := strings.Split(Config.PgHost, ":")
 	if len(hostPort) != 2 {
+		Debugf("PostgreSQL Load failed: invalid pg_host format: %q", Config.PgHost)
 		return fmt.Errorf("invalid pg_host format, expected host:port")
 	}
 	userPass := strings.Split(Config.PgUser, ":")
 	if len(userPass) != 2 {
+		Debugf("PostgreSQL Load failed: invalid pg_user format")
 		return fmt.Errorf("invalid pg_user format, expected user:password")
 	}
+	Debugf("Connecting to PostgreSQL host=%s port=%s database=%q user=%q", hostPort[0], hostPort[1], Config.PgDatabase, userPass[0])
 	connString := fmt.Sprintf("postgres://%s:%s@%s:%s/%s", userPass[0], userPass[1], hostPort[0], hostPort[1], Config.PgDatabase)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, connString)
 	if err != nil {
+		Debugf("PostgreSQL connect failed: %v", err)
 		return fmt.Errorf("failed to connect to PostgreSQL: %v", err)
 	}
 	if err := pool.Ping(ctx); err != nil {
+		Debugf("PostgreSQL ping failed: %v", err)
+		Debugf("Disconnecting PostgreSQL pool after failed ping")
+		pool.Close()
 		return fmt.Errorf("failed to ping PostgreSQL: %v", err)
 	}
 	p.pool = pool
+	Debugf("PostgreSQL connection established")
 	schema := `
 	CREATE TABLE IF NOT EXISTS users (
 		username TEXT PRIMARY KEY,
@@ -86,9 +99,15 @@ func (p *PostgreSQLDB) Load() error {
 	);`
 	_, err = p.pool.Exec(ctx, schema)
 	if err != nil {
+		Debugf("PostgreSQL schema initialization failed: %v", err)
 		return err
 	}
 	_, err = p.pool.Exec(ctx, "ALTER TABLE chunk_uploads ADD COLUMN IF NOT EXISTS temp_dir TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		Debugf("PostgreSQL schema migration failed: %v", err)
+		return err
+	}
+	Debugf("PostgreSQL schema ready")
 	return err
 }
 

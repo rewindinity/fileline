@@ -59,6 +59,7 @@ func CSRFToken(r *http.Request) string {
 func ValidateCSRFToken(r *http.Request) bool {
 	sessionID := GetSessionCookie(r)
 	if sessionID == "" {
+		Debugf("CSRF validation failed: missing session cookie")
 		return false
 	}
 
@@ -67,14 +68,20 @@ func ValidateCSRFToken(r *http.Request) bool {
 		token = strings.TrimSpace(r.Header.Get("X-CSRF-Token"))
 	}
 	if token == "" {
+		Debugf("CSRF validation failed: missing token on path=%s", r.URL.Path)
 		return false
 	}
 
 	expected := csrfTokenForSession(sessionID)
 	if len(token) != len(expected) {
+		Debugf("CSRF validation failed: token length mismatch on path=%s", r.URL.Path)
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+	valid := subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+	if !valid {
+		Debugf("CSRF validation failed: token mismatch on path=%s", r.URL.Path)
+	}
+	return valid
 }
 
 // ValidateSameOrigin checks Origin/Referer host against request host as secondary CSRF defense.
@@ -116,5 +123,10 @@ func ValidateSameOrigin(r *http.Request, isBehindProxy bool) bool {
 
 // ValidateCSRFRequest enforces both token validation and same-origin verification.
 func ValidateCSRFRequest(r *http.Request, isBehindProxy bool) bool {
-	return ValidateCSRFToken(r) && ValidateSameOrigin(r, isBehindProxy)
+	tokenValid := ValidateCSRFToken(r)
+	originValid := ValidateSameOrigin(r, isBehindProxy)
+	if !tokenValid || !originValid {
+		Debugf("CSRF request rejected on path=%s (token_valid=%t same_origin=%t)", r.URL.Path, tokenValid, originValid)
+	}
+	return tokenValid && originValid
 }

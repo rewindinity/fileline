@@ -31,7 +31,7 @@ func getMongoStringField(doc bson.M, keys ...string) string {
 	return ""
 }
 
-/** 
+/**
   parseMongoBool attempts to interpret a value as a boolean, supporting multiple types and common string representations.
   It recognizes boolean types, numeric types (where non-zero is true), and strings like "true", "false", "yes", "no", "on", "off".
   @param value - The value to interpret, which may be of various types.
@@ -90,7 +90,7 @@ func getMongoInt64Field(doc bson.M, keys ...string) int64 {
 	return 0
 }
 
-/** 
+/**
   decodeMongoFileEntry converts a MongoDB document into a FileEntry struct, handling various field naming conventions and types for compatibility with older collections.
   @param doc - The BSON document retrieved from MongoDB representing a file entry.
   @returns models.FileEntry - The resulting FileEntry struct with normalized fields.
@@ -149,8 +149,8 @@ func (m *MongoDB) normalizeFileDocuments() error {
 			"size":        file.Size,
 			"uploaded_at": file.UploadedAt,
 			"is_private":  file.IsPrivate,
-			"uploadedat": file.UploadedAt,
-			"isprivate":  file.IsPrivate,
+			"uploadedat":  file.UploadedAt,
+			"isprivate":   file.IsPrivate,
 		}})
 		if err != nil {
 			return err
@@ -172,7 +172,7 @@ func appendMongoAuthSource(uri string, authSource string) (string, error) {
 	return parsed.String(), nil
 }
 
-/** 
+/**
   detectLogoMime attempts to determine the MIME type of a logo based on its content.
   It checks for PNG signatures and SVG tags to identify supported formats.
   @param content - The byte slice containing the logo data.
@@ -181,29 +181,37 @@ func appendMongoAuthSource(uri string, authSource string) (string, error) {
 func (m *MongoDB) connect(uri string) (*mongo.Client, string, error) {
 	cs, err := connstring.ParseAndValidate(uri)
 	if err != nil {
+		Debugf("MongoDB connection string validation failed: %v", err)
 		return nil, "", fmt.Errorf("invalid MongoDB URL: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	clientOptions := options.Client().ApplyURI(uri)
-	client, err := mongo.Connect(ctx, clientOptions)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to connect to MongoDB: %v", err)
-	}
-	if err := client.Ping(ctx, nil); err != nil {
-		_ = client.Disconnect(context.Background())
-		return nil, "", fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
 	dbName := cs.Database
 	if dbName == "" {
 		dbName = "fileline"
 	}
+	Debugf("Connecting to MongoDB hosts=%v database=%q", cs.Hosts, dbName)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	clientOptions := options.Client().ApplyURI(uri)
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		Debugf("MongoDB connect failed: %v", err)
+		return nil, "", fmt.Errorf("failed to connect to MongoDB: %v", err)
+	}
+	if err := client.Ping(ctx, nil); err != nil {
+		Debugf("MongoDB ping failed: %v", err)
+		Debugf("Disconnecting MongoDB client after failed ping")
+		_ = client.Disconnect(context.Background())
+		return nil, "", fmt.Errorf("failed to ping MongoDB: %v", err)
+	}
 	db := client.Database(dbName)
 	err = db.Collection("config").FindOne(ctx, bson.M{}).Err()
 	if err != nil && err != mongo.ErrNoDocuments {
+		Debugf("MongoDB access check failed for database=%q: %v", dbName, err)
+		Debugf("Disconnecting MongoDB client after failed access check")
 		_ = client.Disconnect(context.Background())
 		return nil, "", fmt.Errorf("failed to access MongoDB database %q: %v", dbName, err)
 	}
+	Debugf("MongoDB connection established database=%q", dbName)
 	return client, dbName, nil
 }
 
@@ -213,12 +221,22 @@ func (m *MongoDB) connect(uri string) (*mongo.Client, string, error) {
   @returns error - An error if the operation fails.
 */
 func (m *MongoDB) Load() error {
+	if m.client != nil {
+		Debugf("Disconnecting previous MongoDB client before reconnect")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = m.client.Disconnect(ctx)
+		cancel()
+		m.client = nil
+		m.db = nil
+	}
 	cs, err := connstring.ParseAndValidate(Config.MongoURL)
 	if err != nil {
+		Debugf("MongoDB Load failed: invalid URL: %v", err)
 		return fmt.Errorf("invalid MongoDB URL: %v", err)
 	}
 	client, dbName, err := m.connect(Config.MongoURL)
 	if err != nil && cs.Username != "" && cs.AuthSource == "" {
+		Debugf("MongoDB primary connect failed, retrying with authSource=admin")
 		fallbackURL, fallbackURLErr := appendMongoAuthSource(Config.MongoURL, "admin")
 		if fallbackURLErr == nil {
 			fallbackClient, fallbackDBName, fallbackErr := m.connect(fallbackURL)
@@ -226,12 +244,14 @@ func (m *MongoDB) Load() error {
 				client = fallbackClient
 				dbName = fallbackDBName
 				err = nil
+				Debugf("MongoDB connected using authSource=admin fallback")
 			} else {
 				err = fmt.Errorf("%v (also failed retry with authSource=admin: %v)", err, fallbackErr)
 			}
 		}
 	}
 	if err != nil {
+		Debugf("MongoDB Load failed: %v", err)
 		return err
 	}
 	m.client = client
@@ -242,8 +262,10 @@ func (m *MongoDB) Load() error {
 		m.db.Collection(collName)
 	}
 	if err := m.normalizeFileDocuments(); err != nil {
+		Debugf("MongoDB normalization failed: %v", err)
 		return fmt.Errorf("failed to normalize MongoDB files collection: %v", err)
 	}
+	Debugf("MongoDB Load completed for database=%q", dbName)
 	return nil
 }
 
@@ -357,9 +379,9 @@ func (m *MongoDB) UpdateFile(id string, name, link string, isPrivate bool) error
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	update := bson.M{"$set": bson.M{
-		"name":      name,
-		"link":      link,
-		"isprivate": isPrivate,
+		"name":       name,
+		"link":       link,
+		"isprivate":  isPrivate,
 		"is_private": isPrivate,
 	}}
 	result, err := m.db.Collection("files").UpdateOne(
@@ -528,11 +550,11 @@ func (m *MongoDB) UpdateSettings(settings models.AppSettings) error {
 		"chunk_threshold":  settings.ChunkThreshold,
 		"max_file_size":    settings.MaxFileSize,
 		"custom_logo":      settings.CustomLogo,
-		"accentcolor":    settings.AccentColor,
-		"chunksizebytes": settings.ChunkSizeBytes,
-		"chunkthreshold": settings.ChunkThreshold,
-		"maxfilesize":    settings.MaxFileSize,
-		"customlogo":     settings.CustomLogo,
+		"accentcolor":      settings.AccentColor,
+		"chunksizebytes":   settings.ChunkSizeBytes,
+		"chunkthreshold":   settings.ChunkThreshold,
+		"maxfilesize":      settings.MaxFileSize,
+		"customlogo":       settings.CustomLogo,
 	})
 	return err
 }

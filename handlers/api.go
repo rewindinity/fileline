@@ -15,13 +15,11 @@ import (
 	"fileline/models"
 )
 
-/*
-*
-
-	HandleStats returns aggregate file metrics for the authenticated dashboard.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleStats returns aggregate file metrics for the authenticated dashboard.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleStats(w http.ResponseWriter, r *http.Request) {
 	if !auth.IsLoggedIn(r) {
@@ -41,12 +39,10 @@ func HandleStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/*
-*
-
-	formatSizeAPI renders byte counts for API/UI display in consistent units.
-	@param size - The size in bytes.
-	@returns string - The resulting string value.
+/**
+  formatSizeAPI renders byte counts for API/UI display in consistent units.
+  @param size - The size in bytes.
+  @returns string - The resulting string value.
 */
 func formatSizeAPI(size int64) string {
 	const (
@@ -69,13 +65,11 @@ func formatSizeAPI(size int64) string {
 	}
 }
 
-/*
-*
-
-	HandleAPISettings returns effective application settings for authenticated clients.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleAPISettings returns effective application settings for authenticated clients.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleAPISettings(w http.ResponseWriter, r *http.Request) {
 	if !auth.IsLoggedIn(r) {
@@ -95,13 +89,11 @@ func HandleAPISettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/*
-*
-
-	HandleChunkInit creates server-side tracking state for a chunked upload session.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleChunkInit creates server-side tracking state for a chunked upload session.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 	if !auth.IsLoggedIn(r) {
@@ -113,6 +105,7 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.AllowUploadRequest(r) {
+		Debugf("HandleChunkInit rejected by upload limiter")
 		http.Error(w, "Too many upload requests", http.StatusTooManyRequests)
 		return
 	}
@@ -124,16 +117,19 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		CustomLink  string `json:"custom_link"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Debugf("HandleChunkInit invalid request payload: %v", err)
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 	// Enforce configured upload limits before allocating temp storage.
 	maxFileSize := database.GetSettings().MaxFileSize
 	if maxFileSize > 0 && req.TotalSize > maxFileSize {
+		Debugf("HandleChunkInit rejected oversized file=%q size=%d max=%d", req.FileName, req.TotalSize, maxFileSize)
 		http.Error(w, "File too large", http.StatusBadRequest)
 		return
 	}
 	if len(database.GetChunkUploads()) >= auth.MaxConcurrentChunkUploads {
+		Debugf("HandleChunkInit rejected due to concurrent upload limit")
 		http.Error(w, "Too many concurrent chunk uploads", http.StatusTooManyRequests)
 		return
 	}
@@ -146,6 +142,7 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		link = GenerateID()
 	}
 	if database.LinkExists(link) {
+		Debugf("HandleChunkInit rejected duplicate link=%q", link)
 		http.Error(w, "Link already exists", http.StatusBadRequest)
 		return
 	}
@@ -161,6 +158,7 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   time.Now().Format(time.RFC3339),
 	}
 	database.AddChunkUpload(upload)
+	Debugf("HandleChunkInit created upload id=%s file=%q chunks=%d size=%d", uploadID, req.FileName, req.TotalChunks, req.TotalSize)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"upload_id": uploadID,
@@ -168,13 +166,11 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/*
-*
-
-	HandleChunkUpload persists a single chunk and marks it received in upload state.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleChunkUpload persists a single chunk and marks it received in upload state.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleChunkUpload(w http.ResponseWriter, r *http.Request) {
 	if !auth.IsLoggedIn(r) {
@@ -186,6 +182,7 @@ func HandleChunkUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.AllowUploadRequest(r) {
+		Debugf("HandleChunkUpload rejected by upload limiter")
 		http.Error(w, "Too many upload requests", http.StatusTooManyRequests)
 		return
 	}
@@ -195,12 +192,14 @@ func HandleChunkUpload(w http.ResponseWriter, r *http.Request) {
 	chunkIndex, _ := strconv.Atoi(r.FormValue("chunk_index"))
 	file, _, err := r.FormFile("chunk")
 	if err != nil {
+		Debugf("HandleChunkUpload failed reading chunk for upload=%q chunk=%d: %v", uploadID, chunkIndex, err)
 		http.Error(w, "Failed to read chunk", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 	upload := database.GetChunkUpload(uploadID)
 	if upload == nil {
+		Debugf("HandleChunkUpload upload not found id=%q", uploadID)
 		http.Error(w, "Upload not found", http.StatusNotFound)
 		return
 	}
@@ -208,23 +207,23 @@ func HandleChunkUpload(w http.ResponseWriter, r *http.Request) {
 	chunkPath := filepath.Join(upload.TempDir, fmt.Sprintf("%d", chunkIndex))
 	dst, err := os.Create(chunkPath)
 	if err != nil {
+		Debugf("HandleChunkUpload failed saving chunk for upload=%q chunk=%d: %v", uploadID, chunkIndex, err)
 		http.Error(w, "Failed to save chunk", http.StatusInternalServerError)
 		return
 	}
 	io.Copy(dst, file)
 	dst.Close()
 	database.UpdateChunkReceived(uploadID, chunkIndex)
+	Debugf("HandleChunkUpload stored chunk upload=%q chunk=%d", uploadID, chunkIndex)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-/*
-*
-
-	HandleChunkComplete verifies chunk completeness, assembles the final file,.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleChunkComplete verifies chunk completeness, assembles the final file,.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 	if !auth.IsLoggedIn(r) {
@@ -236,6 +235,7 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !auth.AllowUploadRequest(r) {
+		Debugf("HandleChunkComplete rejected by upload limiter")
 		http.Error(w, "Too many upload requests", http.StatusTooManyRequests)
 		return
 	}
@@ -243,17 +243,20 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 		UploadID string `json:"upload_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		Debugf("HandleChunkComplete invalid request payload: %v", err)
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 	upload := database.GetChunkUpload(req.UploadID)
 	if upload == nil {
+		Debugf("HandleChunkComplete upload not found id=%q", req.UploadID)
 		http.Error(w, "Upload not found", http.StatusNotFound)
 		return
 	}
 	// Fail fast when any chunk is missing to prevent partial file publication.
 	for i, received := range upload.Received {
 		if !received {
+			Debugf("HandleChunkComplete missing chunk upload=%q chunk=%d", req.UploadID, i)
 			http.Error(w, fmt.Sprintf("Missing chunk %d", i), http.StatusBadRequest)
 			return
 		}
@@ -264,6 +267,7 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 	finalPath := filepath.Join(models.UploadsDir, storedName)
 	finalFile, err := os.Create(finalPath)
 	if err != nil {
+		Debugf("HandleChunkComplete failed creating file for upload=%q: %v", req.UploadID, err)
 		http.Error(w, "Failed to create file", http.StatusInternalServerError)
 		return
 	}
@@ -287,6 +291,7 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	database.AddFile(entry)
 	database.RemoveChunkUpload(req.UploadID)
+	Debugf("HandleChunkComplete finalized upload=%q file_id=%s link=%q size=%d", req.UploadID, fileID, entry.Link, totalSize)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,

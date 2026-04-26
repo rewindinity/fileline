@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"embed"
 	"encoding/base64"
+	"flag"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -28,12 +30,10 @@ var templatesFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
-/*
-*
-
-	formatSize converts a byte count into a human-friendly unit string.
-	@param bytes - The size in bytes.
-	@returns string - The resulting string value.
+/**
+  formatSize converts a byte count into a human-friendly unit string.
+  @param bytes - The size in bytes.
+  @returns string - The resulting string value.
 */
 func formatSize(bytes int64) string {
 	const unit = 1024
@@ -48,12 +48,10 @@ func formatSize(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
-/*
-*
-
-	formatDate parses RFC3339 timestamps and renders a stable UI date/time format.
-	@param dateStr - The date string to format.
-	@returns string - The resulting string value.
+/**
+  formatDate parses RFC3339 timestamps and renders a stable UI date/time format.
+  @param dateStr - The date string to format.
+  @returns string - The resulting string value.
 */
 func formatDate(dateStr string) string {
 	t, err := time.Parse(time.RFC3339, dateStr)
@@ -63,13 +61,11 @@ func formatDate(dateStr string) string {
 	return t.Format("2006/01/02 15:04")
 }
 
-/*
-*
-
-	truncate applies rune-safe truncation for UI previews.
-	@param s - The source string.
-	@param max - The maximum allowed length.
-	@returns string - The resulting string value.
+/**
+  truncate applies rune-safe truncation for UI previews.
+  @param s - The source string.
+  @param max - The maximum allowed length.
+  @returns string - The resulting string value.
 */
 func truncate(s string, max int) string {
 	if max <= 0 {
@@ -153,14 +149,77 @@ func applySecurityHeaders(w http.ResponseWriter) {
 	)
 }
 
-/*
-*
+type statusTrackingResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
 
-	main initializes shared services, registers routes, and starts the web server.
-	@param none - This function does not accept parameters.
-	@returns void
+func (w *statusTrackingResponseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusTrackingResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func parseDebugFlag() bool {
+	debugEnabled := flag.Bool("debug", false, "Enable debug logging")
+	flag.Parse()
+	return *debugEnabled
+}
+
+func withPanicRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("PANIC: %s %s: %v\n%s", r.Method, r.URL.Path, recovered, string(debug.Stack()))
+				handlers.RenderHTTPError(w, r, http.StatusInternalServerError, "Unexpected server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func withRequestLogging(next http.Handler, debugEnabled bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		recorder := &statusTrackingResponseWriter{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		duration := time.Since(startedAt).Round(time.Millisecond)
+		if status == http.StatusNotFound {
+			return
+		}
+		if status >= http.StatusBadRequest {
+			log.Printf("HTTP %d %s %s (%s)", status, r.Method, r.URL.Path, duration)
+			return
+		}
+		if debugEnabled {
+			handlers.Debugf("%d %s %s (%s)", status, r.Method, r.URL.Path, duration)
+		}
+	})
+}
+
+/**
+  main initializes shared services, registers routes, and starts the web server.
+  @param none - This function does not accept parameters.
+  @returns void
 */
 func main() {
+	debugEnabled := parseDebugFlag()
+	auth.SetDebug(debugEnabled)
+	database.SetDebug(debugEnabled)
+	handlers.SetDebug(debugEnabled)
+	if debugEnabled {
+		log.Printf("Debug mode enabled")
+	}
 	// Load translations
 	if err := i18n.Load(); err != nil {
 		log.Printf("Warning: Failed to load translations: %v", err)
@@ -263,30 +322,16 @@ func main() {
 			_ = database.IsConfigured()
 		}
 		if database.HasConnectionError() {
-			w.WriteHeader(http.StatusInternalServerError)
-			err := handlers.Templates.ExecuteTemplate(w, "500.html", map[string]interface{}{
-				"Message": "Failed to connect to database",
-				"Details": database.GetConnectionError(),
-			})
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			}
+			handlers.RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to connect to database")
 			return
 		}
 		if auth.IsIPBanned(r, database.Config.IsBehindProxy) {
-			w.WriteHeader(http.StatusForbidden)
-			err := handlers.Templates.ExecuteTemplate(w, "403.html", map[string]interface{}{
-				"T":            handlers.T(),
-				"Settings":     database.GetSettings(),
-				"ErrorMessage": "Too many failed attempts. Access temporarily denied.",
-			})
-			if err != nil {
-				http.Error(w, "Forbidden", http.StatusForbidden)
-			}
+			handlers.RenderHTTPError(w, r, http.StatusForbidden, "Too many failed attempts. Access temporarily denied.")
 			return
 		}
 		mux.ServeHTTP(w, r)
 	})
+	serverHandler := withRequestLogging(withPanicRecovery(protectedHandler), debugEnabled)
 	addr := fmt.Sprintf(":%d", database.Config.Port)
 	if database.Config.SSLEnabled && database.Config.CertBase64 != "" && database.Config.KeyBase64 != "" {
 		// Decode certificates
@@ -304,7 +349,7 @@ func main() {
 		}
 		server := &http.Server{
 			Addr:     addr,
-			Handler:  protectedHandler,
+			Handler:  serverHandler,
 			ErrorLog: newHTTPErrorLogger(),
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{cert},
@@ -316,7 +361,7 @@ func main() {
 	} else {
 		server := &http.Server{
 			Addr:     addr,
-			Handler:  protectedHandler,
+			Handler:  serverHandler,
 			ErrorLog: newHTTPErrorLogger(),
 		}
 		log.Printf("Starting HTTP server on %s", addr)

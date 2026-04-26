@@ -18,34 +18,25 @@ import (
 
 var Templates *template.Template
 
-/*
-*
-
-	CheckDatabaseConnection renders a 500 page when backend connectivity is unavailable.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns bool - True when check database connection is satisfied; otherwise false.
+/**
+  CheckDatabaseConnection renders a 500 page when backend connectivity is unavailable.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns bool - True when check database connection is satisfied; otherwise false.
 */
 func CheckDatabaseConnection(w http.ResponseWriter, r *http.Request) bool {
 	if database.HasConnectionError() {
-		data := map[string]interface{}{
-			"Message": "Failed to connect to database",
-			"Details": database.GetConnectionError(),
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		Templates.ExecuteTemplate(w, "500.html", data)
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to connect to database")
 		return false
 	}
 	return true
 }
 
-/*
-*
-
-	HandleSetup performs first-run provisioning: account creation, backend selection,.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleSetup performs first-run provisioning: account creation, backend selection,.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleSetup(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -180,13 +171,11 @@ func HandleSetup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/*
-*
-
-	HandleLogin validates credentials and establishes a new session (optionally pending 2FA).
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleLogin validates credentials and establishes a new session (optionally pending 2FA).
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -205,10 +194,12 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		username := strings.TrimSpace(r.FormValue("username"))
 		password := r.FormValue("password")
+		Debugf("Login attempt for user=%q", username)
 		user := database.GetUser()
 		loginT := trans["login"].(map[string]interface{})
 		// Use the same generic message for unknown user and wrong password.
 		if user == nil || user.Username != username {
+			Debugf("Failed login for user=%q (unknown user or username mismatch)", username)
 			auth.RecordFailedAttempt(r, database.Config.IsBehindProxy)
 			Templates.ExecuteTemplate(w, "login.html", map[string]interface{}{
 				"Error":    loginT["error_invalid"],
@@ -218,6 +209,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+			Debugf("Failed login for user=%q (invalid password)", username)
 			auth.RecordFailedAttempt(r, database.Config.IsBehindProxy)
 			Templates.ExecuteTemplate(w, "login.html", map[string]interface{}{
 				"Error":    loginT["error_invalid"],
@@ -229,6 +221,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		// Reset anti-bruteforce counters after successful primary-factor auth.
 		auth.ResetAttempts(r, database.Config.IsBehindProxy)
 		needs2FA := user.TwoFAEnabled && user.TwoFASecret != ""
+		Debugf("Successful login for user=%q (2fa_required=%t)", username, needs2FA)
 		sessionID := auth.Store.Create(username, needs2FA)
 		auth.SetSessionCookie(w, sessionID)
 		if needs2FA {
@@ -241,17 +234,16 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "login.html", map[string]interface{}{"T": trans, "Settings": settings})
 }
 
-/*
-*
-
-	Handle2FAVerify completes login for sessions waiting on TOTP verification.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  Handle2FAVerify completes login for sessions waiting on TOTP verification.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func Handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 	sessionID := auth.GetSessionCookie(r)
 	if sessionID == "" || !auth.Store.Needs2FA(sessionID) {
+		Debugf("2FA verify redirect (missing or completed 2FA session)")
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
@@ -266,11 +258,13 @@ func Handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 			// Successful 2FA - reset attempts
 			auth.ResetAttempts(r, database.Config.IsBehindProxy)
 			auth.Store.Complete2FA(sessionID)
+			Debugf("2FA verification successful for user=%q", user.Username)
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 		// Keep error text generic while preserving localized copy when available.
 		auth.RecordFailedAttempt(r, database.Config.IsBehindProxy)
+		Debugf("2FA verification failed for user=%q", user.Username)
 		errorInvalid := "Invalid verification code"
 		if twoFAT != nil {
 			if msg, ok := twoFAT["error_invalid"]; ok {
@@ -289,13 +283,11 @@ func Handle2FAVerify(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "2fa_verify.html", map[string]interface{}{"T": trans, "Settings": settings})
 }
 
-/*
-*
-
-	HandleResetPassword validates a backup code and rotates the password hash.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleResetPassword validates a backup code and rotates the password hash.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -380,13 +372,11 @@ func HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-/*
-*
-
-	HandleLogout clears server-side and browser-side session state.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleLogout clears server-side and browser-side session state.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleLogout(w http.ResponseWriter, r *http.Request) {
 	sessionID := auth.GetSessionCookie(r)

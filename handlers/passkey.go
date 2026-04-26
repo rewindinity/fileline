@@ -25,19 +25,16 @@ var (
 	webAuthnRPID        string
 	webAuthnRPOrigin    string
 	webAuthnDisplayName = "FileLine"
-
 	passkeySessionMu     sync.RWMutex
 	passkeyAuthSessionMu sync.RWMutex
 )
 
-/*
-*
-
-	InitWebAuthn configures the relying-party context used for passkey operations.
-	@param rpDisplayName - The relying party display name.
-	@param rpID - The relying party identifier.
-	@param rpOrigin - The relying party origin URL.
-	@returns error - An error if the operation fails.
+/**
+  InitWebAuthn configures the relying-party context used for passkey operations.
+  @param rpDisplayName - The relying party display name.
+  @param rpID - The relying party identifier.
+  @param rpOrigin - The relying party origin URL.
+  @returns error - An error if the operation fails.
 */
 func InitWebAuthn(rpDisplayName, rpID, rpOrigin string) error {
 	webAuthnMu.Lock()
@@ -55,6 +52,9 @@ func InitWebAuthn(rpDisplayName, rpID, rpOrigin string) error {
 	if err == nil {
 		webAuthnRPID = rpID
 		webAuthnRPOrigin = rpOrigin
+		Debugf("WebAuthn initialized rp_id=%q origin=%q", rpID, rpOrigin)
+	} else {
+		Debugf("WebAuthn initialization failed: %v", err)
 	}
 	return err
 }
@@ -129,17 +129,20 @@ func ensureWebAuthnForRequest(r *http.Request) error {
 	if webAuthn != nil && webAuthnRPID == rpID && webAuthnRPOrigin == rpOrigin {
 		return nil
 	}
+	Debugf("Reinitializing WebAuthn for request host=%q rp_id=%q origin=%q", r.Host, rpID, rpOrigin)
 	wa, err := webauthn.New(&webauthn.Config{
 		RPDisplayName: webAuthnDisplayName,
 		RPID:          rpID,
 		RPOrigins:     []string{rpOrigin},
 	})
 	if err != nil {
+		Debugf("WebAuthn request-specific initialization failed: %v", err)
 		return err
 	}
 	webAuthn = wa
 	webAuthnRPID = rpID
 	webAuthnRPOrigin = rpOrigin
+	Debugf("WebAuthn request-specific initialization succeeded rp_id=%q origin=%q", rpID, rpOrigin)
 	return nil
 }
 
@@ -148,56 +151,46 @@ type WebAuthnUser struct {
 	user *models.User
 }
 
-/*
-*
-
-	WebAuthnID returns a stable user handle for credential binding.
-	@param none - This function does not accept parameters.
-	@returns []byte - The resulting collection.
+/**
+  WebAuthnID returns a stable user handle for credential binding.
+  @param none - This function does not accept parameters.
+  @returns []byte - The resulting collection.
 */
 func (u WebAuthnUser) WebAuthnID() []byte {
 	return []byte(u.user.Username)
 }
 
-/*
-*
-
-	WebAuthnName returns the account name used by authenticators.
-	@param none - This function does not accept parameters.
-	@returns string - The resulting string value.
+/**
+  WebAuthnName returns the account name used by authenticators.
+  @param none - This function does not accept parameters.
+  @returns string - The resulting string value.
 */
 func (u WebAuthnUser) WebAuthnName() string {
 	return u.user.Username
 }
 
-/*
-*
-
-	WebAuthnDisplayName returns a user-facing display label.
-	@param none - This function does not accept parameters.
-	@returns string - The resulting string value.
+/**
+  WebAuthnDisplayName returns a user-facing display label.
+  @param none - This function does not accept parameters.
+  @returns string - The resulting string value.
 */
 func (u WebAuthnUser) WebAuthnDisplayName() string {
 	return u.user.Username
 }
 
-/*
-*
-
-	WebAuthnIcon is unused by this application.
-	@param none - This function does not accept parameters.
-	@returns string - The resulting string value.
+/**
+  WebAuthnIcon is unused by this application.
+  @param none - This function does not accept parameters.
+  @returns string - The resulting string value.
 */
 func (u WebAuthnUser) WebAuthnIcon() string {
 	return ""
 }
 
-/*
-*
-
-	WebAuthnCredentials maps persisted passkeys into library credential structs.
-	@param none - This function does not accept parameters.
-	@returns []webauthn.Credential - The resulting collection.
+/**
+  WebAuthnCredentials maps persisted passkeys into library credential structs.
+  @param none - This function does not accept parameters.
+  @returns []webauthn.Credential - The resulting collection.
 */
 func (u WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 	credentials := make([]webauthn.Credential, len(u.user.Passkeys))
@@ -219,15 +212,14 @@ func (u WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
 	return credentials
 }
 
-/*
-*
-
-	HandlePasskeyRegistrationBegin starts the WebAuthn registration ceremony.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyRegistrationBegin starts the WebAuthn registration ceremony.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyRegistrationBegin(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey registration begin requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -238,23 +230,27 @@ func HandlePasskeyRegistrationBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureWebAuthnForRequest(r); err != nil {
+		Debugf("Passkey registration begin failed: WebAuthn config error: %v", err)
 		http.Error(w, "WebAuthn configuration error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	user := database.GetUser()
 	if user == nil {
+		Debugf("Passkey registration begin failed: user not found")
 		http.Error(w, "User not found", http.StatusInternalServerError)
 		return
 	}
 	webAuthnUser := WebAuthnUser{user: user}
 	options, sessionData, err := webAuthn.BeginRegistration(webAuthnUser)
 	if err != nil {
+		Debugf("Passkey registration begin failed during ceremony init: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// Bind WebAuthn ceremony state to the authenticated browser session.
 	sessionID := auth.GetSessionCookie(r)
 	if sessionID == "" {
+		Debugf("Passkey registration begin failed: missing session cookie")
 		http.Error(w, "Invalid session", http.StatusUnauthorized)
 		return
 	}
@@ -262,6 +258,7 @@ func HandlePasskeyRegistrationBegin(w http.ResponseWriter, r *http.Request) {
 	passkeySessionMu.Lock()
 	passkeySessionStore[sessionID] = sessionData
 	passkeySessionMu.Unlock()
+	Debugf("Passkey registration ceremony started for user=%q", user.Username)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(options)
 }
@@ -270,15 +267,14 @@ func HandlePasskeyRegistrationBegin(w http.ResponseWriter, r *http.Request) {
 // Sessions are process-local and intentionally short-lived.
 var passkeySessionStore = make(map[string]*webauthn.SessionData)
 
-/*
-*
-
-	HandlePasskeyRegistrationFinish verifies attestation and persists the new credential.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyRegistrationFinish verifies attestation and persists the new credential.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyRegistrationFinish(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey registration finish requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -289,11 +285,13 @@ func HandlePasskeyRegistrationFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureWebAuthnForRequest(r); err != nil {
+		Debugf("Passkey registration finish failed: WebAuthn config error: %v", err)
 		http.Error(w, "WebAuthn configuration error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	user := database.GetUser()
 	if user == nil {
+		Debugf("Passkey registration finish failed: user not found")
 		http.Error(w, "User not found", http.StatusInternalServerError)
 		return
 	}
@@ -302,6 +300,7 @@ func HandlePasskeyRegistrationFinish(w http.ResponseWriter, r *http.Request) {
 	sessionData, ok := passkeySessionStore[sessionID]
 	passkeySessionMu.RUnlock()
 	if !ok {
+		Debugf("Passkey registration finish failed: ceremony session not found")
 		http.Error(w, "Session not found", http.StatusBadRequest)
 		return
 	}
@@ -313,6 +312,7 @@ func HandlePasskeyRegistrationFinish(w http.ResponseWriter, r *http.Request) {
 	webAuthnUser := WebAuthnUser{user: user}
 	credential, err := webAuthn.FinishRegistration(webAuthnUser, *sessionData, r)
 	if err != nil {
+		Debugf("Passkey registration finish failed during verification: %v", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -332,19 +332,19 @@ func HandlePasskeyRegistrationFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	user.Passkeys = append(user.Passkeys, newPasskey)
 	database.SetUser(user)
+	Debugf("Passkey registered for user=%q total_passkeys=%d", user.Username, len(user.Passkeys))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"success": "true"})
 }
 
-/*
-*
-
-	HandlePasskeyAuthBegin starts the WebAuthn authentication ceremony.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyAuthBegin starts the WebAuthn authentication ceremony.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyAuthBegin(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey auth begin requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -352,17 +352,20 @@ func HandlePasskeyAuthBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureWebAuthnForRequest(r); err != nil {
+		Debugf("Passkey auth begin failed: WebAuthn config error: %v", err)
 		http.Error(w, "WebAuthn configuration error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	user := database.GetUser()
 	if user == nil || len(user.Passkeys) == 0 {
+		Debugf("Passkey auth begin failed: no registered passkeys")
 		http.Error(w, "No passkeys registered", http.StatusBadRequest)
 		return
 	}
 	webAuthnUser := WebAuthnUser{user: user}
 	options, sessionData, err := webAuthn.BeginLogin(webAuthnUser)
 	if err != nil {
+		Debugf("Passkey auth begin failed during ceremony init: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -371,6 +374,7 @@ func HandlePasskeyAuthBegin(w http.ResponseWriter, r *http.Request) {
 	passkeyAuthSessionMu.Lock()
 	passkeyAuthSessionStore[tempSessionID] = sessionData
 	passkeyAuthSessionMu.Unlock()
+	Debugf("Passkey auth ceremony started for user=%q", user.Username)
 	// Return both options and session ID
 	response := map[string]interface{}{
 		"options":   options,
@@ -384,15 +388,14 @@ func HandlePasskeyAuthBegin(w http.ResponseWriter, r *http.Request) {
 // Sessions are process-local and intentionally short-lived.
 var passkeyAuthSessionStore = make(map[string]*webauthn.SessionData)
 
-/*
-*
-
-	HandlePasskeyAuthFinish verifies assertion data and creates an application session.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyAuthFinish verifies assertion data and creates an application session.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey auth finish requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -400,6 +403,7 @@ func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := ensureWebAuthnForRequest(r); err != nil {
+		Debugf("Passkey auth finish failed: WebAuthn config error: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": "WebAuthn configuration error: " + err.Error()})
@@ -408,6 +412,7 @@ func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
 	// Get session ID from request
 	sessionIDParam := r.URL.Query().Get("sessionId")
 	if sessionIDParam == "" {
+		Debugf("Passkey auth finish failed: missing sessionId")
 		http.Error(w, `{"error":"Session ID required"}`, http.StatusBadRequest)
 		return
 	}
@@ -415,6 +420,7 @@ func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
 	sessionData, ok := passkeyAuthSessionStore[sessionIDParam]
 	passkeyAuthSessionMu.RUnlock()
 	if !ok {
+		Debugf("Passkey auth finish failed: ceremony session not found")
 		http.Error(w, `{"error":"Session not found"}`, http.StatusBadRequest)
 		return
 	}
@@ -425,12 +431,14 @@ func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
 	}()
 	user := database.GetUser()
 	if user == nil {
+		Debugf("Passkey auth finish failed: user not found")
 		http.Error(w, `{"error":"User not found"}`, http.StatusInternalServerError)
 		return
 	}
 	webAuthnUser := WebAuthnUser{user: user}
 	credential, err := webAuthn.FinishLogin(webAuthnUser, *sessionData, r)
 	if err != nil {
+		Debugf("Passkey auth finish failed during verification: %v", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -449,19 +457,19 @@ func HandlePasskeyAuthFinish(w http.ResponseWriter, r *http.Request) {
 	// Create session
 	sessionID := auth.Store.Create(user.Username, false)
 	auth.SetSessionCookie(w, sessionID)
+	Debugf("Passkey auth successful for user=%q", user.Username)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"success": "true", "redirect": "/"})
 }
 
-/*
-*
-
-	HandlePasskeyDelete removes one registered passkey from the user account.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyDelete removes one registered passkey from the user account.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey delete requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -472,22 +480,26 @@ func HandlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
+		Debugf("Passkey delete failed: method not allowed")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	passkeyID := r.FormValue("id")
 	if passkeyID == "" {
+		Debugf("Passkey delete failed: missing passkey id")
 		http.Error(w, "Passkey ID required", http.StatusBadRequest)
 		return
 	}
 	// Decode base64url ID
 	passkeyIDBytes, err := base64.RawURLEncoding.DecodeString(passkeyID)
 	if err != nil {
+		Debugf("Passkey delete failed: invalid passkey id encoding")
 		http.Error(w, "Invalid passkey ID", http.StatusBadRequest)
 		return
 	}
 	user := database.GetUser()
 	if user == nil {
+		Debugf("Passkey delete failed: user not found")
 		http.Error(w, "User not found", http.StatusInternalServerError)
 		return
 	}
@@ -502,24 +514,25 @@ func HandlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
+		Debugf("Passkey delete failed: passkey not found for user=%q", user.Username)
 		http.Error(w, "Passkey not found", http.StatusNotFound)
 		return
 	}
 	user.Passkeys = newPasskeys
 	database.SetUser(user)
+	Debugf("Passkey deleted for user=%q total_passkeys=%d", user.Username, len(user.Passkeys))
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"success": "true"})
 }
 
-/*
-*
-
-	HandlePasskeyList returns passkey metadata safe for UI display.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasskeyList returns passkey metadata safe for UI display.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasskeyList(w http.ResponseWriter, r *http.Request) {
+	Debugf("Passkey list requested")
 	if !CheckDatabaseConnection(w, r) {
 		return
 	}
@@ -531,6 +544,7 @@ func HandlePasskeyList(w http.ResponseWriter, r *http.Request) {
 	}
 	user := database.GetUser()
 	if user == nil {
+		Debugf("Passkey list failed: user not found")
 		http.Error(w, "User not found", http.StatusInternalServerError)
 		return
 	}
@@ -548,6 +562,7 @@ func HandlePasskeyList(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: pk.CreatedAt,
 		}
 	}
+	Debugf("Passkey list returned %d entries for user=%q", len(passkeys), user.Username)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(passkeys)
 }

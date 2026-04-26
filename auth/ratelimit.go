@@ -100,6 +100,7 @@ func RecordFailedAttempt(r *http.Request, isBehindProxy bool) bool {
 	now := time.Now()
 	ban, exists := limiter.attempts[ip]
 	if !exists {
+		Debugf("First failed auth attempt from ip=%s", ip)
 		limiter.attempts[ip] = &IPBan{
 			IP:        ip,
 			Attempts:  1,
@@ -109,6 +110,7 @@ func RecordFailedAttempt(r *http.Request, isBehindProxy bool) bool {
 	}
 	// Reset if ban has expired
 	if !ban.ExpiresAt.IsZero() && now.After(ban.ExpiresAt) {
+		Debugf("Failed-attempt window reset for ip=%s", ip)
 		limiter.attempts[ip] = &IPBan{
 			IP:        ip,
 			Attempts:  1,
@@ -118,10 +120,12 @@ func RecordFailedAttempt(r *http.Request, isBehindProxy bool) bool {
 	}
 	// Increment attempts
 	ban.Attempts++
+	Debugf("Failed auth attempt from ip=%s (attempts=%d)", ip, ban.Attempts)
 	// Ban if threshold reached
 	if ban.Attempts >= MaxAttempts {
 		ban.BannedAt = now
 		ban.ExpiresAt = now.Add(BanDuration)
+		Debugf("IP banned due to auth failures ip=%s until=%s", ip, ban.ExpiresAt.Format(time.RFC3339))
 		return true
 	}
 
@@ -138,6 +142,9 @@ func ResetAttempts(r *http.Request, isBehindProxy bool) {
 	ip := GetClientIP(r, isBehindProxy)
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
+	if _, exists := limiter.attempts[ip]; exists {
+		Debugf("Reset failed-attempt counters for ip=%s", ip)
+	}
 	delete(limiter.attempts, ip)
 }
 
@@ -150,10 +157,15 @@ func CleanupExpiredBans() {
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
 	now := time.Now()
+	removed := 0
 	for ip, ban := range limiter.attempts {
 		if now.After(ban.ExpiresAt) {
 			delete(limiter.attempts, ip)
+			removed++
 		}
+	}
+	if removed > 0 {
+		Debugf("Cleaned up %d expired IP ban entries", removed)
 	}
 }
 
@@ -163,6 +175,7 @@ func CleanupExpiredBans() {
   @returns void
 */
 func StartCleanupRoutine() {
+	Debugf("Starting IP ban cleanup routine")
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()

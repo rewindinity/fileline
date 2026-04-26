@@ -26,3 +26,5 @@ release/
 tmp.md
 uploads/
 chunks/
+database.sqlite
+config.json

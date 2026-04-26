@@ -17,12 +17,10 @@ import (
 	"fileline/models"
 )
 
-/*
-*
-
-	GenerateID creates a compact random token for links, upload IDs, and file IDs.
-	@param none - This function does not accept parameters.
-	@returns string - The identifier string.
+/**
+  GenerateID creates a compact random token for links, upload IDs, and file IDs.
+  @param none - This function does not accept parameters.
+  @returns string - The identifier string.
 */
 func GenerateID() string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -35,12 +33,10 @@ func GenerateID() string {
 	return string(b)
 }
 
-/*
-*
-
-	GenerateBackupCode creates a human-transcribable recovery code.
-	@param none - This function does not accept parameters.
-	@returns string - The resulting string value.
+/**
+  GenerateBackupCode creates a human-transcribable recovery code.
+  @param none - This function does not accept parameters.
+  @returns string - The resulting string value.
 */
 func GenerateBackupCode() string {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -54,12 +50,10 @@ func GenerateBackupCode() string {
 	return code[0:4] + "-" + code[4:8] + "-" + code[8:12] + "-" + code[12:16]
 }
 
-/*
-*
-
-	ValidateLink enforces the public link character contract.
-	@param link - The public link value.
-	@returns bool - True when validate link is satisfied; otherwise false.
+/**
+  ValidateLink enforces the public link character contract.
+  @param link - The public link value.
+  @returns bool - True when validate link is satisfied; otherwise false.
 */
 func ValidateLink(link string) bool {
 	for _, c := range link {
@@ -101,17 +95,15 @@ func shouldServeAsAttachment(ext string, contentType string) bool {
 	return false
 }
 
-/*
-*
-
-	HandleHome renders the dashboard with the most recent files and app settings.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleHome renders the dashboard with the most recent files and app settings.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		RenderHTTPError(w, r, http.StatusNotFound, "The page you requested was not found.")
 		return
 	}
 
@@ -152,13 +144,11 @@ func HandleHome(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "home.html", data)
 }
 
-/*
-*
-
-	HandleUpload processes standard (non-chunked) multipart uploads.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleUpload processes standard (non-chunked) multipart uploads.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -178,8 +168,10 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	Debugf("HandleUpload request received")
 	if !auth.AllowUploadRequest(r) {
-		http.Error(w, "Too many upload requests", http.StatusTooManyRequests)
+		Debugf("HandleUpload rejected by upload limiter")
+		RenderHTTPError(w, r, http.StatusTooManyRequests, "Too many upload requests")
 		return
 	}
 
@@ -191,14 +183,15 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "Failed to read file", http.StatusBadRequest)
+		RenderHTTPError(w, r, http.StatusBadRequest, "Failed to read file")
 		return
 	}
 	defer file.Close()
 
 	// Validate file size
 	if maxFileSize > 0 && header.Size > maxFileSize {
-		http.Error(w, "File too large", http.StatusBadRequest)
+		Debugf("HandleUpload rejected oversized file=%q size=%d max=%d", header.Filename, header.Size, maxFileSize)
+		RenderHTTPError(w, r, http.StatusBadRequest, "File too large")
 		return
 	}
 
@@ -209,12 +202,13 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if link == "" {
 		link = GenerateID()
 	} else if !ValidateLink(link) {
-		http.Error(w, "Custom link can only contain A-Za-z0-9", http.StatusBadRequest)
+		RenderHTTPError(w, r, http.StatusBadRequest, "Custom link can only contain A-Za-z0-9")
 		return
 	}
 
 	if database.LinkExists(link) {
-		http.Error(w, "Link already exists", http.StatusBadRequest)
+		Debugf("HandleUpload rejected duplicate link=%q", link)
+		RenderHTTPError(w, r, http.StatusBadRequest, "Link already exists")
 		return
 	}
 
@@ -224,14 +218,14 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	dst, err := os.Create(filepath.Join(models.UploadsDir, storedName))
 	if err != nil {
-		http.Error(w, "Failed to save file", http.StatusInternalServerError)
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to save file")
 		return
 	}
 	defer dst.Close()
 
 	size, err := io.Copy(dst, file)
 	if err != nil {
-		http.Error(w, "Failed to save file", http.StatusInternalServerError)
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to save file")
 		return
 	}
 
@@ -245,16 +239,15 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	database.AddFile(entry)
+	Debugf("HandleUpload stored file id=%s name=%q link=%q private=%t size=%d", fileID, header.Filename, link, isPrivate, size)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleFiles renders the full file catalog page for authenticated users.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleFiles renders the full file catalog page for authenticated users.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleFiles(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -278,13 +271,11 @@ func HandleFiles(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "files.html", data)
 }
 
-/*
-*
-
-	HandleFileEdit validates and persists mutable metadata for one file.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleFileEdit validates and persists mutable metadata for one file.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleFileEdit(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -298,7 +289,7 @@ func HandleFileEdit(w http.ResponseWriter, r *http.Request) {
 	settings := database.GetSettings()
 	file := database.GetFileByID(fileID)
 	if file == nil {
-		http.NotFound(w, r)
+		RenderHTTPError(w, r, http.StatusNotFound, "File not found")
 		return
 	}
 	editT := trans["edit"].(map[string]interface{})
@@ -400,13 +391,11 @@ func HandleFileEdit(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "edit.html", data)
 }
 
-/*
-*
-
-	HandleFileDelete removes both file metadata and stored file content.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleFileDelete removes both file metadata and stored file content.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleFileDelete(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -416,43 +405,44 @@ func HandleFileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		RenderHTTPError(w, r, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	if !auth.ValidateCSRFRequest(r, database.Config.IsBehindProxy) {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		Debugf("HandleFileDelete rejected due to CSRF validation failure")
+		RenderHTTPError(w, r, http.StatusForbidden, "Forbidden")
 		return
 	}
 	fileID := strings.TrimPrefix(r.URL.Path, "/file/delete/")
 	file := database.GetFileByID(fileID)
 	if file == nil {
-		http.NotFound(w, r)
+		RenderHTTPError(w, r, http.StatusNotFound, "File not found")
 		return
 	}
 	ext := filepath.Ext(file.Name)
 	storedName := file.ID + ext
 	if !database.DeleteFile(fileID) {
-		http.NotFound(w, r)
+		RenderHTTPError(w, r, http.StatusNotFound, "File not found")
 		return
 	}
 	database.SaveDatabase()
 	os.Remove(filepath.Join(models.UploadsDir, storedName))
+	Debugf("HandleFileDelete removed file id=%s stored_name=%q", fileID, storedName)
 	http.Redirect(w, r, "/files", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleFileAccess serves files by public link while preserving private-file access rules.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleFileAccess serves files by public link while preserving private-file access rules.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleFileAccess(w http.ResponseWriter, r *http.Request) {
 	link := strings.TrimPrefix(r.URL.Path, "/f/")
 	file := database.GetFileByLink(link)
 	// Return same error for non-existent and private files (prevents URL scanning)
 	if file == nil || (file.IsPrivate && !auth.IsLoggedIn(r)) {
+		Debugf("HandleFileAccess denied for link=%q", link)
 		w.WriteHeader(http.StatusForbidden)
 		Templates.ExecuteTemplate(w, "403.html", map[string]interface{}{
 			"T":        T(),
@@ -472,5 +462,6 @@ func HandleFileAccess(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, file.Name))
+	Debugf("HandleFileAccess serving link=%q id=%s disposition=%s", link, file.ID, disposition)
 	http.ServeFile(w, r, filePath)
 }

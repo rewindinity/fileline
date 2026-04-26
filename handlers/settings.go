@@ -18,13 +18,11 @@ import (
 
 var accentColorRegex = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
-/*
-*
-
-	HandleSettings renders the account and application settings page.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleSettings renders the account and application settings page.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleSettings(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -47,13 +45,11 @@ func HandleSettings(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "settings.html", data)
 }
 
-/*
-*
-
-	HandlePasswordChange validates and applies a password update for the current user.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandlePasswordChange validates and applies a password update for the current user.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandlePasswordChange(w http.ResponseWriter, r *http.Request) {
 	// Check database connection first
@@ -119,13 +115,11 @@ func HandlePasswordChange(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?success=password", http.StatusSeeOther)
 }
 
-/*
-*
-
-	Handle2FASettings renders current two-factor authentication state.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  Handle2FASettings renders current two-factor authentication state.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func Handle2FASettings(w http.ResponseWriter, r *http.Request) {
 	if !CheckDatabaseConnection(w, r) {
@@ -148,13 +142,11 @@ func Handle2FASettings(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "2fa_settings.html", data)
 }
 
-/*
-*
-
-	Handle2FASetup performs TOTP enrollment and verification.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  Handle2FASetup performs TOTP enrollment and verification.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	if !CheckDatabaseConnection(w, r) {
@@ -178,9 +170,11 @@ func Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 			user.TwoFAEnabled = true
 			user.TwoFASecret = secret
 			database.SetUser(user)
+			Debugf("2FA setup enabled for user=%q", username)
 			http.Redirect(w, r, "/settings?success=2fa", http.StatusSeeOther)
 			return
 		}
+		Debugf("2FA setup verification failed for user=%q", username)
 		key, _ := totp.Generate(totp.GenerateOpts{
 			Issuer:      "FileLine",
 			AccountName: username,
@@ -202,9 +196,10 @@ func Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 		AccountName: username,
 	})
 	if err != nil {
-		http.Error(w, "Failed to generate 2FA secret", http.StatusInternalServerError)
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to generate 2FA secret")
 		return
 	}
+	Debugf("2FA setup page generated for user=%q", username)
 	data := map[string]interface{}{
 		"LoggedIn": true,
 		"Secret":   key.Secret(),
@@ -216,13 +211,11 @@ func Handle2FASetup(w http.ResponseWriter, r *http.Request) {
 	Templates.ExecuteTemplate(w, "2fa_setup.html", data)
 }
 
-/*
-*
-
-	Handle2FADisable requires a valid TOTP code before disabling 2FA.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  Handle2FADisable requires a valid TOTP code before disabling 2FA.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	if !CheckDatabaseConnection(w, r) {
@@ -245,6 +238,7 @@ func Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	secret := database.GetUser().TwoFASecret
 	twoFAT := trans["twofa"].(map[string]interface{})
 	if !totp.Validate(code, secret) {
+		Debugf("2FA disable verification failed for user=%q", database.GetUser().Username)
 		data := map[string]interface{}{
 			"LoggedIn":     true,
 			"TwoFAEnabled": true,
@@ -259,16 +253,15 @@ func Handle2FADisable(w http.ResponseWriter, r *http.Request) {
 	user.TwoFAEnabled = false
 	user.TwoFASecret = ""
 	database.SetUser(user)
+	Debugf("2FA disabled for user=%q", user.Username)
 	http.Redirect(w, r, "/settings?success=2fa_disabled", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleThemeSettings applies theme, accent, and optional custom-logo updates.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleThemeSettings applies theme, accent, and optional custom-logo updates.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleThemeSettings(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -335,13 +328,11 @@ func HandleThemeSettings(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?success=theme", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleUploadSettings updates chunking and file-size limits.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleUploadSettings updates chunking and file-size limits.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleUploadSettings(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -376,13 +367,11 @@ func HandleUploadSettings(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?success=upload", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleLanguageSettings validates and applies a supported language code.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleLanguageSettings validates and applies a supported language code.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleLanguageSettings(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {
@@ -406,13 +395,11 @@ func HandleLanguageSettings(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings?success=language", http.StatusSeeOther)
 }
 
-/*
-*
-
-	HandleBackupCodeRegenerate rotates the account recovery backup code.
-	@param w - The HTTP response writer.
-	@param r - The incoming HTTP request.
-	@returns void
+/**
+  HandleBackupCodeRegenerate rotates the account recovery backup code.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
 */
 func HandleBackupCodeRegenerate(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireSetup(w, r) {

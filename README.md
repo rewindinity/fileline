@@ -62,6 +62,9 @@ git clone https://github.com/rewindinity/fileline.git
 cd fileline
 go build -o fileline .
 ./fileline
+
+# Enable verbose request/debug logging
+./fileline --debug
 ```
 
 After startup, open:
@@ -199,8 +202,8 @@ server {
 
 ## TODO
 
-- [ ] Add better error handler and debug handler
-- [ ] Better error pages
+- [x] Add better error handler and debug handler
+- [x] Better error pages
 - [ ] More file storage options like S3, FTP/SFTP, WebDav etc
 - [ ] Add docker support (via docker image)
 - [ ] Custom translation instructions and more languages
