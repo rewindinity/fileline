@@ -21,7 +21,7 @@ var (
   @returns error - An error if the operation fails.
 */
 func Load() error {
-	files := []string{"en.json", "pl.json"}
+	files := []string{"en.json", "pl.json", "de.json", "fr.json", "cz.json"}
 	for _, file := range files {
 		data, err := translationsFS.ReadFile(file)
 		if err != nil {

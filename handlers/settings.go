@@ -385,7 +385,7 @@ func HandleLanguageSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lang := r.FormValue("language")
-	validLangs := map[string]bool{"en": true, "pl": true}
+	validLangs := map[string]bool{"en": true, "pl": true, "de": true, "fr": true, "cz": true}
 	if !validLangs[lang] {
 		lang = "en"
 	}

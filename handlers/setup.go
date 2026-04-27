@@ -75,7 +75,7 @@ func HandleSetup(w http.ResponseWriter, r *http.Request) {
 		if !validThemes[theme] {
 			theme = "dark-blue"
 		}
-		validLangs := map[string]bool{"en": true, "pl": true}
+		validLangs := map[string]bool{"en": true, "pl": true, "de": true, "fr": true, "cz": true}
 		if !validLangs[lang] {
 			lang = "en"
 		}

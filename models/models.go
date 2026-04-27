@@ -47,7 +47,7 @@ type Passkey struct {
 type AppSettings struct {
 	Theme          string `json:"theme"`            // "dark-blue", "dark-green", "dark-orange", "dark-purple", "light"
 	AccentColor    string `json:"accent_color"`     // hex color
-	Language       string `json:"language"`         // "en", "pl"
+	Language       string `json:"language"`         // "en", "pl", "de", "fr", "cz"
 	ChunkSizeBytes int64  `json:"chunk_size_bytes"` // chunk size for uploads
 	ChunkThreshold int64  `json:"chunk_threshold"`  // files above this use chunked upload (bytes)
 	MaxFileSize    int64  `json:"max_file_size"`    // maximum file size in bytes (0 = unlimited)

@@ -144,6 +144,9 @@
                         <select id="language" name="language">
                             <option value="en" {{if eq .Settings.Language "en"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_en"}}{{else}}English{{end}}</option>
                             <option value="pl" {{if eq .Settings.Language "pl"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_pl"}}{{else}}Polski{{end}}</option>
+                            <option value="de" {{if eq .Settings.Language "de"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_de"}}{{else}}Deutsch{{end}}</option>
+                            <option value="fr" {{if eq .Settings.Language "fr"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_fr"}}{{else}}Français{{end}}</option>
+                            <option value="cz" {{if eq .Settings.Language "cz"}}selected{{end}}>{{if .T.settings}}{{index .T.settings "language_cz"}}{{else}}Čeština{{end}}</option>
                         </select>
                     </div>
                     <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_language"}}{{else}}Save Language{{end}}</button>

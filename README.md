@@ -33,7 +33,7 @@ fileline/
 ├── models/                 # Shared data models and constants
 ├── templates/              # HTML templates
 ├── static/                 # CSS, JS, fonts, logos
-├── translations/           # UI translations (en, pl)
+├── translations/           # UI translations (en, pl, de, fr, cz)
 ├── uploads/                # Uploaded files (runtime data)
 └── chunks/                 # Temporary chunk-upload data (runtime data)
 ```
@@ -200,11 +200,49 @@ server {
 }
 ```
 
+## Custom translations
+
+Translations are embedded into the binary from `translations/*.json` (`go:embed`), so adding a new language requires a source rebuild.
+
+1. Copy `translations/en.json` to a new file like `translations/de.json`.
+2. Keep the same JSON structure and keys, and translate only the values for example:
+   `"uploading": "your translation",`
+3. Add a display label for the language itself within the settings object into all translation files:
+
+```
+"settings": {
+  "language_de": "Deutsch"
+}
+```
+
+4. You need to inform the Go backend about the new file and allow the new language code.
+
+- `translations/i18n.go`: Add the new filename to the files slice inside the _Load()_ function:
+  `files := []string{"en.json", "pl.json", "de.json"}`
+- Validation: Add the language code (e.g., "de") to the validLangs slice in both:
+  - `handlers/setup.go`
+  - `handlers/settings.go`
+
+5. Update UI Templates (Frontend)
+   Add the new language option to the selection menus in your HTML templates.
+
+- `templates/setup.html`:
+  - `<option value="de" {{if eq .Lang "de"}}selected{{end}}>Deutsch</option>`
+- `templates/settings.html`:
+  - `<option value="de" {{if eq .Settings.Language "de"}}selected{{end}}> {{if .T.settings}}{{index .T.settings "language_de"}}{{else}}Deutsch{{end}} </option>`
+
+6. Rebuild and restart:
+
+```bash
+go build -o fileline .
+./fileline
+```
+
 ## TODO
 
 - [x] Add better error handler and debug handler
 - [x] Better error pages
 - [ ] More file storage options like S3, FTP/SFTP, WebDav etc
 - [ ] Add docker support (via docker image)
-- [ ] Custom translation instructions and more languages
+- [x] Custom translation instructions and more languages
 - [ ] UI improvements
