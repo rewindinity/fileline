@@ -68,6 +68,38 @@ go build -o fileline .
 ./fileline --debug
 ```
 
+### Option 3: Docker (public image)
+
+Public image:
+
+`ghcr.io/rewindinity/fileline:latest`
+
+```bash
+docker pull ghcr.io/rewindinity/fileline:latest
+docker run -d \
+  --name fileline \
+  -p 8080:8080 \
+  -v "$(pwd)/fileline-data:/app" \
+  --restart unless-stopped \
+  ghcr.io/rewindinity/fileline:latest
+```
+
+### Option 4: Docker Compose
+
+Use the public image:
+
+```bash
+docker compose up -d
+```
+
+This stores runtime data in `./fileline-data` (including `config.json`, `database.sqlite`, `uploads/`, and `chunks/`).
+
+For local development with local source files mounted:
+
+```bash
+docker compose -f docker-compose-dev.yml up
+```
+
 After startup, open:
 
 `http://localhost:8080/setup`
@@ -257,6 +289,6 @@ go build -o fileline .
 - [x] Add better error handler and debug handler
 - [x] Better error pages
 - [x] More file storage options like S3, FTP/SFTP, WebDav etc
-- [ ] Add docker support (via docker image)
+- [x] Add docker support (via docker image)
 - [x] Custom translation instructions and more languages
 - [ ] UI improvements

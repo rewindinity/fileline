@@ -1,0 +1,11 @@
+services:
+  fileline:
+    image: golang:1.26.2-trixie
+    container_name: fileline-dev
+    working_dir: /app
+    command: sh -c "go mod download && go run . --debug"
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./:/app

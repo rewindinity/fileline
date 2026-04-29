@@ -1,0 +1,13 @@
+.git
+.github
+.vscode
+
+uploads
+chunks
+database.sqlite
+config.json
+
+fileline
+fileline-old
+tmp.md
+*.log

@@ -1,0 +1,9 @@
+services:
+  fileline:
+    image: ghcr.io/rewindinity/fileline:latest
+    container_name: fileline
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./fileline-data:/app
