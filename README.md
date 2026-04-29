@@ -12,7 +12,7 @@ FileLine is a lightweight self-hosted file host for quickly sharing files with p
 - Theme, accent color, and custom logo
 - Responsive UI (desktop/mobile/tablet)
 - Chunked upload for large files
-- Local disk file storage (`uploads/`)
+- Multi-drive storage: local disk (default), optional S3/FTP/SFTP drives
 
 ## Supported databases
 
@@ -33,6 +33,7 @@ fileline/
 ├── models/                 # Shared data models and constants
 ├── templates/              # HTML templates
 ├── static/                 # CSS, JS, fonts, logos
+├── storage/                # Storage backends (local, S3, FTP, SFTP)
 ├── translations/           # UI translations (en, pl, de, fr, cz)
 ├── uploads/                # Uploaded files (runtime data)
 └── chunks/                 # Temporary chunk-upload data (runtime data)
@@ -200,6 +201,19 @@ server {
 }
 ```
 
+## Storage drives
+
+FileLine always includes a local `local` drive (stored in `uploads/`).
+
+You can add optional external drives in **Settings -> Storage Drives**:
+
+- S3 (`s3-main`)
+- FTP (`ftp-main`)
+- SFTP (`sftp-main`)
+
+When at least one external drive is configured, the upload form shows an **Upload Drive** selector.
+All uploads/downloads/deletes are proxied through FileLine; links remain `/f/<link>` regardless of backend.
+
 ## Custom translations
 
 Translations are embedded into the binary from `translations/*.json` (`go:embed`), so adding a new language requires a source rebuild.
@@ -218,7 +232,7 @@ Translations are embedded into the binary from `translations/*.json` (`go:embed`
 4. You need to inform the Go backend about the new file and allow the new language code.
 
 - `translations/i18n.go`: Add the new filename to the files slice inside the _Load()_ function:
-  `files := []string{"en.json", "pl.json", "de.json"}`
+  `files := []string{"en.json", "pl.json", "de.json", "fr.json", "cz.json"}`
 - Validation: Add the language code (e.g., "de") to the validLangs slice in both:
   - `handlers/setup.go`
   - `handlers/settings.go`
@@ -242,7 +256,7 @@ go build -o fileline .
 
 - [x] Add better error handler and debug handler
 - [x] Better error pages
-- [ ] More file storage options like S3, FTP/SFTP, WebDav etc
+- [x] More file storage options like S3, FTP/SFTP, WebDav etc
 - [ ] Add docker support (via docker image)
 - [x] Custom translation instructions and more languages
 - [ ] UI improvements

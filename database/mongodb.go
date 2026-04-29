@@ -2,9 +2,11 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fileline/models"
 	"fmt"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -103,12 +105,14 @@ func decodeMongoFileEntry(doc bson.M) models.FileEntry {
 		}
 	}
 	return models.FileEntry{
-		ID:         id,
-		Name:       getMongoStringField(doc, "name", "filename"),
-		Link:       getMongoStringField(doc, "link"),
-		Size:       getMongoInt64Field(doc, "size"),
-		UploadedAt: getMongoStringField(doc, "uploaded_at", "uploadedat", "upload_date"),
-		IsPrivate:  getMongoBoolField(doc, "is_private", "isprivate"),
+		ID:          id,
+		Name:        getMongoStringField(doc, "name", "filename"),
+		Link:        getMongoStringField(doc, "link"),
+		Size:        getMongoInt64Field(doc, "size"),
+		UploadedAt:  getMongoStringField(doc, "uploaded_at", "uploadedat", "upload_date"),
+		IsPrivate:   getMongoBoolField(doc, "is_private", "isprivate"),
+		DriveID:     getMongoStringField(doc, "drive_id", "driveid"),
+		StoragePath: getMongoStringField(doc, "storage_path", "storagepath"),
 	}
 }
 
@@ -142,15 +146,23 @@ func (m *MongoDB) normalizeFileDocuments() error {
 		if file.ID == "" || file.Link == "" {
 			continue
 		}
+		if file.DriveID == "" {
+			file.DriveID = models.LocalDriveID
+		}
+		if file.StoragePath == "" {
+			file.StoragePath = file.ID + path.Ext(file.Name)
+		}
 		_, err := collection.UpdateByID(ctx, objectID, bson.M{"$set": bson.M{
-			"id":          file.ID,
-			"name":        file.Name,
-			"link":        file.Link,
-			"size":        file.Size,
-			"uploaded_at": file.UploadedAt,
-			"is_private":  file.IsPrivate,
-			"uploadedat":  file.UploadedAt,
-			"isprivate":   file.IsPrivate,
+			"id":           file.ID,
+			"name":         file.Name,
+			"link":         file.Link,
+			"size":         file.Size,
+			"uploaded_at":  file.UploadedAt,
+			"is_private":   file.IsPrivate,
+			"drive_id":     file.DriveID,
+			"storage_path": file.StoragePath,
+			"uploadedat":   file.UploadedAt,
+			"isprivate":    file.IsPrivate,
 		}})
 		if err != nil {
 			return err
@@ -354,11 +366,13 @@ func (m *MongoDB) AddFile(file models.FileEntry) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := m.db.Collection("files").InsertOne(ctx, bson.M{
-		"id":          file.ID,
-		"name":        file.Name,
-		"link":        file.Link,
-		"size":        file.Size,
-		"uploaded_at": file.UploadedAt,
+		"id":           file.ID,
+		"name":         file.Name,
+		"link":         file.Link,
+		"size":         file.Size,
+		"uploaded_at":  file.UploadedAt,
+		"drive_id":     file.DriveID,
+		"storage_path": file.StoragePath,
 		// Keep legacy keys in sync for older collections created before normalized BSON mapping.
 		"uploadedat": file.UploadedAt,
 		"is_private": file.IsPrivate,
@@ -529,6 +543,9 @@ func (m *MongoDB) GetSettings() models.AppSettings {
 	if customLogo := getMongoStringField(doc, "custom_logo", "customlogo"); customLogo != "" {
 		settings.CustomLogo = customLogo
 	}
+	if raw := getMongoStringField(doc, "storage_drives", "storagedrives"); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &settings.StorageDrives)
+	}
 	return settings
 }
 
@@ -542,6 +559,7 @@ func (m *MongoDB) UpdateSettings(settings models.AppSettings) error {
 	defer cancel()
 	// FileLine persists one settings document; replace for deterministic reads.
 	m.db.Collection("settings").DeleteMany(ctx, bson.M{})
+	storageDrivesJSON, _ := json.Marshal(settings.StorageDrives)
 	_, err := m.db.Collection("settings").InsertOne(ctx, bson.M{
 		"theme":            settings.Theme,
 		"accent_color":     settings.AccentColor,
@@ -550,11 +568,13 @@ func (m *MongoDB) UpdateSettings(settings models.AppSettings) error {
 		"chunk_threshold":  settings.ChunkThreshold,
 		"max_file_size":    settings.MaxFileSize,
 		"custom_logo":      settings.CustomLogo,
+		"storage_drives":   string(storageDrivesJSON),
 		"accentcolor":      settings.AccentColor,
 		"chunksizebytes":   settings.ChunkSizeBytes,
 		"chunkthreshold":   settings.ChunkThreshold,
 		"maxfilesize":      settings.MaxFileSize,
 		"customlogo":       settings.CustomLogo,
+		"storagedrives":    string(storageDrivesJSON),
 	})
 	return err
 }

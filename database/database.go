@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fileline/models"
+	"fileline/storage"
 )
 
 // DatabaseInterface defines backend-agnostic persistence operations used by handlers.
@@ -231,7 +232,9 @@ func GetFileByID(id string) *models.FileEntry {
 	}
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
-	return DB.GetFileByID(id)
+	file := DB.GetFileByID(id)
+	storage.ApplyFileDefaults(file)
+	return file
 }
 
 /**
@@ -245,7 +248,9 @@ func GetFileByLink(link string) *models.FileEntry {
 	}
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
-	return DB.GetFileByLink(link)
+	file := DB.GetFileByLink(link)
+	storage.ApplyFileDefaults(file)
+	return file
 }
 
 /**
@@ -338,7 +343,13 @@ func DeleteFile(id string) bool {
 func GetChunkUploads() []models.ChunkUpload {
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
-	return DB.GetChunkUploads()
+	uploads := DB.GetChunkUploads()
+	for i := range uploads {
+		if uploads[i].DriveID == "" {
+			uploads[i].DriveID = models.LocalDriveID
+		}
+	}
+	return uploads
 }
 
 /**
@@ -349,7 +360,11 @@ func GetChunkUploads() []models.ChunkUpload {
 func GetChunkUpload(id string) *models.ChunkUpload {
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
-	return DB.GetChunkUpload(id)
+	upload := DB.GetChunkUpload(id)
+	if upload != nil && upload.DriveID == "" {
+		upload.DriveID = models.LocalDriveID
+	}
+	return upload
 }
 
 /**
@@ -478,12 +493,14 @@ func GetSettings() models.AppSettings {
 			ChunkThreshold: 100 * 1024 * 1024,
 			MaxFileSize:    0,
 			CustomLogo:     "",
+			StorageDrives:  []models.StorageDrive{models.DefaultLocalDrive()},
 		}
 	}
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
 	settings := DB.GetSettings()
 	settings.CustomLogo = normalizeCustomLogo(settings.CustomLogo)
+	storage.NormalizeSettingsDrives(&settings)
 	return settings
 }
 
@@ -520,7 +537,11 @@ func GetFiles() []models.FileEntry {
 	}
 	DBMutex.RLock()
 	defer DBMutex.RUnlock()
-	return DB.GetFiles()
+	files := DB.GetFiles()
+	for i := range files {
+		storage.ApplyFileDefaults(&files[i])
+	}
+	return files
 }
 
 /**

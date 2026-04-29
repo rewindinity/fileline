@@ -18,6 +18,39 @@ type SQLiteDB struct {
 }
 
 /**
+  ensureColumn checks for the existence of a column and adds it if missing.
+  @param table - The table name to check.
+  @param column - The column name to check.
+  @param definition - The SQL definition for the column if it needs to be added (e.g. "TEXT NOT NULL DEFAULT ''").
+  @returns error - An error if the operation fails.
+*/
+func (s *SQLiteDB) ensureColumn(table string, column string, definition string) error {
+	rows, err := s.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var (
+		cid       int
+		name      string
+		colType   string
+		notNull   int
+		defaultV  interface{}
+		primaryPK int
+	)
+	for rows.Next() {
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryPK); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	_, err = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+/**
   Load opens SQLite storage and ensures required tables exist.
   @param none - This function does not accept parameters.
   @returns error - An error if the operation fails.
@@ -59,7 +92,9 @@ func (s *SQLiteDB) Load() error {
 			link TEXT UNIQUE NOT NULL,
 			size INTEGER NOT NULL,
 			uploaded_at TEXT NOT NULL,
-			is_private INTEGER NOT NULL
+			is_private INTEGER NOT NULL,
+			drive_id TEXT NOT NULL DEFAULT 'local',
+			storage_path TEXT NOT NULL DEFAULT ''
 		);
 
 		CREATE TABLE IF NOT EXISTS settings (
@@ -75,12 +110,22 @@ func (s *SQLiteDB) Load() error {
 			received TEXT NOT NULL,
 			is_private INTEGER NOT NULL,
 			custom_link TEXT NOT NULL,
+			drive_id TEXT NOT NULL DEFAULT 'local',
 			temp_dir TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		);
 	`)
 	if err != nil {
 		Debugf("Failed to initialize SQLite schema: %v", err)
+		return err
+	}
+	if err := s.ensureColumn("files", "drive_id", "TEXT NOT NULL DEFAULT 'local'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("files", "storage_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("chunk_uploads", "drive_id", "TEXT NOT NULL DEFAULT 'local'"); err != nil {
 		return err
 	}
 	Debugf("SQLite database connected and schema ready")
@@ -186,7 +231,7 @@ func (s *SQLiteDB) SetUser(user *models.User) {
   @returns []models.FileEntry - The resulting collection.
 */
 func (s *SQLiteDB) GetFiles() []models.FileEntry {
-	rows, err := s.db.Query("SELECT id, name, link, size, uploaded_at, is_private FROM files ORDER BY uploaded_at DESC")
+	rows, err := s.db.Query("SELECT id, name, link, size, uploaded_at, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files ORDER BY uploaded_at DESC")
 	if err != nil {
 		return []models.FileEntry{}
 	}
@@ -195,7 +240,7 @@ func (s *SQLiteDB) GetFiles() []models.FileEntry {
 	for rows.Next() {
 		var f models.FileEntry
 		var isPrivate int
-		rows.Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate)
+		rows.Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate, &f.DriveID, &f.StoragePath)
 		f.IsPrivate = isPrivate == 1
 		files = append(files, f)
 	}
@@ -210,8 +255,8 @@ func (s *SQLiteDB) GetFiles() []models.FileEntry {
 func (s *SQLiteDB) GetFileByID(id string) *models.FileEntry {
 	var f models.FileEntry
 	var isPrivate int
-	err := s.db.QueryRow("SELECT id, name, link, size, uploaded_at, is_private FROM files WHERE id = ?", id).
-		Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate)
+	err := s.db.QueryRow("SELECT id, name, link, size, uploaded_at, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files WHERE id = ?", id).
+		Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate, &f.DriveID, &f.StoragePath)
 	if err != nil {
 		return nil
 	}
@@ -227,8 +272,8 @@ func (s *SQLiteDB) GetFileByID(id string) *models.FileEntry {
 func (s *SQLiteDB) GetFileByLink(link string) *models.FileEntry {
 	var f models.FileEntry
 	var isPrivate int
-	err := s.db.QueryRow("SELECT id, name, link, size, uploaded_at, is_private FROM files WHERE link = ?", link).
-		Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate)
+	err := s.db.QueryRow("SELECT id, name, link, size, uploaded_at, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files WHERE link = ?", link).
+		Scan(&f.ID, &f.Name, &f.Link, &f.Size, &f.UploadedAt, &isPrivate, &f.DriveID, &f.StoragePath)
 	if err != nil {
 		return nil
 	}
@@ -257,8 +302,8 @@ func (s *SQLiteDB) AddFile(file models.FileEntry) error {
 	if file.IsPrivate {
 		isPrivate = 1
 	}
-	_, err := s.db.Exec("INSERT INTO files (id, name, link, size, uploaded_at, is_private) VALUES (?, ?, ?, ?, ?, ?)",
-		file.ID, file.Name, file.Link, file.Size, file.UploadedAt, isPrivate)
+	_, err := s.db.Exec("INSERT INTO files (id, name, link, size, uploaded_at, is_private, drive_id, storage_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		file.ID, file.Name, file.Link, file.Size, file.UploadedAt, isPrivate, file.DriveID, file.StoragePath)
 	return err
 }
 
@@ -319,7 +364,7 @@ func (s *SQLiteDB) GetSettings() models.AppSettings {
 		MaxFileSize:    0,
 		CustomLogo:     "",
 	}
-	var chunkSizeRaw, chunkThresholdRaw, maxFileSizeRaw, customLogo string
+	var chunkSizeRaw, chunkThresholdRaw, maxFileSizeRaw, customLogo, storageDrivesRaw string
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'theme'").Scan(&settings.Theme)
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'accent_color'").Scan(&settings.AccentColor)
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'language'").Scan(&settings.Language)
@@ -327,6 +372,7 @@ func (s *SQLiteDB) GetSettings() models.AppSettings {
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'chunk_threshold'").Scan(&chunkThresholdRaw)
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'max_file_size'").Scan(&maxFileSizeRaw)
 	s.db.QueryRow("SELECT value FROM settings WHERE key = 'custom_logo'").Scan(&customLogo)
+	s.db.QueryRow("SELECT value FROM settings WHERE key = 'storage_drives'").Scan(&storageDrivesRaw)
 	if customLogo == "" {
 		// Backward compatibility for older key naming used in earlier builds.
 		s.db.QueryRow("SELECT value FROM settings WHERE key = 'customlogo'").Scan(&customLogo)
@@ -341,6 +387,9 @@ func (s *SQLiteDB) GetSettings() models.AppSettings {
 		settings.MaxFileSize = v
 	}
 	settings.CustomLogo = customLogo
+	if storageDrivesRaw != "" {
+		_ = json.Unmarshal([]byte(storageDrivesRaw), &settings.StorageDrives)
+	}
 	return settings
 }
 
@@ -358,6 +407,8 @@ func (s *SQLiteDB) UpdateSettings(settings models.AppSettings) error {
 	s.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('max_file_size', ?)", fmt.Sprintf("%d", settings.MaxFileSize))
 	s.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('custom_logo', ?)", settings.CustomLogo)
 	s.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('customlogo', ?)", settings.CustomLogo)
+	storageDrivesJSON, _ := json.Marshal(settings.StorageDrives)
+	s.db.Exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('storage_drives', ?)", string(storageDrivesJSON))
 	return nil
 }
 
@@ -367,7 +418,7 @@ func (s *SQLiteDB) UpdateSettings(settings models.AppSettings) error {
   @returns []models.ChunkUpload - The resulting collection.
 */
 func (s *SQLiteDB) GetChunkUploads() []models.ChunkUpload {
-	rows, err := s.db.Query("SELECT id, file_name, total_size, total_chunks, received, is_private, custom_link, temp_dir, created_at FROM chunk_uploads")
+	rows, err := s.db.Query("SELECT id, file_name, total_size, total_chunks, received, is_private, custom_link, COALESCE(drive_id, 'local'), temp_dir, created_at FROM chunk_uploads")
 	if err != nil {
 		return []models.ChunkUpload{}
 	}
@@ -378,7 +429,7 @@ func (s *SQLiteDB) GetChunkUploads() []models.ChunkUpload {
 		var u models.ChunkUpload
 		var receivedJSON string
 		var isPrivate int
-		rows.Scan(&u.ID, &u.FileName, &u.TotalSize, &u.TotalChunks, &receivedJSON, &isPrivate, &u.CustomLink, &u.TempDir, &u.CreatedAt)
+		rows.Scan(&u.ID, &u.FileName, &u.TotalSize, &u.TotalChunks, &receivedJSON, &isPrivate, &u.CustomLink, &u.DriveID, &u.TempDir, &u.CreatedAt)
 		json.Unmarshal([]byte(receivedJSON), &u.Received)
 		u.IsPrivate = isPrivate == 1
 		uploads = append(uploads, u)
@@ -395,8 +446,8 @@ func (s *SQLiteDB) GetChunkUpload(id string) *models.ChunkUpload {
 	var u models.ChunkUpload
 	var receivedJSON string
 	var isPrivate int
-	err := s.db.QueryRow("SELECT id, file_name, total_size, total_chunks, received, is_private, custom_link, temp_dir, created_at FROM chunk_uploads WHERE id = ?", id).
-		Scan(&u.ID, &u.FileName, &u.TotalSize, &u.TotalChunks, &receivedJSON, &isPrivate, &u.CustomLink, &u.TempDir, &u.CreatedAt)
+	err := s.db.QueryRow("SELECT id, file_name, total_size, total_chunks, received, is_private, custom_link, COALESCE(drive_id, 'local'), temp_dir, created_at FROM chunk_uploads WHERE id = ?", id).
+		Scan(&u.ID, &u.FileName, &u.TotalSize, &u.TotalChunks, &receivedJSON, &isPrivate, &u.CustomLink, &u.DriveID, &u.TempDir, &u.CreatedAt)
 	if err != nil {
 		return nil
 	}
@@ -417,8 +468,8 @@ func (s *SQLiteDB) AddChunkUpload(upload models.ChunkUpload) error {
 	if upload.IsPrivate {
 		isPrivate = 1
 	}
-	_, err := s.db.Exec("INSERT INTO chunk_uploads (id, file_name, total_size, total_chunks, received, is_private, custom_link, temp_dir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		upload.ID, upload.FileName, upload.TotalSize, upload.TotalChunks, string(receivedJSON), isPrivate, upload.CustomLink, upload.TempDir, upload.CreatedAt)
+	_, err := s.db.Exec("INSERT INTO chunk_uploads (id, file_name, total_size, total_chunks, received, is_private, custom_link, drive_id, temp_dir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		upload.ID, upload.FileName, upload.TotalSize, upload.TotalChunks, string(receivedJSON), isPrivate, upload.CustomLink, upload.DriveID, upload.TempDir, upload.CreatedAt)
 	return err
 }
 

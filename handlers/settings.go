@@ -11,12 +11,33 @@ import (
 	"fileline/auth"
 	"fileline/database"
 	"fileline/models"
+	"fileline/storage"
 
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
 var accentColorRegex = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+/**
+  configuredDriveByType returns the first enabled storage drive matching the specified type.
+  @param settings - The application settings containing storage drive configurations.
+  @param driveType - The storage drive type to search for (e.g., "s3", "ftp", "sftp").
+  @returns *models.StorageDrive - A pointer to the matching StorageDrive, or nil if not found.
+*/
+func configuredDriveByType(settings models.AppSettings, driveType string) *models.StorageDrive {
+	for i := range settings.StorageDrives {
+		drive := settings.StorageDrives[i]
+		if drive.ID == models.LocalDriveID {
+			continue
+		}
+		if drive.Type == driveType {
+			d := drive
+			return &d
+		}
+	}
+	return nil
+}
 
 /**
   HandleSettings renders the account and application settings page.
@@ -35,11 +56,16 @@ func HandleSettings(w http.ResponseWriter, r *http.Request) {
 	if auth.RequireAuth(w, r) {
 		return
 	}
+	settings := database.GetSettings()
 	data := map[string]interface{}{
 		"LoggedIn":     true,
-		"Settings":     database.GetSettings(),
+		"Settings":     settings,
 		"TwoFAEnabled": database.GetUser() != nil && database.GetUser().TwoFAEnabled,
 		"Success":      r.URL.Query().Get("success"),
+		"Error":        r.URL.Query().Get("error"),
+		"S3Drive":      configuredDriveByType(settings, models.StorageTypeS3),
+		"FTPDrive":     configuredDriveByType(settings, models.StorageTypeFTP),
+		"SFTPDrive":    configuredDriveByType(settings, models.StorageTypeSFTP),
 		"T":            T(),
 	}
 	Templates.ExecuteTemplate(w, "settings.html", data)
@@ -424,4 +450,126 @@ func HandleBackupCodeRegenerate(w http.ResponseWriter, r *http.Request) {
 	// Return the new backup code as JSON
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"backup_code":"` + newBackupCode + `"}`))
+}
+
+func parseToggle(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value == "1" || value == "true" || value == "on" || value == "yes"
+}
+
+func parsePortValue(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port <= 0 {
+		return fallback
+	}
+	return port
+}
+
+/**
+  HandleStorageDrivesSettings updates optional external storage drive configuration.
+  @param w - The HTTP response writer.
+  @param r - The incoming HTTP request.
+  @returns void
+*/
+func HandleStorageDrivesSettings(w http.ResponseWriter, r *http.Request) {
+	if auth.RequireSetup(w, r) {
+		return
+	}
+	if auth.RequireAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+
+	drives := make([]models.StorageDrive, 0, 3)
+
+	if parseToggle(r.FormValue("s3_enabled")) {
+		endpoint := strings.TrimSpace(r.FormValue("s3_endpoint"))
+		bucket := strings.TrimSpace(r.FormValue("s3_bucket"))
+		accessKey := strings.TrimSpace(r.FormValue("s3_access_key"))
+		secretKey := strings.TrimSpace(r.FormValue("s3_secret_key"))
+		if endpoint == "" || bucket == "" || accessKey == "" || secretKey == "" {
+			http.Redirect(w, r, "/settings?error=storage_s3", http.StatusSeeOther)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("s3_name"))
+		if name == "" {
+			name = "S3 Drive"
+		}
+		drives = append(drives, models.StorageDrive{
+			ID:           "s3-main",
+			Name:         name,
+			Type:         models.StorageTypeS3,
+			Enabled:      true,
+			S3Endpoint:   endpoint,
+			S3Region:     strings.TrimSpace(r.FormValue("s3_region")),
+			S3Bucket:     bucket,
+			S3AccessKey:  accessKey,
+			S3SecretKey:  secretKey,
+			S3UseSSL:     parseToggle(r.FormValue("s3_use_ssl")),
+			S3PathPrefix: strings.Trim(strings.TrimSpace(r.FormValue("s3_path_prefix")), "/"),
+		})
+	}
+
+	if parseToggle(r.FormValue("ftp_enabled")) {
+		host := strings.TrimSpace(r.FormValue("ftp_host"))
+		username := strings.TrimSpace(r.FormValue("ftp_username"))
+		password := strings.TrimSpace(r.FormValue("ftp_password"))
+		if host == "" || username == "" || password == "" {
+			http.Redirect(w, r, "/settings?error=storage_ftp", http.StatusSeeOther)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("ftp_name"))
+		if name == "" {
+			name = "FTP Drive"
+		}
+		drives = append(drives, models.StorageDrive{
+			ID:          "ftp-main",
+			Name:        name,
+			Type:        models.StorageTypeFTP,
+			Enabled:     true,
+			FTPHost:     host,
+			FTPPort:     parsePortValue(r.FormValue("ftp_port"), 21),
+			FTPUsername: username,
+			FTPPassword: password,
+			FTPBasePath: strings.Trim(strings.TrimSpace(r.FormValue("ftp_base_path")), "/"),
+		})
+	}
+
+	if parseToggle(r.FormValue("sftp_enabled")) {
+		host := strings.TrimSpace(r.FormValue("sftp_host"))
+		username := strings.TrimSpace(r.FormValue("sftp_username"))
+		password := strings.TrimSpace(r.FormValue("sftp_password"))
+		if host == "" || username == "" || password == "" {
+			http.Redirect(w, r, "/settings?error=storage_sftp", http.StatusSeeOther)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("sftp_name"))
+		if name == "" {
+			name = "SFTP Drive"
+		}
+		drives = append(drives, models.StorageDrive{
+			ID:           "sftp-main",
+			Name:         name,
+			Type:         models.StorageTypeSFTP,
+			Enabled:      true,
+			SFTPHost:     host,
+			SFTPPort:     parsePortValue(r.FormValue("sftp_port"), 22),
+			SFTPUsername: username,
+			SFTPPassword: password,
+			SFTPBasePath: strings.Trim(strings.TrimSpace(r.FormValue("sftp_base_path")), "/"),
+		})
+	}
+
+	settings := database.GetSettings()
+	settings.StorageDrives = models.NormalizeStorageDrives(drives)
+	storage.NormalizeSettingsDrives(&settings)
+	database.UpdateSettings(settings)
+	http.Redirect(w, r, "/settings?success=storage", http.StatusSeeOther)
 }

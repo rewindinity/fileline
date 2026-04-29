@@ -74,6 +74,19 @@
                     <input type="text" id="custom_link" name="custom_link" placeholder="{{if .T.home}}{{index .T.home "leave_empty"}}{{else}}Leave empty for random{{end}}" pattern="[A-Za-z0-9]+">
                     <small class="form-hint">{{if .T.home}}{{index .T.home "custom_link_hint"}}{{else}}Only A-Z, a-z, 0-9 allowed{{end}}</small>
                 </div>
+                {{if gt (len .UploadDrives) 1}}
+                <div class="form-group">
+                    <label for="drive_id">{{if .T.home}}{{index .T.home "upload_drive"}}{{else}}Upload Drive{{end}}</label>
+                    <select id="drive_id" name="drive_id">
+                        {{range .UploadDrives}}
+                        <option value="{{.ID}}">{{.Name}}</option>
+                        {{end}}
+                    </select>
+                    <small class="form-hint">{{if .T.home}}{{index .T.home "upload_drive_hint"}}{{else}}Select where the uploaded file should be stored{{end}}</small>
+                </div>
+                {{else}}
+                <input type="hidden" id="drive_id" name="drive_id" value="local">
+                {{end}}
                 <div class="form-group">
                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                         <span class="toggle-label">{{if .T.home}}{{index .T.home "is_public"}}{{else}}Is public?{{end}} <span class="toggle-status private" id="privacyStatus">{{if .T.home}}{{index .T.home "no"}}{{else}}No{{end}}</span></span>
@@ -297,9 +310,11 @@
         async function uploadRegular(file) {
             const customLink = document.getElementById('custom_link').value;
             const isPrivate = !document.getElementById('publicCheck').checked;
+            const driveId = document.getElementById('drive_id') ? document.getElementById('drive_id').value : 'local';
             const formData = new FormData();
             formData.append('file', file);
             formData.append('custom_link', customLink);
+            formData.append('drive_id', driveId);
             if (isPrivate) {
                 // Don't append 'public' if private
             } else {
@@ -347,6 +362,7 @@
             const totalChunks = Math.ceil(file.size / chunkSize);
             const customLink = document.getElementById('custom_link').value;
             const isPrivate = !document.getElementById('publicCheck').checked;
+            const driveId = document.getElementById('drive_id') ? document.getElementById('drive_id').value : 'local';
             progressContainer.classList.add('active');
             uploadBtn.disabled = true;
             try {
@@ -358,7 +374,8 @@
                         total_size: file.size,
                         total_chunks: totalChunks,
                         is_private: isPrivate,
-                        custom_link: customLink
+                        custom_link: customLink,
+                        drive_id: driveId
                     })
                 });
                 if (!initRes.ok) throw new Error(await initRes.text());

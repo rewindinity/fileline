@@ -73,7 +73,9 @@ func (p *PostgreSQLDB) Load() error {
 		link TEXT UNIQUE NOT NULL,
 		upload_date TEXT NOT NULL,
 		size_bytes BIGINT NOT NULL,
-		is_private BOOLEAN DEFAULT FALSE
+		is_private BOOLEAN DEFAULT FALSE,
+		drive_id TEXT NOT NULL DEFAULT 'local',
+		storage_path TEXT NOT NULL DEFAULT ''
 	);
 
 	CREATE TABLE IF NOT EXISTS settings (
@@ -89,6 +91,7 @@ func (p *PostgreSQLDB) Load() error {
 		received TEXT NOT NULL,
 		is_private BOOLEAN DEFAULT FALSE,
 		custom_link TEXT,
+		drive_id TEXT NOT NULL DEFAULT 'local',
 		temp_dir TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL
 	);
@@ -103,6 +106,21 @@ func (p *PostgreSQLDB) Load() error {
 		return err
 	}
 	_, err = p.pool.Exec(ctx, "ALTER TABLE chunk_uploads ADD COLUMN IF NOT EXISTS temp_dir TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		Debugf("PostgreSQL schema migration failed: %v", err)
+		return err
+	}
+	_, err = p.pool.Exec(ctx, "ALTER TABLE files ADD COLUMN IF NOT EXISTS drive_id TEXT NOT NULL DEFAULT 'local'")
+	if err != nil {
+		Debugf("PostgreSQL schema migration failed: %v", err)
+		return err
+	}
+	_, err = p.pool.Exec(ctx, "ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_path TEXT NOT NULL DEFAULT ''")
+	if err != nil {
+		Debugf("PostgreSQL schema migration failed: %v", err)
+		return err
+	}
+	_, err = p.pool.Exec(ctx, "ALTER TABLE chunk_uploads ADD COLUMN IF NOT EXISTS drive_id TEXT NOT NULL DEFAULT 'local'")
 	if err != nil {
 		Debugf("PostgreSQL schema migration failed: %v", err)
 		return err
@@ -174,7 +192,7 @@ func (p *PostgreSQLDB) SetUser(user *models.User) {
 func (p *PostgreSQLDB) GetFiles() []models.FileEntry {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx,
-		"SELECT id, filename, link, upload_date, size_bytes, is_private FROM files ORDER BY upload_date DESC",
+		"SELECT id, filename, link, upload_date, size_bytes, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files ORDER BY upload_date DESC",
 	)
 	if err != nil {
 		return []models.FileEntry{}
@@ -183,7 +201,7 @@ func (p *PostgreSQLDB) GetFiles() []models.FileEntry {
 	var files []models.FileEntry
 	for rows.Next() {
 		var file models.FileEntry
-		if err := rows.Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate); err == nil {
+		if err := rows.Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate, &file.DriveID, &file.StoragePath); err == nil {
 			files = append(files, file)
 		}
 	}
@@ -198,8 +216,8 @@ func (p *PostgreSQLDB) GetFiles() []models.FileEntry {
 func (p *PostgreSQLDB) AddFile(file models.FileEntry) error {
 	ctx := context.Background()
 	_, err := p.pool.Exec(ctx,
-		"INSERT INTO files (id, filename, link, upload_date, size_bytes, is_private) VALUES ($1, $2, $3, $4, $5, $6)",
-		file.ID, file.Name, file.Link, file.UploadedAt, file.Size, file.IsPrivate,
+		"INSERT INTO files (id, filename, link, upload_date, size_bytes, is_private, drive_id, storage_path) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+		file.ID, file.Name, file.Link, file.UploadedAt, file.Size, file.IsPrivate, file.DriveID, file.StoragePath,
 	)
 	return err
 }
@@ -241,9 +259,9 @@ func (p *PostgreSQLDB) GetFileByID(fileID string) *models.FileEntry {
 	ctx := context.Background()
 	var file models.FileEntry
 	err := p.pool.QueryRow(ctx,
-		"SELECT id, filename, link, upload_date, size_bytes, is_private FROM files WHERE id = $1",
+		"SELECT id, filename, link, upload_date, size_bytes, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files WHERE id = $1",
 		fileID,
-	).Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate)
+	).Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate, &file.DriveID, &file.StoragePath)
 	if err != nil {
 		return nil
 	}
@@ -259,9 +277,9 @@ func (p *PostgreSQLDB) GetFileByLink(link string) *models.FileEntry {
 	ctx := context.Background()
 	var file models.FileEntry
 	err := p.pool.QueryRow(ctx,
-		"SELECT id, filename, link, upload_date, size_bytes, is_private FROM files WHERE link = $1",
+		"SELECT id, filename, link, upload_date, size_bytes, is_private, COALESCE(drive_id, 'local'), COALESCE(storage_path, '') FROM files WHERE link = $1",
 		link,
-	).Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate)
+	).Scan(&file.ID, &file.Name, &file.Link, &file.UploadedAt, &file.Size, &file.IsPrivate, &file.DriveID, &file.StoragePath)
 	if err != nil {
 		return nil
 	}
@@ -311,6 +329,8 @@ func (p *PostgreSQLDB) GetSettings() models.AppSettings {
 			fmt.Sscanf(value, "%d", &settings.MaxFileSize)
 		case "custom_logo", "customlogo":
 			settings.CustomLogo = value
+		case "storage_drives":
+			_ = json.Unmarshal([]byte(value), &settings.StorageDrives)
 		}
 	}
 	return settings
@@ -332,9 +352,11 @@ func (p *PostgreSQLDB) UpdateSettings(settings models.AppSettings) error {
 	batch.Queue("INSERT INTO settings (key, value) VALUES ('max_file_size', $1) ON CONFLICT (key) DO UPDATE SET value = $1", fmt.Sprintf("%d", settings.MaxFileSize))
 	batch.Queue("INSERT INTO settings (key, value) VALUES ('custom_logo', $1) ON CONFLICT (key) DO UPDATE SET value = $1", settings.CustomLogo)
 	batch.Queue("INSERT INTO settings (key, value) VALUES ('customlogo', $1) ON CONFLICT (key) DO UPDATE SET value = $1", settings.CustomLogo)
+	storageDrivesJSON, _ := json.Marshal(settings.StorageDrives)
+	batch.Queue("INSERT INTO settings (key, value) VALUES ('storage_drives', $1) ON CONFLICT (key) DO UPDATE SET value = $1", string(storageDrivesJSON))
 	br := p.pool.SendBatch(ctx, batch)
 	defer br.Close()
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		if _, err := br.Exec(); err != nil {
 			return err
 		}
@@ -350,7 +372,7 @@ func (p *PostgreSQLDB) UpdateSettings(settings models.AppSettings) error {
 func (p *PostgreSQLDB) GetChunkUploads() []models.ChunkUpload {
 	ctx := context.Background()
 	rows, err := p.pool.Query(ctx,
-		"SELECT upload_id, filename, total_chunks, total_size, received, is_private, COALESCE(custom_link, ''), temp_dir, created_at FROM chunk_uploads",
+		"SELECT upload_id, filename, total_chunks, total_size, received, is_private, COALESCE(custom_link, ''), COALESCE(drive_id, 'local'), temp_dir, created_at FROM chunk_uploads",
 	)
 	if err != nil {
 		return []models.ChunkUpload{}
@@ -361,7 +383,7 @@ func (p *PostgreSQLDB) GetChunkUploads() []models.ChunkUpload {
 		var chunk models.ChunkUpload
 		var receivedJSON string
 		if err := rows.Scan(&chunk.ID, &chunk.FileName, &chunk.TotalChunks, &chunk.TotalSize,
-			&receivedJSON, &chunk.IsPrivate, &chunk.CustomLink, &chunk.TempDir, &chunk.CreatedAt); err != nil {
+			&receivedJSON, &chunk.IsPrivate, &chunk.CustomLink, &chunk.DriveID, &chunk.TempDir, &chunk.CreatedAt); err != nil {
 			continue
 		}
 		json.Unmarshal([]byte(receivedJSON), &chunk.Received)
@@ -379,8 +401,8 @@ func (p *PostgreSQLDB) AddChunkUpload(chunk models.ChunkUpload) error {
 	ctx := context.Background()
 	receivedJSON, _ := json.Marshal(chunk.Received)
 	_, err := p.pool.Exec(ctx,
-		"INSERT INTO chunk_uploads (upload_id, filename, total_chunks, total_size, received, is_private, custom_link, temp_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-		chunk.ID, chunk.FileName, chunk.TotalChunks, chunk.TotalSize, string(receivedJSON), chunk.IsPrivate, chunk.CustomLink, chunk.TempDir, chunk.CreatedAt,
+		"INSERT INTO chunk_uploads (upload_id, filename, total_chunks, total_size, received, is_private, custom_link, drive_id, temp_dir, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+		chunk.ID, chunk.FileName, chunk.TotalChunks, chunk.TotalSize, string(receivedJSON), chunk.IsPrivate, chunk.CustomLink, chunk.DriveID, chunk.TempDir, chunk.CreatedAt,
 	)
 	return err
 }
@@ -394,8 +416,8 @@ func (p *PostgreSQLDB) UpdateChunkUpload(chunk models.ChunkUpload) error {
 	ctx := context.Background()
 	receivedJSON, _ := json.Marshal(chunk.Received)
 	_, err := p.pool.Exec(ctx,
-		"UPDATE chunk_uploads SET filename = $1, total_chunks = $2, total_size = $3, received = $4, is_private = $5, custom_link = $6, temp_dir = $7, created_at = $8 WHERE upload_id = $9",
-		chunk.FileName, chunk.TotalChunks, chunk.TotalSize, string(receivedJSON), chunk.IsPrivate, chunk.CustomLink, chunk.TempDir, chunk.CreatedAt, chunk.ID,
+		"UPDATE chunk_uploads SET filename = $1, total_chunks = $2, total_size = $3, received = $4, is_private = $5, custom_link = $6, drive_id = $7, temp_dir = $8, created_at = $9 WHERE upload_id = $10",
+		chunk.FileName, chunk.TotalChunks, chunk.TotalSize, string(receivedJSON), chunk.IsPrivate, chunk.CustomLink, chunk.DriveID, chunk.TempDir, chunk.CreatedAt, chunk.ID,
 	)
 	return err
 }
@@ -421,10 +443,10 @@ func (p *PostgreSQLDB) GetChunkUpload(uploadID string) *models.ChunkUpload {
 	var chunk models.ChunkUpload
 	var receivedJSON string
 	err := p.pool.QueryRow(ctx,
-		"SELECT upload_id, filename, total_chunks, total_size, received, is_private, COALESCE(custom_link, ''), temp_dir, created_at FROM chunk_uploads WHERE upload_id = $1",
+		"SELECT upload_id, filename, total_chunks, total_size, received, is_private, COALESCE(custom_link, ''), COALESCE(drive_id, 'local'), temp_dir, created_at FROM chunk_uploads WHERE upload_id = $1",
 		uploadID,
 	).Scan(&chunk.ID, &chunk.FileName, &chunk.TotalChunks, &chunk.TotalSize,
-		&receivedJSON, &chunk.IsPrivate, &chunk.CustomLink, &chunk.TempDir, &chunk.CreatedAt)
+		&receivedJSON, &chunk.IsPrivate, &chunk.CustomLink, &chunk.DriveID, &chunk.TempDir, &chunk.CreatedAt)
 	if err != nil {
 		return nil
 	}

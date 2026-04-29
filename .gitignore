@@ -23,8 +23,11 @@ Thumbs.db
 .vscode/
 release/
 .webpack/
-tmp.md
+#development
 uploads/
 chunks/
 database.sqlite
 config.json
+fileline
+fileline-old
+tmp.md

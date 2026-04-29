@@ -1,12 +1,12 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +15,7 @@ import (
 	"fileline/auth"
 	"fileline/database"
 	"fileline/models"
+	"fileline/storage"
 )
 
 /**
@@ -134,11 +135,12 @@ func HandleHome(w http.ResponseWriter, r *http.Request) {
 	settings := database.GetSettings()
 
 	data := map[string]interface{}{
-		"Files":     latestFiles,
-		"LoggedIn":  true,
-		"Settings":  settings,
-		"CSRFToken": auth.CSRFToken(r),
-		"T":         T(),
+		"Files":        latestFiles,
+		"LoggedIn":     true,
+		"Settings":     settings,
+		"UploadDrives": storage.UploadDrives(settings),
+		"CSRFToken":    auth.CSRFToken(r),
+		"T":            T(),
 	}
 
 	Templates.ExecuteTemplate(w, "home.html", data)
@@ -175,8 +177,9 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check max file size from settings
-	maxFileSize := database.GetSettings().MaxFileSize
+	// Check max file size and resolve target upload drive from settings
+	settings := database.GetSettings()
+	maxFileSize := settings.MaxFileSize
 
 	// Keep multipart parser memory bounded; large bodies spill to temporary files.
 	r.ParseMultipartForm(100 << 20)
@@ -197,6 +200,11 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 
 	isPrivate := r.FormValue("public") != "on"
 	customLink := strings.TrimSpace(r.FormValue("custom_link"))
+	drive, err := storage.ResolveUploadDrive(settings, r.FormValue("drive_id"))
+	if err != nil {
+		RenderHTTPError(w, r, http.StatusBadRequest, "Invalid upload drive")
+		return
+	}
 
 	link := customLink
 	if link == "" {
@@ -213,29 +221,25 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileID := GenerateID()
-	ext := filepath.Ext(header.Filename)
-	storedName := fileID + ext
-
-	dst, err := os.Create(filepath.Join(models.UploadsDir, storedName))
-	if err != nil {
+	storagePath := storage.BuildStoragePath(fileID, header.Filename)
+	if err := storage.Put(context.Background(), drive, storagePath, file, header.Size); err != nil {
 		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to save file")
 		return
 	}
-	defer dst.Close()
-
-	size, err := io.Copy(dst, file)
-	if err != nil {
-		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to save file")
-		return
+	size := header.Size
+	if size < 0 {
+		size = 0
 	}
 
 	entry := models.FileEntry{
-		ID:         fileID,
-		Name:       header.Filename,
-		Link:       link,
-		Size:       size,
-		UploadedAt: time.Now().Format(time.RFC3339),
-		IsPrivate:  isPrivate,
+		ID:          fileID,
+		Name:        header.Filename,
+		Link:        link,
+		Size:        size,
+		UploadedAt:  time.Now().Format(time.RFC3339),
+		IsPrivate:   isPrivate,
+		DriveID:     drive.ID,
+		StoragePath: storagePath,
 	}
 
 	database.AddFile(entry)
@@ -419,15 +423,18 @@ func HandleFileDelete(w http.ResponseWriter, r *http.Request) {
 		RenderHTTPError(w, r, http.StatusNotFound, "File not found")
 		return
 	}
-	ext := filepath.Ext(file.Name)
-	storedName := file.ID + ext
+	settings := database.GetSettings()
+	drive := storage.DriveByID(settings, file.DriveID)
+	if err := storage.Delete(context.Background(), drive, file.StoragePath); err != nil {
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to delete file from storage")
+		return
+	}
 	if !database.DeleteFile(fileID) {
 		RenderHTTPError(w, r, http.StatusNotFound, "File not found")
 		return
 	}
 	database.SaveDatabase()
-	os.Remove(filepath.Join(models.UploadsDir, storedName))
-	Debugf("HandleFileDelete removed file id=%s stored_name=%q", fileID, storedName)
+	Debugf("HandleFileDelete removed file id=%s drive=%s path=%q", fileID, drive.ID, file.StoragePath)
 	http.Redirect(w, r, "/files", http.StatusSeeOther)
 }
 
@@ -451,17 +458,25 @@ func HandleFileAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := filepath.Ext(file.Name)
-	storedName := file.ID + ext
-	filePath := filepath.Join(models.UploadsDir, storedName)
-
 	contentType := detectServedContentType(ext)
 	disposition := "inline"
 	if shouldServeAsAttachment(ext, contentType) {
 		disposition = "attachment"
 	}
 
+	settings := database.GetSettings()
+	drive := storage.DriveByID(settings, file.DriveID)
+	reader, err := storage.Open(context.Background(), drive, file.StoragePath)
+	if err != nil {
+		RenderHTTPError(w, r, http.StatusNotFound, "File not found in storage")
+		return
+	}
+	defer reader.Close()
+
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, file.Name))
-	Debugf("HandleFileAccess serving link=%q id=%s disposition=%s", link, file.ID, disposition)
-	http.ServeFile(w, r, filePath)
+	Debugf("HandleFileAccess serving link=%q id=%s drive=%s disposition=%s", link, file.ID, drive.ID, disposition)
+	if _, err := io.Copy(w, reader); err != nil {
+		Debugf("HandleFileAccess streaming failed link=%q: %v", link, err)
+	}
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"fileline/auth"
 	"fileline/database"
 	"fileline/models"
+	"fileline/storage"
 )
 
 /**
@@ -115,6 +117,7 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		TotalChunks int    `json:"total_chunks"`
 		IsPrivate   bool   `json:"is_private"`
 		CustomLink  string `json:"custom_link"`
+		DriveID     string `json:"drive_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		Debugf("HandleChunkInit invalid request payload: %v", err)
@@ -136,6 +139,12 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 	uploadID := GenerateID()
 	tempDir := filepath.Join(models.ChunksDir, uploadID)
 	os.MkdirAll(tempDir, 0755)
+	settings := database.GetSettings()
+	drive, err := storage.ResolveUploadDrive(settings, req.DriveID)
+	if err != nil {
+		http.Error(w, "Invalid upload drive", http.StatusBadRequest)
+		return
+	}
 	// Preserve caller-supplied link when provided; otherwise generate one.
 	link := req.CustomLink
 	if link == "" {
@@ -154,6 +163,7 @@ func HandleChunkInit(w http.ResponseWriter, r *http.Request) {
 		Received:    make([]bool, req.TotalChunks),
 		IsPrivate:   req.IsPrivate,
 		CustomLink:  link,
+		DriveID:     drive.ID,
 		TempDir:     tempDir,
 		CreatedAt:   time.Now().Format(time.RFC3339),
 	}
@@ -262,10 +272,8 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	fileID := GenerateID()
-	ext := filepath.Ext(upload.FileName)
-	storedName := fileID + ext
-	finalPath := filepath.Join(models.UploadsDir, storedName)
-	finalFile, err := os.Create(finalPath)
+	assembledPath := filepath.Join(upload.TempDir, "assembled")
+	finalFile, err := os.Create(assembledPath)
 	if err != nil {
 		Debugf("HandleChunkComplete failed creating file for upload=%q: %v", req.UploadID, err)
 		http.Error(w, "Failed to create file", http.StatusInternalServerError)
@@ -275,19 +283,44 @@ func HandleChunkComplete(w http.ResponseWriter, r *http.Request) {
 	for i := 0; i < upload.TotalChunks; i++ {
 		// Reassemble in strict index order to preserve original byte sequence.
 		chunkPath := filepath.Join(upload.TempDir, fmt.Sprintf("%d", i))
-		chunkData, _ := os.ReadFile(chunkPath)
-		n, _ := finalFile.Write(chunkData)
+		chunkData, err := os.ReadFile(chunkPath)
+		if err != nil {
+			finalFile.Close()
+			http.Error(w, "Failed to read chunk", http.StatusInternalServerError)
+			return
+		}
+		n, err := finalFile.Write(chunkData)
+		if err != nil {
+			finalFile.Close()
+			http.Error(w, "Failed to assemble file", http.StatusInternalServerError)
+			return
+		}
 		totalSize += int64(n)
 	}
 	finalFile.Close()
+	settings := database.GetSettings()
+	drive := storage.DriveByID(settings, upload.DriveID)
+	storagePath := storage.BuildStoragePath(fileID, upload.FileName)
+	assembledFile, err := os.Open(assembledPath)
+	if err != nil {
+		http.Error(w, "Failed to prepare file", http.StatusInternalServerError)
+		return
+	}
+	defer assembledFile.Close()
+	if err := storage.Put(context.Background(), drive, storagePath, assembledFile, totalSize); err != nil {
+		http.Error(w, "Failed to store file", http.StatusInternalServerError)
+		return
+	}
 	os.RemoveAll(upload.TempDir)
 	entry := models.FileEntry{
-		ID:         fileID,
-		Name:       upload.FileName,
-		Link:       upload.CustomLink,
-		Size:       totalSize,
-		UploadedAt: time.Now().Format(time.RFC3339),
-		IsPrivate:  upload.IsPrivate,
+		ID:          fileID,
+		Name:        upload.FileName,
+		Link:        upload.CustomLink,
+		Size:        totalSize,
+		UploadedAt:  time.Now().Format(time.RFC3339),
+		IsPrivate:   upload.IsPrivate,
+		DriveID:     drive.ID,
+		StoragePath: storagePath,
 	}
 	database.AddFile(entry)
 	database.RemoveChunkUpload(req.UploadID)

@@ -60,6 +60,18 @@
             {{if eq .Success "backup_code"}}
             <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "backup_code_reset"}}{{else}}Backup code regenerated!{{end}}</div>
             {{end}}
+            {{if eq .Success "storage"}}
+            <div class="alert alert-success"><i class='bx bxs-check-circle'></i> {{if .T.settings}}{{index .T.settings "storage_saved"}}{{else}}Storage drive settings saved!{{end}}</div>
+            {{end}}
+            {{if eq .Error "storage_s3"}}
+            <div class="alert alert-error"><i class='bx bxs-error-circle'></i> {{if .T.settings}}{{index .T.settings "storage_error_s3"}}{{else}}S3 settings are incomplete. Fill endpoint, bucket, access key, and secret key.{{end}}</div>
+            {{end}}
+            {{if eq .Error "storage_ftp"}}
+            <div class="alert alert-error"><i class='bx bxs-error-circle'></i> {{if .T.settings}}{{index .T.settings "storage_error_ftp"}}{{else}}FTP settings are incomplete. Fill host, username, and password.{{end}}</div>
+            {{end}}
+            {{if eq .Error "storage_sftp"}}
+            <div class="alert alert-error"><i class='bx bxs-error-circle'></i> {{if .T.settings}}{{index .T.settings "storage_error_sftp"}}{{else}}SFTP settings are incomplete. Fill host, username, and password.{{end}}</div>
+            {{end}}
             <!-- Password Change -->
             <div class="settings-section">
                 <h3><i class="bx bxs-key"></i> {{if .T.settings}}{{index .T.settings "change_password"}}{{else}}Change Password{{end}}</h3>
@@ -152,6 +164,51 @@
                     <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_language"}}{{else}}Save Language{{end}}</button>
                 </form>
             </div>
+
+            <!-- Storage Drives -->
+            <div class="settings-section">
+                <h3><i class="bx bx-hdd"></i> {{if .T.settings}}{{index .T.settings "storage_drives"}}{{else}}Storage Drives{{end}}</h3>
+                <p class="text-muted">{{if .T.settings}}{{index .T.settings "storage_drives_hint"}}{{else}}Local disk is always available. Configure optional S3, FTP, and SFTP drives below.{{end}}</p>
+                <form method="POST" action="/settings/storage">
+                    <details class="drive-config-panel" style="margin-top: 1rem;">
+                        <summary>{{if .T.settings}}{{index .T.settings "storage_s3_config"}}{{else}}S3 configuration{{end}}</summary>
+                        <div class="form-group" style="margin-top: 0.75rem;"><label><input type="checkbox" name="s3_enabled" value="1" {{if .S3Drive}}{{if .S3Drive.Enabled}}checked{{end}}{{end}}> {{if .T.settings}}{{index .T.settings "storage_enable_s3"}}{{else}}Enable S3 drive{{end}}</label></div>
+                        <div class="form-group"><label for="s3_name">{{if .T.settings}}{{index .T.settings "storage_drive_name"}}{{else}}Drive Name{{end}}</label><input type="text" id="s3_name" name="s3_name" placeholder="S3 Drive" value="{{if .S3Drive}}{{.S3Drive.Name}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_endpoint">{{if .T.settings}}{{index .T.settings "storage_endpoint"}}{{else}}Endpoint{{end}}</label><input type="text" id="s3_endpoint" name="s3_endpoint" placeholder="s3.amazonaws.com" value="{{if .S3Drive}}{{.S3Drive.S3Endpoint}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_region">{{if .T.settings}}{{index .T.settings "storage_region"}}{{else}}Region{{end}}</label><input type="text" id="s3_region" name="s3_region" placeholder="eu-central-1" value="{{if .S3Drive}}{{.S3Drive.S3Region}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_bucket">{{if .T.settings}}{{index .T.settings "storage_bucket"}}{{else}}Bucket{{end}}</label><input type="text" id="s3_bucket" name="s3_bucket" value="{{if .S3Drive}}{{.S3Drive.S3Bucket}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_access_key">{{if .T.settings}}{{index .T.settings "storage_access_key"}}{{else}}Access Key{{end}}</label><input type="text" id="s3_access_key" name="s3_access_key" value="{{if .S3Drive}}{{.S3Drive.S3AccessKey}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_secret_key">{{if .T.settings}}{{index .T.settings "storage_secret_key"}}{{else}}Secret Key{{end}}</label><input type="password" id="s3_secret_key" name="s3_secret_key" value="{{if .S3Drive}}{{.S3Drive.S3SecretKey}}{{end}}"></div>
+                        <div class="form-group"><label for="s3_path_prefix">{{if .T.settings}}{{index .T.settings "storage_path_prefix"}}{{else}}Path Prefix{{end}}</label><input type="text" id="s3_path_prefix" name="s3_path_prefix" placeholder="fileline" value="{{if .S3Drive}}{{.S3Drive.S3PathPrefix}}{{end}}"></div>
+                        <div class="form-group"><label><input type="checkbox" name="s3_use_ssl" value="1" {{if .S3Drive}}{{if .S3Drive.S3UseSSL}}checked{{end}}{{else}}checked{{end}}> {{if .T.settings}}{{index .T.settings "storage_use_ssl"}}{{else}}Use SSL{{end}}</label></div>
+                    </details>
+
+                    <details class="drive-config-panel" style="margin-top: 1rem;">
+                        <summary>{{if .T.settings}}{{index .T.settings "storage_ftp_config"}}{{else}}FTP configuration{{end}}</summary>
+                        <div class="form-group" style="margin-top: 0.75rem;"><label><input type="checkbox" name="ftp_enabled" value="1" {{if .FTPDrive}}{{if .FTPDrive.Enabled}}checked{{end}}{{end}}> {{if .T.settings}}{{index .T.settings "storage_enable_ftp"}}{{else}}Enable FTP drive{{end}}</label></div>
+                        <div class="form-group"><label for="ftp_name">{{if .T.settings}}{{index .T.settings "storage_drive_name"}}{{else}}Drive Name{{end}}</label><input type="text" id="ftp_name" name="ftp_name" placeholder="FTP Drive" value="{{if .FTPDrive}}{{.FTPDrive.Name}}{{end}}"></div>
+                        <div class="form-group"><label for="ftp_host">{{if .T.settings}}{{index .T.settings "storage_host"}}{{else}}Host{{end}}</label><input type="text" id="ftp_host" name="ftp_host" value="{{if .FTPDrive}}{{.FTPDrive.FTPHost}}{{end}}"></div>
+                        <div class="form-group"><label for="ftp_port">{{if .T.settings}}{{index .T.settings "storage_port"}}{{else}}Port{{end}}</label><input type="number" id="ftp_port" name="ftp_port" value="{{if .FTPDrive}}{{.FTPDrive.FTPPort}}{{else}}21{{end}}" min="1"></div>
+                        <div class="form-group"><label for="ftp_username">{{if .T.settings}}{{index .T.settings "storage_username"}}{{else}}Username{{end}}</label><input type="text" id="ftp_username" name="ftp_username" value="{{if .FTPDrive}}{{.FTPDrive.FTPUsername}}{{end}}"></div>
+                        <div class="form-group"><label for="ftp_password">{{if .T.settings}}{{index .T.settings "storage_password"}}{{else}}Password{{end}}</label><input type="password" id="ftp_password" name="ftp_password" value="{{if .FTPDrive}}{{.FTPDrive.FTPPassword}}{{end}}"></div>
+                        <div class="form-group"><label for="ftp_base_path">{{if .T.settings}}{{index .T.settings "storage_base_path"}}{{else}}Base Path{{end}}</label><input type="text" id="ftp_base_path" name="ftp_base_path" placeholder="fileline" value="{{if .FTPDrive}}{{.FTPDrive.FTPBasePath}}{{end}}"></div>
+                    </details>
+
+                    <details class="drive-config-panel" style="margin-top: 1rem;">
+                        <summary>{{if .T.settings}}{{index .T.settings "storage_sftp_config"}}{{else}}SFTP configuration{{end}}</summary>
+                        <div class="form-group" style="margin-top: 0.75rem;"><label><input type="checkbox" name="sftp_enabled" value="1" {{if .SFTPDrive}}{{if .SFTPDrive.Enabled}}checked{{end}}{{end}}> {{if .T.settings}}{{index .T.settings "storage_enable_sftp"}}{{else}}Enable SFTP drive{{end}}</label></div>
+                        <div class="form-group"><label for="sftp_name">{{if .T.settings}}{{index .T.settings "storage_drive_name"}}{{else}}Drive Name{{end}}</label><input type="text" id="sftp_name" name="sftp_name" placeholder="SFTP Drive" value="{{if .SFTPDrive}}{{.SFTPDrive.Name}}{{end}}"></div>
+                        <div class="form-group"><label for="sftp_host">{{if .T.settings}}{{index .T.settings "storage_host"}}{{else}}Host{{end}}</label><input type="text" id="sftp_host" name="sftp_host" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPHost}}{{end}}"></div>
+                        <div class="form-group"><label for="sftp_port">{{if .T.settings}}{{index .T.settings "storage_port"}}{{else}}Port{{end}}</label><input type="number" id="sftp_port" name="sftp_port" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPPort}}{{else}}22{{end}}" min="1"></div>
+                        <div class="form-group"><label for="sftp_username">{{if .T.settings}}{{index .T.settings "storage_username"}}{{else}}Username{{end}}</label><input type="text" id="sftp_username" name="sftp_username" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPUsername}}{{end}}"></div>
+                        <div class="form-group"><label for="sftp_password">{{if .T.settings}}{{index .T.settings "storage_password"}}{{else}}Password{{end}}</label><input type="password" id="sftp_password" name="sftp_password" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPPassword}}{{end}}"></div>
+                        <div class="form-group"><label for="sftp_base_path">{{if .T.settings}}{{index .T.settings "storage_base_path"}}{{else}}Base Path{{end}}</label><input type="text" id="sftp_base_path" name="sftp_base_path" placeholder="fileline" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPBasePath}}{{end}}"></div>
+                    </details>
+
+                    <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_storage"}}{{else}}Save Storage Drives{{end}}</button>
+                </form>
+            </div>
+
             <!-- Upload Settings -->
             <div class="settings-section">
                 <h3><i class="bx bxs-cloud-upload"></i> {{if .T.settings}}{{index .T.settings "upload_settings"}}{{else}}Upload Settings{{end}}</h3>

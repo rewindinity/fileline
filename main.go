@@ -81,6 +81,11 @@ func truncate(s string, max int) string {
 	return string(runes[:max]) + "..."
 }
 
+/**
+  normalizeConfiguredHost processes the user-provided domain/host configuration, stripping schemes, paths, and extraneous entries to derive a clean host value for WebAuthn RP configuration.
+  @param raw - The raw domain/host configuration string.
+  @returns string - The normalized host value.
+*/
 func normalizeConfiguredHost(raw string) string {
 	host := strings.TrimSpace(strings.Split(raw, ",")[0])
 	if host == "" {
@@ -95,6 +100,11 @@ func normalizeConfiguredHost(raw string) string {
 	return host
 }
 
+/**
+  hostWithoutPort removes any port information from a host string, handling IPv6 formats correctly.
+  @param host - The input host string, potentially containing a port.
+  @returns string - The host string without any port information.
+*/
 func hostWithoutPort(host string) string {
 	if host == "" {
 		return ""
@@ -108,6 +118,11 @@ func hostWithoutPort(host string) string {
 	return strings.Trim(trimmed, "[]")
 }
 
+/**
+  deriveWebAuthnRPConfig computes the relying party ID and origin for WebAuthn based on the application's domain configuration, applying normalization and sensible defaults to ensure compatibility across various deployment scenarios.
+  @param none - This function does not accept parameters.
+  @returns (string, string) - The derived RP ID and origin URL for WebAuthn configuration.
+*/
 func deriveWebAuthnRPConfig() (string, string) {
 	host := normalizeConfiguredHost(database.Config.Domain)
 	scheme := "http"
@@ -126,6 +141,11 @@ func deriveWebAuthnRPConfig() (string, string) {
 
 type filteredHTTPErrorWriter struct{}
 
+/**
+  Write filters out specific non-critical HTTP/2 GOAWAY errors to prevent log pollution, while allowing all other error messages to be logged as usual.
+  @param p - The byte slice containing the log message.
+  @returns (int, error) - The number of bytes written and any error encountered during writing.
+*/
 func (w filteredHTTPErrorWriter) Write(p []byte) (int, error) {
 	line := string(p)
 	if strings.Contains(line, "http2: received GOAWAY") {
@@ -172,6 +192,11 @@ func parseDebugFlag() bool {
 	return *debugEnabled
 }
 
+/**
+  withPanicRecovery wraps an HTTP handler to recover from panics, log the error and stack trace, and return a generic 500 error response to the client.
+  @param next - The HTTP handler to wrap.
+  @returns http.Handler - The wrapped HTTP handler with panic recovery.
+*/
 func withPanicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -184,6 +209,12 @@ func withPanicRecovery(next http.Handler) http.Handler {
 	})
 }
 
+/**
+  withRequestLogging wraps an HTTP handler to log incoming requests and their response status, while ignoring 404 errors to reduce noise. Debug logging can be toggled with the debugEnabled parameter.
+  @param next - The HTTP handler to wrap.
+  @param debugEnabled - A boolean flag to enable or disable debug logging.
+  @returns http.Handler - The wrapped HTTP handler with request logging.
+*/
 func withRequestLogging(next http.Handler, debugEnabled bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		startedAt := time.Now()
@@ -298,6 +329,7 @@ func main() {
 	mux.HandleFunc("/settings/theme", handlers.HandleThemeSettings)
 	mux.HandleFunc("/settings/language", handlers.HandleLanguageSettings)
 	mux.HandleFunc("/settings/upload", handlers.HandleUploadSettings)
+	mux.HandleFunc("/settings/storage", handlers.HandleStorageDrivesSettings)
 	mux.HandleFunc("/settings/backup-code", handlers.HandleBackupCodeRegenerate)
 	mux.HandleFunc("/settings/passkey/register/begin", handlers.HandlePasskeyRegistrationBegin)
 	mux.HandleFunc("/settings/passkey/register/finish", handlers.HandlePasskeyRegistrationFinish)
