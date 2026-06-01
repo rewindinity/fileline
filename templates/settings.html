@@ -167,7 +167,7 @@
 
             <!-- Storage Drives -->
             <div class="settings-section">
-                <h3><i class="bx bx-hdd"></i> {{if .T.settings}}{{index .T.settings "storage_drives"}}{{else}}Storage Drives{{end}}</h3>
+                <h3><i class="bx bx-data"></i> {{if .T.settings}}{{index .T.settings "storage_drives"}}{{else}}Storage Drives{{end}}</h3>
                 <p class="text-muted">{{if .T.settings}}{{index .T.settings "storage_drives_hint"}}{{else}}Local disk is always available. Configure optional S3, FTP, and SFTP drives below.{{end}}</p>
                 <form method="POST" action="/settings/storage">
                     <details class="drive-config-panel" style="margin-top: 1rem;">
@@ -204,7 +204,7 @@
                         <div class="form-group"><label for="sftp_password">{{if .T.settings}}{{index .T.settings "storage_password"}}{{else}}Password{{end}}</label><input type="password" id="sftp_password" name="sftp_password" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPPassword}}{{end}}"></div>
                         <div class="form-group"><label for="sftp_base_path">{{if .T.settings}}{{index .T.settings "storage_base_path"}}{{else}}Base Path{{end}}</label><input type="text" id="sftp_base_path" name="sftp_base_path" placeholder="fileline" value="{{if .SFTPDrive}}{{.SFTPDrive.SFTPBasePath}}{{end}}"></div>
                     </details>
-
+                    <br/>
                     <button type="submit" class="btn btn-primary">{{if .T.settings}}{{index .T.settings "save_storage"}}{{else}}Save Storage Drives{{end}}</button>
                 </form>
             </div>
