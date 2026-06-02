@@ -73,6 +73,10 @@
   mask-image: url("/static/icons/bx-trash-alt.svg");
   -webkit-mask-image: url("/static/icons/bx-trash-alt.svg");
 }
+.bx-search-alt {
+  mask-image: url("/static/icons/bx-search-alt.svg");
+  -webkit-mask-image: url("/static/icons/bx-search-alt.svg");
+}
 .bxs-check-circle {
   mask-image: url("/static/icons/bxs-check-circle.svg");
   -webkit-mask-image: url("/static/icons/bxs-check-circle.svg");

@@ -77,7 +77,15 @@
     "copy_link": "Kopiuj link",
     "link_copied": "Link skopiowany do schowka!",
     "private": "Prywatny",
-    "public": "Publiczny"
+    "public": "Publiczny",
+    "rescan_uploads": "Przeskanuj uploads",
+    "missing_title": "Brakujące pliki w folderze uploads",
+    "missing_count": "brakujących",
+    "missing_hint": "Wybierz pliki do importu.",
+    "missing_none": "Nie znaleziono brakujących plików.",
+    "import_selected": "Importuj wybrane",
+    "modified": "Ostatnia modyfikacja",
+    "select": "Wybierz"
   },
   "edit": {
     "title": "Edytuj plik",

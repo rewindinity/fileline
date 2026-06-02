@@ -77,7 +77,15 @@
     "copy_link": "Link kopieren",
     "link_copied": "Link in die Zwischenablage kopiert!",
     "private": "Privat",
-    "public": "Öffentlich"
+    "public": "Öffentlich",
+    "rescan_uploads": "Uploads erneut scannen",
+    "missing_title": "Fehlende Dateien in uploads",
+    "missing_count": "fehlend",
+    "missing_hint": "Dateien für den Import auswählen.",
+    "missing_none": "Keine fehlenden Dateien gefunden.",
+    "import_selected": "Auswahl importieren",
+    "modified": "Zuletzt geändert",
+    "select": "Auswählen"
   },
   "edit": {
     "title": "Datei bearbeiten",

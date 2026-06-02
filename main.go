@@ -316,6 +316,7 @@ func main() {
 	mux.HandleFunc("/logout", handlers.HandleLogout)
 	mux.HandleFunc("/upload", handlers.HandleUpload)
 	mux.HandleFunc("/files", handlers.HandleFiles)
+	mux.HandleFunc("/files/import", handlers.HandleFilesImport)
 	mux.HandleFunc("/file/edit/", handlers.HandleFileEdit)
 	mux.HandleFunc("/file/delete/", handlers.HandleFileDelete)
 	mux.HandleFunc("/f/", handlers.HandleFileAccess)

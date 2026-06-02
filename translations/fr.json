@@ -77,7 +77,15 @@
     "copy_link": "Copier le lien",
     "link_copied": "Lien copié dans le presse-papiers !",
     "private": "Privé",
-    "public": "Public"
+    "public": "Public",
+    "rescan_uploads": "Rescanner uploads",
+    "missing_title": "Fichiers manquants dans uploads",
+    "missing_count": "manquants",
+    "missing_hint": "Choisissez les fichiers à importer.",
+    "missing_none": "Aucun fichier manquant trouvé.",
+    "import_selected": "Importer la sélection",
+    "modified": "Dernière modification",
+    "select": "Sélectionner"
   },
   "edit": {
     "title": "Modifier le fichier",

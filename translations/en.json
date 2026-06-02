@@ -77,7 +77,15 @@
     "copy_link": "Copy link",
     "link_copied": "Link copied to clipboard!",
     "private": "Private",
-    "public": "Public"
+    "public": "Public",
+    "rescan_uploads": "Rescan uploads",
+    "missing_title": "Missing files in uploads",
+    "missing_count": "missing",
+    "missing_hint": "Select files to import.",
+    "missing_none": "No missing files found.",
+    "import_selected": "Import selected",
+    "modified": "Last Modified",
+    "select": "Select"
   },
   "edit": {
     "title": "Edit File",

@@ -39,9 +39,12 @@
         <div class="card">
             <div class="card-header">
                 <h2><i class='bx bxs-folder-open'></i> {{if .T.files}}{{index .T.files "title"}}{{else}}All Files{{end}}</h2>
-                <span class="file-count">{{len .Files}} {{if .T.files}}{{index .T.files "files_count"}}{{else}}files{{end}}</span>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span class="file-count">{{len .Files}} {{if .T.files}}{{index .T.files "files_count"}}{{else}}files{{end}}</span>
+                    <a href="/files?rescan=1" class="btn btn-sm btn-outline"><i class='bx bx-refresh'></i> {{if .T.files}}{{index .T.files "rescan_uploads"}}{{else}}Rescan uploads{{end}}</a>
+                </div>
             </div>
-            
+                
             {{if .Files}}
             <div class="table-responsive">
                 <table class="table">
@@ -117,6 +120,64 @@
             </div>
             {{end}}
         </div>
+        {{if .FlashMessage}}
+        <div class="alert alert-success" style="margin-bottom: 1rem;">
+            {{.FlashMessage}}
+        </div>
+        {{end}}
+
+        {{if .MissingScan}}
+        <div class="card" style="margin-top: 1.5rem;">
+            <div class="card-header">
+                <h2><i class='bx bx-search-alt'></i> {{if .T.files}}{{index .T.files "missing_title"}}{{else}}Missing files in uploads{{end}}</h2>
+                <span class="file-count">{{len .MissingFiles}} {{if .T.files}}{{index .T.files "missing_count"}}{{else}}missing{{end}}</span>
+            </div>
+            <p class="text-muted">{{if .T.files}}{{index .T.files "missing_hint"}}{{else}}Select files to import as private links with random URLs.{{end}}</p>
+            {{if .MissingFiles}}
+            <form method="POST" action="/files/import">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <!-- Simple responsive wrapper without negative margins -->
+                <div style="overflow-x: auto; margin-top: 1rem;">
+                    <table style="min-width: 500px; width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th style="width: 32px; padding: 0.75rem 0.5rem;"><input type="checkbox" id="selectAllMissing"></th>
+                                <th style="text-align: left; padding: 0.75rem 0.5rem;">{{if .T.files}}{{index .T.files "name"}}{{else}}Name{{end}}</th>
+                                <th style="text-align: left; padding: 0.75rem 0.5rem;">{{if .T.files}}{{index .T.files "modified"}}{{else}}Last Modified{{end}}</th>
+                                <th style="text-align: left; padding: 0.75rem 0.5rem;">{{if .T.files}}{{index .T.files "size"}}{{else}}Size{{end}}</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{range .MissingFiles}}
+                            <tr style="border-top: 1px solid var(--border);">
+                                <td style="padding: 0.75rem 0.5rem; text-align: center;">
+                                    <input type="checkbox" name="missing_files" value="{{.Path}}" class="missing-checkbox">
+                                </td>
+                                <td style="padding: 0.75rem 0.5rem;">
+                                    <div><i class='bx bxs-file' style="margin-right: 0.5rem;"></i> {{.Name}}</div>
+                                    {{if ne .Path .Name}}
+                                    <div class="text-muted" style="font-size: 0.75rem; word-break: break-all;">{{.Path}}</div>
+                                    {{end}}
+                                </td>
+                                <td style="padding: 0.75rem 0.5rem; white-space: nowrap;">{{formatDate .ModifiedAt}}</td>
+                                <td style="padding: 0.75rem 0.5rem; white-space: nowrap;">{{formatSize .Size}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="form-actions" style="margin-top: 1rem;">
+                    <button type="submit" class="btn btn-primary"><i class='bx bx-plus'></i> {{if .T.files}}{{index .T.files "import_selected"}}{{else}}Import selected{{end}}</button>
+                </div>
+            </form>
+            {{else}}
+            <div class="empty-state">
+                <i class='bx bxs-check-circle'></i>
+                <p>{{if .T.files}}{{index .T.files "missing_none"}}{{else}}No missing files found.{{end}}</p>
+            </div>
+            {{end}}
+        </div>
+        {{end}}
     </div>
     <script>
         // Translations
@@ -148,6 +209,12 @@
                 alert(TRANS.linkCopied);
             }).catch(() => {
                 prompt('Copy this link:', fullUrl);
+            });
+        }
+        const selectAllCheckbox = document.getElementById('selectAllMissing');
+        if (selectAllCheckbox) {
+            selectAllCheckbox.addEventListener('change', function() {
+                document.querySelectorAll('.missing-checkbox').forEach(cb => cb.checked = selectAllCheckbox.checked);
             });
         }
     </script>

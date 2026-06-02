@@ -891,17 +891,26 @@ i.bx {
   overflow-x: auto;
   margin: 0 -1.75rem;
   padding: 0 1.75rem;
+  -webkit-overflow-scrolling: touch;
 }
 .table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 600px;
+  min-width: 650px;
+  table-layout: fixed;
 }
 .table th,
 .table td {
   padding: 0.875rem 1rem;
   text-align: left;
   border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.table th.file-name-col {
+  width: 40%;
+}
+.table th:not(.file-name-col) {
+  width: 15%;
 }
 .table th {
   font-weight: 700;
@@ -910,9 +919,6 @@ i.bx {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   background: var(--bg-secondary);
-  position: sticky;
-  top: 56px;
-  z-index: 1;
 }
 .table th:first-child {
   padding-left: 1rem;
@@ -928,12 +934,6 @@ i.bx {
 }
 .table td:first-child {
   padding-left: 1rem;
-}
-.table th.file-name-col,
-.table td.file-name-col {
-  max-width: 350px;
-  width: 350px;
-  overflow: hidden;
 }
 .table td:last-child {
   padding-right: 1rem;
@@ -956,16 +956,14 @@ i.bx {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  max-width: min(100%, 62ch);
   min-width: 0;
   transition: var(--transition);
 }
 .file-link span {
-  display: inline-block;
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 58ch;
 }
 .file-link:hover {
   color: var(--accent);
@@ -976,22 +974,6 @@ i.bx {
   font-size: 1.1rem;
   flex-shrink: 0;
   opacity: 0.75;
-}
-@media (max-width: 768px) {
-  .file-link {
-    max-width: 200px;
-  }
-  .file-link span {
-    max-width: 170px;
-  }
-}
-@media (min-width: 769px) and (max-width: 1200px) {
-  .file-link {
-    max-width: 48ch;
-  }
-  .file-link span {
-    max-width: 44ch;
-  }
 }
 .link-code {
   background: var(--bg);

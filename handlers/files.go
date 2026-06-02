@@ -5,8 +5,12 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -63,6 +67,100 @@ func ValidateLink(link string) bool {
 		}
 	}
 	return true
+}
+
+type MissingFile struct {
+	Path       string
+	Name       string
+	Size       int64
+	ModifiedAt string
+}
+
+func localUploadsRoot(settings models.AppSettings) string {
+	drive := storage.DriveByID(settings, models.LocalDriveID)
+	root := strings.TrimSpace(drive.LocalPath)
+	if root == "" {
+		root = models.UploadsDir
+	}
+	return root
+}
+
+func findMissingLocalFiles(settings models.AppSettings, files []models.FileEntry) ([]MissingFile, error) {
+	existing := make(map[string]bool, len(files))
+	for _, file := range files {
+		storage.ApplyFileDefaults(&file)
+		driveID := strings.ToLower(strings.TrimSpace(file.DriveID))
+		if driveID == "" || driveID == models.LocalDriveID {
+			storagePath := strings.TrimSpace(file.StoragePath)
+			if storagePath == "" {
+				continue
+			}
+			normalized := path.Clean(filepath.ToSlash(storagePath))
+			normalized = strings.TrimPrefix(normalized, "./")
+			if normalized != "." && normalized != "" {
+				existing[normalized] = true
+			}
+		}
+	}
+
+	root := localUploadsRoot(settings)
+	if _, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			return []MissingFile{}, nil
+		}
+		return nil, err
+	}
+
+	missing := []MissingFile{}
+	err := filepath.WalkDir(root, func(filePath string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(root, filePath)
+		if err != nil {
+			return err
+		}
+		relPath = path.Clean(filepath.ToSlash(relPath))
+		relPath = strings.TrimPrefix(relPath, "./")
+		if relPath == "." || relPath == "" {
+			return nil
+		}
+		if existing[relPath] {
+			return nil
+		}
+		missing = append(missing, MissingFile{
+			Path:       relPath,
+			Name:       filepath.Base(relPath),
+			Size:       info.Size(),
+			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(missing, func(i, j int) bool {
+		return missing[i].Path < missing[j].Path
+	})
+	return missing, nil
+}
+
+func generateUniqueLink() (string, error) {
+	const maxAttempts = 6
+	for i := 0; i < maxAttempts; i++ {
+		link := GenerateID()
+		if !database.LinkExists(link) {
+			return link, nil
+		}
+	}
+	return "", fmt.Errorf("failed to generate unique link")
 }
 
 func detectServedContentType(ext string) string {
@@ -265,14 +363,126 @@ func HandleFiles(w http.ResponseWriter, r *http.Request) {
 		return files[i].UploadedAt > files[j].UploadedAt
 	})
 	settings := database.GetSettings()
+	rescanUploads := strings.TrimSpace(r.URL.Query().Get("rescan")) != ""
+	missingFiles := []MissingFile{}
+	if rescanUploads {
+		var err error
+		missingFiles, err = findMissingLocalFiles(settings, files)
+		if err != nil {
+			RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to scan uploads folder")
+			return
+		}
+	}
+	flashMessage := r.URL.Query().Get("message")
 	data := map[string]interface{}{
-		"Files":     files,
-		"LoggedIn":  true,
-		"Settings":  settings,
-		"CSRFToken": auth.CSRFToken(r),
-		"T":         T(),
+		"Files":        files,
+		"MissingFiles": missingFiles,
+		"MissingScan":  rescanUploads,
+		"FlashMessage": flashMessage,
+		"LoggedIn":     true,
+		"Settings":     settings,
+		"CSRFToken":    auth.CSRFToken(r),
+		"T":            T(),
 	}
 	Templates.ExecuteTemplate(w, "files.html", data)
+}
+
+func HandleFilesImport(w http.ResponseWriter, r *http.Request) {
+	if auth.RequireSetup(w, r) {
+		return
+	}
+	if auth.RequireAuth(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		RenderHTTPError(w, r, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if !auth.ValidateCSRFRequest(r, database.Config.IsBehindProxy) {
+		Debugf("HandleFilesImport rejected due to CSRF validation failure")
+		RenderHTTPError(w, r, http.StatusForbidden, "Forbidden")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		RenderHTTPError(w, r, http.StatusBadRequest, "Failed to read import request")
+		return
+	}
+	selected := r.Form["missing_files"]
+	if len(selected) == 0 {
+		http.Redirect(w, r, "/files", http.StatusSeeOther)
+		return
+	}
+
+	settings := database.GetSettings()
+	files := database.GetFiles()
+	missingFiles, err := findMissingLocalFiles(settings, files)
+	if err != nil {
+		RenderHTTPError(w, r, http.StatusInternalServerError, "Failed to scan uploads folder")
+		return
+	}
+	missingByPath := make(map[string]MissingFile, len(missingFiles))
+	for _, missing := range missingFiles {
+		missingByPath[missing.Path] = missing
+	}
+
+	uniqueSelections := make(map[string]MissingFile, len(selected))
+	for _, selectedPath := range selected {
+		missing, ok := missingByPath[selectedPath]
+		if !ok {
+			RenderHTTPError(w, r, http.StatusBadRequest, "Selected file is no longer available")
+			return
+		}
+		uniqueSelections[selectedPath] = missing
+	}
+
+	var importErrors []string
+	importedCount := 0
+
+	for _, missing := range uniqueSelections {
+		// Generate unique link with retry
+		var link string
+		var linkErr error
+		for attempt := 0; attempt < 6; attempt++ {
+			link = GenerateID()
+			if !database.LinkExists(link) {
+				linkErr = nil
+				break
+			}
+			linkErr = fmt.Errorf("link %s already exists", link)
+		}
+		if linkErr != nil {
+			importErrors = append(importErrors, fmt.Sprintf("%s: %v", missing.Name, linkErr))
+			continue
+		}
+
+		uploadedAt := missing.ModifiedAt
+		if uploadedAt == "" {
+			uploadedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		// Normalize storage path (remove any leading "./" or "../")
+		storagePath := path.Clean(missing.Path)
+		storagePath = strings.TrimPrefix(storagePath, "./")
+
+		entry := models.FileEntry{
+			ID:          GenerateID(),
+			Name:        missing.Name,
+			Link:        link,
+			Size:        missing.Size,
+			UploadedAt:  uploadedAt,
+			IsPrivate:   true, // imported files are private by default
+			DriveID:     models.LocalDriveID,
+			StoragePath: storagePath,
+		}
+		database.AddFile(entry)
+		importedCount++
+	}
+
+	message := fmt.Sprintf("Successfully imported %d file(s).", importedCount)
+	if len(importErrors) > 0 {
+		message += " Errors: " + strings.Join(importErrors, "; ")
+	}
+	http.Redirect(w, r, "/files?message="+url.QueryEscape(message), http.StatusSeeOther)
 }
 
 /**

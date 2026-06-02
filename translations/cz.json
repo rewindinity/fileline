@@ -77,7 +77,15 @@
     "copy_link": "Kopírovat odkaz",
     "link_copied": "Odkaz zkopírován do schránky!",
     "private": "Soukromý",
-    "public": "Veřejný"
+    "public": "Veřejný",
+    "rescan_uploads": "Znovu prohledat uploads",
+    "missing_title": "Chybějící soubory v uploads",
+    "missing_count": "chybějících",
+    "missing_hint": "Vyberte soubory k importu.",
+    "missing_none": "Nebyl nalezen žádný chybějící soubor.",
+    "import_selected": "Importovat vybrané",
+    "modified": "Naposledy změněno",
+    "select": "Vybrat"
   },
   "edit": {
     "title": "Upravit soubor",
