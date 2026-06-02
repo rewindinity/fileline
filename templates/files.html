@@ -73,10 +73,10 @@
                                 {{end}}
                             </td>
                             <td class="actions">
-                                <a href="/file/edit/{{.ID}}" class="btn btn-sm btn-outline"><i class='bx bxs-edit'></i> {{if $.T.files}}{{index $.T.files "edit"}}{{else}}Edit{{end}}</a>
+                                <a href="/file/edit/{{.ID}}" class="btn btn-sm btn-outline"><i class='bx bxs-edit'></i></a>
                                 <form method="POST" action="/file/delete/{{.ID}}" class="inline-action-form" onsubmit="return confirm('{{if $.T.files}}{{index $.T.files "delete_confirm"}}{{else}}Delete this file?{{end}}')">
                                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                                    <button type="submit" class="btn btn-sm btn-danger"><i class='bx bxs-trash'></i> {{if $.T.files}}{{index $.T.files "delete"}}{{else}}Delete{{end}}</button>
+                                    <button type="submit" class="btn btn-sm btn-danger"><i class='bx bxs-trash'></i></button>
                                 </form>
                             </td>
                         </tr>
