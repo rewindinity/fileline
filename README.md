@@ -286,9 +286,9 @@ go build -o fileline .
 
 ## TODO
 
-- [x] Add better error handler and debug handler
-- [x] Better error pages
-- [x] More file storage options like S3, FTP/SFTP, WebDav etc
-- [x] Add docker support (via docker image)
-- [x] Custom translation instructions and more languages
-- [ ] UI improvements
+- [ ] Fix issues with passkey login behind reserve proxy
+
+## Credits
+
+- Font (Outfit) - [fonts.google.com](https://fonts.google.com)
+- Icons - [boxicons v2](https://v2.boxicons.com)
