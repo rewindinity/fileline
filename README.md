@@ -287,6 +287,7 @@ go build -o fileline .
 ## TODO
 
 - [ ] Fix issues with passkey login behind reserve proxy
+- [ ] Migrate from `go.mongodb.org/mongo-driver`(deprecated) to `go.mongodb.org/mongo-driver/v2`
 
 ## Credits
 
