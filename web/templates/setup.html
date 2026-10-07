@@ -1,0 +1,79 @@
+{{template "base.html" .}} {{define "content"}}
+<div class="container">
+  <h1>FileLine Setup</h1>
+  {{if .Error}}
+  <div class="error">{{.Error}}</div>
+  {{end}}
+  <form method="POST" action="/setup">
+    {{if not .DBConfigured}}
+    <div class="form-group">
+      <label for="db_type">Database Type</label>
+      <select id="db_type" name="db_type" onchange="toggleDBFields()">
+        <option value="sqlite">SQLite</option>
+        <option value="postgres">PostgreSQL</option>
+      </select>
+    </div>
+
+    <div id="sqlite_fields">
+      <div class="form-group">
+        <label for="sqlite_url">SQLite File Path</label>
+        <input type="text" id="sqlite_url" name="sqlite_url" value="data/database.sqlite" />
+      </div>
+    </div>
+
+    <div id="postgres_fields" style="display: none">
+      <div class="form-group">
+        <label for="pg_host">Host</label>
+        <input type="text" id="pg_host" name="pg_host" value="localhost" />
+      </div>
+      <div class="form-group">
+        <label for="pg_port">Port</label>
+        <input type="text" id="pg_port" name="pg_port" value="5432" />
+      </div>
+      <div class="form-group">
+        <label for="pg_user">User</label>
+        <input type="text" id="pg_user" name="pg_user" value="postgres" />
+      </div>
+      <div class="form-group">
+        <label for="pg_password">Password</label>
+        <input type="password" id="pg_password" name="pg_password" />
+      </div>
+      <div class="form-group">
+        <label for="pg_db">Database Name</label>
+        <input type="text" id="pg_db" name="pg_db" value="fileline" />
+      </div>
+    </div>
+    {{else}}
+    <p style="text-align: center; color: #81c784">Database configured via environment variables.</p>
+    {{end}}
+
+    <hr style="border-color: #333; margin: 2rem 0" />
+
+    <h2>Admin Account</h2>
+    <div class="form-group">
+      <label for="username">Admin Username</label>
+      <input type="text" id="username" name="username" required />
+    </div>
+    <div class="form-group">
+      <label for="password">Admin Password</label>
+      <input type="password" id="password" name="password" required />
+    </div>
+
+    <button type="submit">Complete Setup</button>
+  </form>
+</div>
+
+{{if not .DBConfigured}}
+<script>
+  function toggleDBFields() {
+    const type = document.getElementById("db_type").value;
+    if (type === "sqlite") {
+      document.getElementById("sqlite_fields").style.display = "block";
+      document.getElementById("postgres_fields").style.display = "none";
+    } else {
+      document.getElementById("sqlite_fields").style.display = "none";
+      document.getElementById("postgres_fields").style.display = "block";
+    }
+  }
+</script>
+{{end}} {{end}}

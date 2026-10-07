@@ -1,0 +1,19 @@
+{{template "base.html" .}} {{define "content"}}
+<div class="container">
+  <h1>Login</h1>
+  {{if .Error}}
+  <div class="error">{{.Error}}</div>
+  {{end}}
+  <form method="POST" action="/login">
+    <div class="form-group">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" required autofocus />
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required />
+    </div>
+    <button type="submit">Sign In</button>
+  </form>
+</div>
+{{end}}

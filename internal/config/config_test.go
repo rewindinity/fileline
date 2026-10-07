@@ -55,8 +55,8 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.DBType != "sqlite" {
-		t.Errorf("expected 'sqlite', got %s", cfg.DBType)
+	if cfg.DBType != "" {
+		t.Errorf("expected default DBType '', got %s", cfg.DBType)
 	}
 	if cfg.Port != 8000 {
 		t.Errorf("expected 8000, got %d", cfg.Port)

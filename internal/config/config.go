@@ -23,8 +23,6 @@ type Config struct {
 // DefaultConfig returns a Config with default values
 func DefaultConfig() Config {
 	return Config{
-		DBType:       "sqlite",
-		SQLiteURL:    "fileline.db",
 		Port:         8080,
 		SSL:          false,
 		ReverseProxy: false,
@@ -79,4 +77,12 @@ func Load(configPath string) (*Config, error) {
 		cfg.JWTKey = v
 	}
 	return &cfg, nil
+}
+// Save writes the current configuration back to config.json.
+func (c *Config) Save(configPath string) error {
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+	return os.WriteFile(configPath, data, 0644)
 }

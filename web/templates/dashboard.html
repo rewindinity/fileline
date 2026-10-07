@@ -1,0 +1,17 @@
+{{template "base.html" .}} {{define "nav"}}
+<div class="nav">
+  <div style="font-weight: bold; font-size: 1.2rem">FileLine</div>
+  <div>
+    <span>Welcome, {{.Username}}</span>
+    <a href="/logout" style="margin-left: 1rem; color: #ff5252">Logout</a>
+  </div>
+</div>
+{{end}} {{define "content"}}
+<div style="width: 100%; max-width: 800px">
+  <h2>Dashboard</h2>
+  <div class="container" style="max-width: 100%">
+    <p>FileLine instance is successfully configured and running.</p>
+    <p>This is the general dashboard. Further functionalities will be added here.</p>
+  </div>
+</div>
+{{end}}
