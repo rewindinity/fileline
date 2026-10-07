@@ -76,3 +76,29 @@ func GetFileByID(ctx context.Context, db *sql.DB, id int) (*File, error) {
 	}
 	return f, nil
 }
+
+// UpdateFile updates file details
+func UpdateFile(ctx context.Context, db *sql.DB, id int, customName, urlPath string, isPrivate bool) error {
+	_, err := db.ExecContext(ctx, "UPDATE files SET custom_name = $1, url_path = $2, is_private = $3 WHERE id = $4", customName, urlPath, isPrivate, id)
+	return err
+}
+
+// GetRecentFiles retrieves the N most recent files
+func GetRecentFiles(ctx context.Context, db *sql.DB, limit int) ([]*File, error) {
+	query := `SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, uploaded_at
+		FROM files ORDER BY uploaded_at DESC LIMIT $1`
+	rows, err := db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var files []*File
+	for rows.Next() {
+		f := &File{}
+		if err := rows.Scan(&f.ID, &f.OriginalName, &f.CustomName, &f.URLPath, &f.Size, &f.IsPrivate, &f.StorageType, &f.StoragePath, &f.UploadedAt); err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	return files, nil
+}

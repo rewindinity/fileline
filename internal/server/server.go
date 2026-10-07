@@ -39,7 +39,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	// Parse templates safely for each page to avoid block overwriting
 	s.tmpls = make(map[string]*template.Template)
-	pages := []string{"setup.html", "login.html", "dashboard.html"}
+	pages := []string{"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html"}
 	for _, page := range pages {
 		t, err := template.ParseFiles("web/templates/base.html", "web/templates/"+page)
 		if err != nil {
@@ -66,6 +66,10 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/f/", s.serveFileHandler)
 	mux.HandleFunc("/upload", s.requireAuth(s.uploadHandler))
 	mux.HandleFunc("/delete", s.requireAuth(s.deleteHandler))
+	mux.HandleFunc("/files", s.requireAuth(s.filesHandler))
+	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
+	mux.HandleFunc("/settings", s.requireAuth(s.settingsHandler))
+	mux.HandleFunc("/settings/", s.requireAuth(s.settingsActionHandler))
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
 	s.httpServer = &http.Server{
@@ -335,7 +339,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	database := s.db
 	s.mu.RUnlock()
 
-	files, err := db.GetAllFiles(r.Context(), database)
+	files, err := db.GetRecentFiles(r.Context(), database, 10)
 	if err != nil {
 		http.Error(w, "Failed to load files", http.StatusInternalServerError)
 		return
@@ -490,10 +494,15 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
+func (s *Server) render404(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNotFound)
+	s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found"})
+}
+
 func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	urlPath := strings.TrimPrefix(r.URL.Path, "/f/")
 	if urlPath == "" {
-		http.NotFound(w, r)
+		s.render404(w)
 		return
 	}
 
@@ -504,29 +513,29 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	f, err := db.GetFileByURL(r.Context(), database, urlPath)
 	if err != nil {
-		http.NotFound(w, r)
+		s.render404(w)
 		return
 	}
 
 	if f.IsPrivate {
-		// Check auth manually since this is not wrapped by requireAuth
+		// Check auth manually
 		cookie, err := r.Cookie("session")
 		if err != nil {
-			http.Redirect(w, r, "/login", http.StatusFound)
+			s.render404(w)
 			return
 		}
 		token, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
 			return []byte(s.cfg.JWTKey), nil
 		})
 		if err != nil || !token.Valid {
-			http.Redirect(w, r, "/login", http.StatusFound)
+			s.render404(w)
 			return
 		}
 	}
 
 	reader, err := st.Get(r.Context(), f.StoragePath)
 	if err != nil {
-		http.Error(w, "File not found in storage", http.StatusNotFound)
+		s.render404(w)
 		return
 	}
 	defer reader.Close()
@@ -539,4 +548,160 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, downloadName))
 	io.Copy(w, reader)
+}
+
+func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	files, err := db.GetAllFiles(r.Context(), database)
+	if err != nil {
+		http.Error(w, "Failed to load files", http.StatusInternalServerError)
+		return
+	}
+	s.renderTemplate(w, "files.html", map[string]interface{}{
+		"Title":    "All Files",
+		"Username": username,
+		"Files":    files,
+	})
+}
+
+func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	if r.Method == http.MethodGet {
+		var id int
+		fmt.Sscanf(r.URL.Query().Get("id"), "%d", &id)
+		f, err := db.GetFileByID(r.Context(), database, id)
+		if err != nil {
+			s.render404(w)
+			return
+		}
+		s.renderTemplate(w, "edit_file.html", map[string]interface{}{
+			"Title":    "Edit File",
+			"Username": username,
+			"File":     f,
+		})
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		var id int
+		fmt.Sscanf(r.FormValue("id"), "%d", &id)
+		customName := r.FormValue("custom_name")
+		urlPath := r.FormValue("url_path")
+		isPrivate := r.FormValue("is_private") == "on"
+		if err := db.UpdateFile(r.Context(), database, id, customName, urlPath, isPrivate); err != nil {
+			http.Error(w, "Failed to update file", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/files", http.StatusFound)
+	}
+}
+
+func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+
+	s.renderTemplate(w, "settings.html", map[string]interface{}{
+		"Title":          "Settings",
+		"Username":       username,
+		"Config":         cfg,
+		"EnvOnly":        cfg.EnvOnly,
+		"SuccessMessage": successMsg,
+		"ErrorMessage":   errorMsg,
+	})
+}
+
+func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+
+	username := r.Context().Value("username").(string)
+	action := strings.TrimPrefix(r.URL.Path, "/settings/")
+
+	if action == "storage" {
+		s.mu.Lock()
+		if s.cfg.EnvOnly {
+			s.mu.Unlock()
+			http.Redirect(w, r, "/settings?error=Cannot+modify+storage+in+ENV-only+mode", http.StatusFound)
+			return
+		}
+		storageType := r.FormValue("storage_type")
+		s.cfg.StorageType = storageType
+		if storageType == "local" {
+			localPath := r.FormValue("local_path")
+			if localPath == "" {
+				localPath = "./uploads"
+			}
+			s.cfg.LocalStoragePath = localPath
+		} else if storageType == "s3" {
+			s.cfg.S3Endpoint = r.FormValue("s3_endpoint")
+			s.cfg.S3Region = r.FormValue("s3_region")
+			s.cfg.S3Bucket = r.FormValue("s3_bucket")
+			s.cfg.S3AccessKey = r.FormValue("s3_access_key")
+
+			secret := r.FormValue("s3_secret_key")
+			if secret != "" {
+				s.cfg.S3SecretKey = secret
+			}
+			s.cfg.S3UseSSL = r.FormValue("s3_use_ssl") == "on"
+		}
+		s.cfg.Save("config.json")
+		// Reinit storage
+		st, err := storage.NewProvider(r.Context(), s.cfg)
+		if err == nil {
+			s.storage = st
+		} else {
+			log.Printf("Failed to reinitialize storage: %v", err)
+		}
+		s.mu.Unlock()
+		http.Redirect(w, r, "/settings?success=Storage+settings+saved", http.StatusFound)
+		return
+	}
+
+	if action == "password" {
+		currentPassword := r.FormValue("current_password")
+		newPassword := r.FormValue("new_password")
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		_, hash, _, err := db.GetUserByUsername(r.Context(), database, username)
+		if err != nil {
+			http.Redirect(w, r, "/settings?error=User+not+found", http.StatusFound)
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(currentPassword)); err != nil {
+			http.Redirect(w, r, "/settings?error=Incorrect+current+password", http.StatusFound)
+			return
+		}
+		newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+		if err != nil {
+			http.Redirect(w, r, "/settings?error=Failed+to+secure+password", http.StatusFound)
+			return
+		}
+		if err := db.UpdatePassword(r.Context(), database, username, string(newHash)); err != nil {
+			http.Redirect(w, r, "/settings?error=Failed+to+update+password", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/settings?success=Password+updated+successfully", http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

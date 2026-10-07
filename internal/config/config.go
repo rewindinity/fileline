@@ -26,6 +26,7 @@ type Config struct {
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
+	EnvOnly          bool   `json:"-"` // Not serialized
 }
 
 // DefaultConfig returns a Config with default values
@@ -40,8 +41,8 @@ func DefaultConfig() Config {
 	}
 }
 
-// Load reads config from config.json
-func Load(configPath string) (*Config, error) {
+// Load reads config. If envOnly is true, it only uses environment variables
+func Load(configPath string, envOnly bool) (*Config, error) {
 	cfg := DefaultConfig()
 	// Try reading config.json
 	file, err := os.ReadFile(configPath)
@@ -49,8 +50,7 @@ func Load(configPath string) (*Config, error) {
 		if err := json.Unmarshal(file, &cfg); err != nil {
 			return nil, fmt.Errorf("failed to parse config file: %w", err)
 		}
-	} else if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
+		return &cfg, nil
 	}
 	// Override with environment variables
 	if v, ok := os.LookupEnv("FL_DB_TYPE"); ok {

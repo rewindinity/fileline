@@ -1,0 +1,109 @@
+{{template "base.html" .}}
+
+{{define "nav"}}
+<div class="nav">
+    <div style="font-weight: bold; font-size: 1.2rem;"><a href="/" style="color: white;">FileLine</a></div>
+    <div>
+        <span>Welcome, {{.Username}}</span>
+        <a href="/logout" style="margin-left: 1rem; color: #ff5252;">Logout</a>
+    </div>
+</div>
+{{end}}
+
+{{define "content"}}
+<div style="width: 100%; max-width: 600px;">
+    <h1>Settings</h1>
+
+    {{if .SuccessMessage}}
+    <div style="color: #81c784; background: rgba(129, 199, 132, 0.1); padding: 0.5rem; border-radius: 4px; margin-bottom: 1rem;">
+        {{.SuccessMessage}}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="error">{{.ErrorMessage}}</div>
+    {{end}}
+
+    <div class="container" style="max-width: 100%; margin-bottom: 2rem;">
+        <h2>Storage Settings</h2>
+        {{if .EnvOnly}}
+        <p style="color: #ffb74d;">Running in ENV-only mode. Storage configuration must be managed via environment variables and cannot be modified here.</p>
+        {{else}}
+        <form method="POST" action="/settings/storage">
+            <div class="form-group">
+                <label for="storage_type">Storage Type</label>
+                <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
+                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
+                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
+                </select>
+            </div>
+
+            <div id="local_storage_fields" {{if eq .Config.StorageType "s3"}}style="display: none;"{{end}}>
+                <div class="form-group">
+                    <label for="local_path">Uploads Path</label>
+                    <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
+                </div>
+            </div>
+
+            <div id="s3_storage_fields" {{if eq .Config.StorageType "local"}}style="display: none;"{{end}}>
+                <div class="form-group">
+                    <label for="s3_endpoint">S3 Endpoint URL</label>
+                    <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
+                </div>
+                <div class="form-group">
+                    <label for="s3_region">S3 Region</label>
+                    <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
+                </div>
+                <div class="form-group">
+                    <label for="s3_bucket">S3 Bucket Name</label>
+                    <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
+                </div>
+                <div class="form-group">
+                    <label for="s3_access_key">Access Key</label>
+                    <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
+                </div>
+                <div class="form-group">
+                    <label for="s3_secret_key">Secret Key (leave empty to keep current)</label>
+                    <input type="password" id="s3_secret_key" name="s3_secret_key">
+                </div>
+                <div class="form-group" style="display: flex; align-items: center;">
+                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}} style="width: auto; margin-right: 10px;">
+                    <label for="s3_use_ssl" style="margin-bottom: 0;">Use SSL</label>
+                </div>
+            </div>
+            
+            <button type="submit">Save Storage Config</button>
+        </form>
+        {{end}}
+    </div>
+
+    <div class="container" style="max-width: 100%;">
+        <h2>Change Password</h2>
+        <form method="POST" action="/settings/password">
+            <div class="form-group">
+                <label for="current_password">Current Password</label>
+                <input type="password" id="current_password" name="current_password" required>
+            </div>
+            <div class="form-group">
+                <label for="new_password">New Password</label>
+                <input type="password" id="new_password" name="new_password" required>
+            </div>
+            <button type="submit">Update Password</button>
+        </form>
+    </div>
+</div>
+
+{{if not .EnvOnly}}
+<script>
+function toggleStorageFields() {
+    const type = document.getElementById('storage_type').value;
+    if (type === 'local') {
+        document.getElementById('local_storage_fields').style.display = 'block';
+        document.getElementById('s3_storage_fields').style.display = 'none';
+    } else {
+        document.getElementById('local_storage_fields').style.display = 'none';
+        document.getElementById('s3_storage_fields').style.display = 'block';
+    }
+}
+</script>
+{{end}}
+{{end}}

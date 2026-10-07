@@ -76,3 +76,9 @@ func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (id int
 	err = db.QueryRowContext(ctx, "SELECT id, password_hash, role FROM users WHERE username = $1", username).Scan(&id, &hash, &role)
 	return
 }
+
+// UpdatePassword updates a user's password
+func UpdatePassword(ctx context.Context, db *sql.DB, username, passwordHash string) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET password_hash = $1 WHERE username = $2", passwordHash, username)
+	return err
+}

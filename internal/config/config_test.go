@@ -7,12 +7,12 @@ import (
 )
 
 func TestLoadConfig_Default(t *testing.T) {
-	cfg, err := Load("non_existent_config.json")
+	cfg, err := Load("non_existent_config.json", false)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.DBType != "sqlite" {
-		t.Errorf("expected default DBType 'sqlite', got %s", cfg.DBType)
+	if cfg.DBType != "" {
+		t.Errorf("expected default DBType '', got %s", cfg.DBType)
 	}
 }
 
@@ -22,7 +22,7 @@ func TestLoadConfig_File(t *testing.T) {
 	if err := os.WriteFile(tmpFile, content, 0644); err != nil {
 		t.Fatalf("failed to create temp config: %v", err)
 	}
-	cfg, err := Load(tmpFile)
+	cfg, err := Load(tmpFile, false)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -51,12 +51,12 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 		os.Unsetenv("FL_DB_TYPE")
 		os.Unsetenv("FL_PORT")
 	}()
-	cfg, err := Load(tmpFile)
+	cfg, err := Load("", true)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if cfg.DBType != "" {
-		t.Errorf("expected default DBType '', got %s", cfg.DBType)
+	if cfg.DBType != "sqlite" {
+		t.Errorf("expected 'sqlite', got %s", cfg.DBType)
 	}
 	if cfg.Port != 8000 {
 		t.Errorf("expected 8000, got %d", cfg.Port)

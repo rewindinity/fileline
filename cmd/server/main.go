@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -16,11 +17,15 @@ import (
 )
 
 func main() {
+	envOnly := flag.Bool("env-only", false, "Use only environment variables for configuration")
+	flag.Parse()
+
 	// Initialize configuration
-	cfg, err := config.Load("config.json")
+	cfg, err := config.Load("config.json", *envOnly)
 	if err != nil {
 		log.Printf("No config.json found or invalid, using default unconfigured state: %v", err)
 		defaultCfg := config.DefaultConfig()
+		defaultCfg.EnvOnly = *envOnly
 		cfg = &defaultCfg
 	}
 
