@@ -2,8 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
@@ -13,11 +17,15 @@ import (
 	"sync"
 	"time"
 
+	"fileline/internal/auth"
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/storage"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp/totp"
+	"github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -29,6 +37,11 @@ type Server struct {
 	mu         sync.RWMutex
 	tmpls      map[string]*template.Template
 	storage    storage.Provider
+	webAuthn   *webauthn.WebAuthn
+	// Temporary session stores
+	totpTempStore     sync.Map // username -> string (secret)
+	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
+	login2FAStore     sync.Map // sessionID -> username
 }
 
 // New creates a new Server instance.
@@ -56,12 +69,37 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	s.storage = st
 
+	// Initialize WebAuthn
+	schema := "http"
+	if cfg.SSL || cfg.ReverseProxy {
+		schema = "https"
+	}
+	domain := cfg.Domain
+	// If domain does not contain a port and we are not behind a proxy with standard ports, append it
+	if !strings.Contains(domain, ":") && !cfg.ReverseProxy {
+		if (schema == "http" && cfg.Port != 80) || (schema == "https" && cfg.Port != 443) {
+			domain = fmt.Sprintf("%s:%d", domain, cfg.Port)
+		}
+	}
+	origin := fmt.Sprintf("%s://%s", schema, domain)
+	wConfig := &webauthn.Config{
+		RPDisplayName: "FileLine",
+		RPID:          cfg.Domain, // RPID should not contain the port, just the domain
+		RPOrigins:     []string{origin},
+	}
+	wa, err := webauthn.New(wConfig)
+	if err != nil {
+		log.Printf("Warning: failed to initialize WebAuthn: %v", err)
+	}
+	s.webAuthn = wa
+
 	mux := http.NewServeMux()
 
 	// Routes
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.HandleFunc("/setup", s.setupHandler)
 	mux.HandleFunc("/login", s.loginHandler)
+	mux.HandleFunc("/login/2fa", s.login2FAHandler)
 	mux.HandleFunc("/logout", s.logoutHandler)
 	mux.HandleFunc("/f/", s.serveFileHandler)
 	mux.HandleFunc("/upload", s.requireAuth(s.uploadHandler))
@@ -70,6 +108,13 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
 	mux.HandleFunc("/settings", s.requireAuth(s.settingsHandler))
 	mux.HandleFunc("/settings/", s.requireAuth(s.settingsActionHandler))
+	mux.HandleFunc("/settings/2fa/generate", s.requireAuth(s.totpGenerateHandler))
+	mux.HandleFunc("/settings/2fa/verify", s.requireAuth(s.totpVerifyHandler))
+	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
+	mux.HandleFunc("/webauthn/register/begin", s.requireAuth(s.webAuthnRegisterBegin))
+	mux.HandleFunc("/webauthn/register/finish", s.requireAuth(s.webAuthnRegisterFinish))
+	mux.HandleFunc("/webauthn/login/begin", s.webAuthnLoginBegin)
+	mux.HandleFunc("/webauthn/login/finish", s.webAuthnLoginFinish)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
 	s.httpServer = &http.Server{
@@ -298,7 +343,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		database := s.db
 		s.mu.RUnlock()
-		_, hash, _, err := db.GetUserByUsername(r.Context(), database, username)
+		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil {
 			s.renderTemplate(w, "login.html", map[string]interface{}{
 				"Title": "Login",
@@ -306,11 +351,25 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 			s.renderTemplate(w, "login.html", map[string]interface{}{
 				"Title": "Login",
 				"Error": "Invalid credentials",
 			})
+			return
+		}
+		if user.TOTPSecret != "" {
+			// Require 2FA
+			sessionID := generateRandomSessionID()
+			s.login2FAStore.Store(sessionID, username)
+			http.SetCookie(w, &http.Cookie{
+				Name:     "2fa_session",
+				Value:    sessionID,
+				Path:     "/",
+				HttpOnly: true,
+				MaxAge:   300, // 5 minutes to complete
+			})
+			http.Redirect(w, r, "/login/2fa", http.StatusFound)
 			return
 		}
 		s.setJWTCookie(w, username)
@@ -611,14 +670,16 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	cfg := s.cfg
+	database := s.db
 	s.mu.RUnlock()
 
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
-
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	s.renderTemplate(w, "settings.html", map[string]interface{}{
 		"Title":          "Settings",
 		"Username":       username,
+		"User":           user,
 		"Config":         cfg,
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
@@ -681,12 +742,12 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()
 		database := s.db
 		s.mu.RUnlock()
-		_, hash, _, err := db.GetUserByUsername(r.Context(), database, username)
+		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil {
 			http.Redirect(w, r, "/settings?error=User+not+found", http.StatusFound)
 			return
 		}
-		if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(currentPassword)); err != nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)); err != nil {
 			http.Redirect(w, r, "/settings?error=Incorrect+current+password", http.StatusFound)
 			return
 		}
@@ -704,4 +765,326 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// Helpers for random strings
+func generateRandomSessionID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "FileLine",
+		AccountName: username,
+	})
+	if err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+generate+2FA", http.StatusFound)
+		return
+	}
+	// Save temporary
+	s.totpTempStore.Store(username, key.Secret())
+	// Generate QR Code
+	var png []byte
+	png, err = qrcode.Encode(key.String(), qrcode.Medium, 256)
+	if err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+generate+QR", http.StatusFound)
+		return
+	}
+	qrBase64 := base64.StdEncoding.EncodeToString(png)
+
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(fmt.Sprintf(`
+		<h2>Scan this QR Code</h2>
+		<img src="data:image/png;base64,%s" />
+		<p>Secret: %s</p>
+		<form method="POST" action="/settings/2fa/verify">
+			<input type="text" name="code" placeholder="6-digit code" required />
+			<button type="submit">Verify & Enable</button>
+		</form>
+		<a href="/settings">Cancel</a>
+	`, qrBase64, key.Secret())))
+}
+
+func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	code := r.FormValue("code")
+
+	secretAny, ok := s.totpTempStore.Load(username)
+	if !ok {
+		http.Redirect(w, r, "/settings?error=2FA+session+expired", http.StatusFound)
+		return
+	}
+	secret := secretAny.(string)
+
+	if !totp.Validate(code, secret) {
+		http.Redirect(w, r, "/settings?error=Invalid+code", http.StatusFound)
+		return
+	}
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err == nil {
+		db.UpdateUserAuthData(r.Context(), database, username, secret, user.WebAuthnData)
+	}
+
+	s.totpTempStore.Delete(username)
+	http.Redirect(w, r, "/settings?success=2FA+Enabled+Successfully", http.StatusFound)
+}
+
+func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("2fa_session")
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	sessionID := cookie.Value
+	usernameAny, ok := s.login2FAStore.Load(sessionID)
+	if !ok {
+		http.Redirect(w, r, "/login?error=Session+expired", http.StatusFound)
+		return
+	}
+	username := usernameAny.(string)
+
+	if r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`
+			<h2>Enter 2FA Code</h2>
+			<form method="POST" action="/login/2fa">
+				<input type="text" name="code" required autofocus />
+				<button type="submit">Verify</button>
+			</form>
+		`))
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		code := r.FormValue("code")
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		user, err := db.GetUserByUsername(r.Context(), database, username)
+		if err != nil || user.TOTPSecret == "" {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		if !totp.Validate(code, user.TOTPSecret) {
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<h2>Invalid Code</h2><a href="/login/2fa">Try again</a>`))
+			return
+		}
+		// Success
+		s.login2FAStore.Delete(sessionID)
+		s.setJWTCookie(w, username)
+		http.Redirect(w, r, "/", http.StatusFound)
+	}
+}
+
+func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	user := auth.NewWebAuthnUser(dbUser)
+	options, sessionData, err := s.webAuthn.BeginRegistration(user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sessionID := generateRandomSessionID()
+	s.webAuthnTempStore.Store(sessionID, *sessionData)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "wa_session",
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   300,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(options)
+}
+
+func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	cookie, err := r.Cookie("wa_session")
+	if err != nil {
+		http.Error(w, "Session expired", http.StatusBadRequest)
+		return
+	}
+
+	sessionDataAny, ok := s.webAuthnTempStore.Load(cookie.Value)
+	if !ok {
+		http.Error(w, "Session expired", http.StatusBadRequest)
+		return
+	}
+	sessionData := sessionDataAny.(webauthn.SessionData)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	user := auth.NewWebAuthnUser(dbUser)
+	credential, err := s.webAuthn.FinishRegistration(user, sessionData, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Add credential
+	creds := user.WebAuthnCredentials()
+	creds = append(creds, *credential)
+	credsJSON, _ := json.Marshal(creds)
+	if err := db.UpdateUserAuthData(r.Context(), database, username, dbUser.TOTPSecret, string(credsJSON)); err != nil {
+		http.Error(w, "Failed to save credential", http.StatusInternalServerError)
+		return
+	}
+	s.webAuthnTempStore.Delete(cookie.Value)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	if username == "" {
+		http.Error(w, "Username required", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	user := auth.NewWebAuthnUser(dbUser)
+	options, sessionData, err := s.webAuthn.BeginLogin(user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	sessionID := generateRandomSessionID()
+	s.webAuthnTempStore.Store(sessionID, *sessionData)
+
+	// Store username in another cookie so finish step knows who is logging in
+	http.SetCookie(w, &http.Cookie{
+		Name:     "wa_login_session",
+		Value:    sessionID + "|" + username,
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   300,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(options)
+}
+
+func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("wa_login_session")
+	if err != nil {
+		http.Error(w, "Session expired", http.StatusBadRequest)
+		return
+	}
+	parts := strings.Split(cookie.Value, "|")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid session", http.StatusBadRequest)
+		return
+	}
+	sessionID, username := parts[0], parts[1]
+	sessionDataAny, ok := s.webAuthnTempStore.Load(sessionID)
+	if !ok {
+		http.Error(w, "Session expired", http.StatusBadRequest)
+		return
+	}
+	sessionData := sessionDataAny.(webauthn.SessionData)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	user := auth.NewWebAuthnUser(dbUser)
+	_, err = s.webAuthn.FinishLogin(user, sessionData, r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	s.webAuthnTempStore.Delete(sessionID)
+	if dbUser.TOTPSecret != "" {
+		totpSessionID := generateRandomSessionID()
+		s.login2FAStore.Store(totpSessionID, username)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "2fa_session",
+			Value:    totpSessionID,
+			Path:     "/",
+			HttpOnly: true,
+			MaxAge:   300,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"2fa", "redirect":"/login/2fa"}`))
+		return
+	}
+	s.setJWTCookie(w, username)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok", "redirect":"/"}`))
+}
+
+func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	code := r.FormValue("code")
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.TOTPSecret == "" {
+		http.Redirect(w, r, "/settings?error=2FA+is+not+enabled", http.StatusFound)
+		return
+	}
+	if !totp.Validate(code, user.TOTPSecret) {
+		http.Redirect(w, r, "/settings?error=Invalid+2FA+code", http.StatusFound)
+		return
+	}
+	if err := db.UpdateUserAuthData(r.Context(), database, username, "", user.WebAuthnData); err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+disable+2FA", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/settings?success=2FA+Disabled+Successfully", http.StatusFound)
 }

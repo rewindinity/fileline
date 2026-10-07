@@ -15,5 +15,99 @@
     </div>
     <button type="submit">Sign In</button>
   </form>
+
+  <div style="text-align: center; margin-top: 2rem">
+    <p style="color: #888">OR</p>
+    <button type="button" onclick="loginPasskey()" style="background: #4dd0e1; color: #121212">Login with Passkey</button>
+    <p id="passkey_status" style="margin-top: 1rem"></p>
+  </div>
 </div>
+
+<script>
+  async function loginPasskey() {
+    const username = document.getElementById("username").value;
+    const status = document.getElementById("passkey_status");
+
+    if (!username) {
+      status.innerText = "Please enter your username first.";
+      status.style.color = "#ffb74d";
+      return;
+    }
+
+    status.innerText = "Requesting passkey login...";
+    status.style.color = "#888";
+
+    try {
+      const resp = await fetch("/webauthn/login/begin?username=" + encodeURIComponent(username));
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(errText || "Failed to start login");
+      }
+
+      const options = await resp.json();
+
+      options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
+      if (options.publicKey.allowCredentials) {
+        options.publicKey.allowCredentials.forEach((cred) => {
+          cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
+        });
+      }
+
+      const cred = await navigator.credentials.get({
+        publicKey: options.publicKey,
+      });
+
+      const credential = {
+        id: cred.id,
+        rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=/g, ""),
+        type: cred.type,
+        response: {
+          authenticatorData: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.authenticatorData)))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=/g, ""),
+          clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON)))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=/g, ""),
+          signature: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.signature)))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=/g, ""),
+          userHandle: cred.response.userHandle
+            ? btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.userHandle)))
+                .replace(/\+/g, "-")
+                .replace(/\//g, "_")
+                .replace(/=/g, "")
+            : null,
+        },
+      };
+
+      const finishResp = await fetch("/webauthn/login/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credential),
+      });
+
+      if (!finishResp.ok) {
+        const errText = await finishResp.text();
+        throw new Error(errText || "Failed to finish login");
+      }
+
+      const result = await finishResp.json();
+      if (result.redirect) {
+        window.location.href = result.redirect;
+      } else {
+        window.location.href = "/";
+      }
+    } catch (e) {
+      console.error(e);
+      status.innerText = "Error: " + e.message;
+      status.style.color = "#ff5252";
+    }
+  }
+</script>
 {{end}}

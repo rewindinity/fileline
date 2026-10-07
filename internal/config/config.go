@@ -26,7 +26,8 @@ type Config struct {
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
-	EnvOnly          bool   `json:"-"` // Not serialized
+	Domain           string `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
+	EnvOnly          bool   `json:"-"`      // Not serialized
 }
 
 // DefaultConfig returns a Config with default values
@@ -38,6 +39,7 @@ func DefaultConfig() Config {
 		JWTKey:           "default-secret-key-change-me",
 		StorageType:      "local",
 		LocalStoragePath: "./uploads",
+		Domain:           "localhost",
 	}
 }
 
@@ -111,6 +113,9 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 		if ssl, err := strconv.ParseBool(v); err == nil {
 			cfg.S3UseSSL = ssl
 		}
+	}
+	if v, ok := os.LookupEnv("FL_DOMAIN"); ok {
+		cfg.Domain = v
 	}
 	return &cfg, nil
 }

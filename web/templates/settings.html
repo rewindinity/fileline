@@ -11,88 +11,126 @@
 {{end}}
 
 {{define "content"}}
-<div style="width: 100%; max-width: 600px;">
-    <h1>Settings</h1>
+<div style="width: 100%; max-width: 800px; margin: 0 auto;">
+    <h1 style="margin-bottom: 2rem; border-bottom: 1px solid #333; padding-bottom: 1rem;">Settings</h1>
 
     {{if .SuccessMessage}}
-    <div style="color: #81c784; background: rgba(129, 199, 132, 0.1); padding: 0.5rem; border-radius: 4px; margin-bottom: 1rem;">
+    <div style="color: #81c784; background: rgba(129, 199, 132, 0.1); padding: 1rem; border-radius: 6px; margin-bottom: 2rem; border: 1px solid #81c784;">
         {{.SuccessMessage}}
     </div>
     {{end}}
     {{if .ErrorMessage}}
-    <div class="error">{{.ErrorMessage}}</div>
+    <div style="color: #ff5252; background: rgba(255, 82, 82, 0.1); padding: 1rem; border-radius: 6px; margin-bottom: 2rem; border: 1px solid #ff5252;">
+        {{.ErrorMessage}}
+    </div>
     {{end}}
 
-    <div class="container" style="max-width: 100%; margin-bottom: 2rem;">
-        <h2>Storage Settings</h2>
-        {{if .EnvOnly}}
-        <p style="color: #ffb74d;">Running in ENV-only mode. Storage configuration must be managed via environment variables and cannot be modified here.</p>
-        {{else}}
-        <form method="POST" action="/settings/storage">
-            <div class="form-group">
-                <label for="storage_type">Storage Type</label>
-                <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
-                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
-                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
-                </select>
-            </div>
-
-            <div id="local_storage_fields" {{if eq .Config.StorageType "s3"}}style="display: none;"{{end}}>
-                <div class="form-group">
-                    <label for="local_path">Uploads Path</label>
-                    <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
-                </div>
-            </div>
-
-            <div id="s3_storage_fields" {{if eq .Config.StorageType "local"}}style="display: none;"{{end}}>
-                <div class="form-group">
-                    <label for="s3_endpoint">S3 Endpoint URL</label>
-                    <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
-                </div>
-                <div class="form-group">
-                    <label for="s3_region">S3 Region</label>
-                    <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
-                </div>
-                <div class="form-group">
-                    <label for="s3_bucket">S3 Bucket Name</label>
-                    <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
-                </div>
-                <div class="form-group">
-                    <label for="s3_access_key">Access Key</label>
-                    <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
-                </div>
-                <div class="form-group">
-                    <label for="s3_secret_key">Secret Key (leave empty to keep current)</label>
-                    <input type="password" id="s3_secret_key" name="s3_secret_key">
-                </div>
-                <div class="form-group" style="display: flex; align-items: center;">
-                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}} style="width: auto; margin-right: 10px;">
-                    <label for="s3_use_ssl" style="margin-bottom: 0;">Use SSL</label>
-                </div>
-            </div>
+    <div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
+        <!-- Account Security Section -->
+        <div class="container" style="max-width: 100%; margin: 0;">
+            <h2 style="margin-top: 0; color: #e0e0e0;">Account Security</h2>
+            <hr style="border-color: #333; margin-bottom: 1.5rem;">
             
-            <button type="submit">Save Storage Config</button>
-        </form>
-        {{end}}
-    </div>
+            <h3 style="color: #bbb; margin-bottom: 1rem;">Change Password</h3>
+            <form method="POST" action="/settings/password">
+                <div class="form-group">
+                    <label for="current_password">Current Password</label>
+                    <input type="password" id="current_password" name="current_password" required>
+                </div>
+                <div class="form-group">
+                    <label for="new_password">New Password</label>
+                    <input type="password" id="new_password" name="new_password" required>
+                </div>
+                <button type="submit">Update Password</button>
+            </form>
 
-    <div class="container" style="max-width: 100%;">
-        <h2>Change Password</h2>
-        <form method="POST" action="/settings/password">
-            <div class="form-group">
-                <label for="current_password">Current Password</label>
-                <input type="password" id="current_password" name="current_password" required>
+            <h3 style="color: #bbb; margin-top: 2rem; margin-bottom: 1rem;">Two-Factor Authentication (TOTP)</h3>
+            {{if .User.TOTPSecret}}
+                <div style="background: rgba(129, 199, 132, 0.1); padding: 1rem; border-radius: 6px; border: 1px solid #81c784; margin-bottom: 1rem;">
+                    <span style="color: #81c784; font-weight: bold;">✓ 2FA is currently ENABLED</span>
+                </div>
+                <form method="POST" action="/settings/2fa/disable" style="display: flex; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="margin: 0; flex: 1;">
+                        <label for="code">To disable, enter your 6-digit code:</label>
+                        <input type="text" id="code" name="code" placeholder="123456" required>
+                    </div>
+                    <button type="submit" style="background: #ff5252; margin: 0;">Disable 2FA</button>
+                </form>
+            {{else}}
+                <p style="color: #999; margin-bottom: 1rem;">Add an extra layer of security to your account.</p>
+                <a href="/settings/2fa/generate" style="display: inline-block; padding: 0.75rem 1.5rem; background: #5c6bc0; color: white; text-decoration: none; border-radius: 4px; font-weight: bold;">Setup 2FA</a>
+            {{end}}
+
+            <h3 style="color: #bbb; margin-top: 2rem; margin-bottom: 1rem;">Passkeys (WebAuthn)</h3>
+            <p style="color: #999; margin-bottom: 1rem;">Login without a password using your device's biometrics or a security key.</p>
+            <button type="button" onclick="registerPasskey()" style="background: #4dd0e1; color: #121212; font-weight: bold;">Register New Passkey</button>
+            <p id="passkey_status" style="margin-top: 1rem; font-weight: bold;"></p>
+        </div>
+
+        <!-- Storage Configuration Section -->
+        <div class="container" style="max-width: 100%; margin: 0;">
+            <h2 style="margin-top: 0; color: #e0e0e0;">Storage Configuration</h2>
+            <hr style="border-color: #333; margin-bottom: 1.5rem;">
+            
+            {{if .EnvOnly}}
+            <div style="background: rgba(255, 183, 77, 0.1); padding: 1rem; border-radius: 6px; border: 1px solid #ffb74d;">
+                <p style="color: #ffb74d; margin: 0;">Running in <strong>ENV-only</strong> mode. Storage configuration must be managed via environment variables and cannot be modified here.</p>
             </div>
-            <div class="form-group">
-                <label for="new_password">New Password</label>
-                <input type="password" id="new_password" name="new_password" required>
-            </div>
-            <button type="submit">Update Password</button>
-        </form>
+            {{else}}
+            <form method="POST" action="/settings/storage">
+                <div class="form-group">
+                    <label for="storage_type">Storage Type</label>
+                    <select id="storage_type" name="storage_type" onchange="toggleStorageFields()" style="width: 100%; padding: 0.75rem; background: #222; border: 1px solid #444; color: white; border-radius: 4px;">
+                        <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
+                        <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
+                    </select>
+                </div>
+
+                <div id="local_storage_fields" {{if eq .Config.StorageType "s3"}}style="display: none;"{{end}}>
+                    <div class="form-group">
+                        <label for="local_path">Uploads Directory Path</label>
+                        <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
+                    </div>
+                </div>
+
+                <div id="s3_storage_fields" {{if eq .Config.StorageType "local"}}style="display: none;"{{end}}>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label for="s3_endpoint">S3 Endpoint URL</label>
+                            <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
+                        </div>
+                        <div class="form-group">
+                            <label for="s3_region">S3 Region</label>
+                            <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="s3_bucket">S3 Bucket Name</label>
+                        <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label for="s3_access_key">Access Key</label>
+                            <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
+                        </div>
+                        <div class="form-group">
+                            <label for="s3_secret_key">Secret Key (leave empty to keep current)</label>
+                            <input type="password" id="s3_secret_key" name="s3_secret_key">
+                        </div>
+                    </div>
+                    <div class="form-group" style="display: flex; align-items: center; margin-top: 1rem;">
+                        <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}} style="width: auto; margin-right: 10px;">
+                        <label for="s3_use_ssl" style="margin-bottom: 0;">Use SSL for S3 connection</label>
+                    </div>
+                </div>
+                
+                <button type="submit" style="margin-top: 1rem;">Save Storage Config</button>
+            </form>
+            {{end}}
+        </div>
     </div>
 </div>
 
-{{if not .EnvOnly}}
 <script>
 function toggleStorageFields() {
     const type = document.getElementById('storage_type').value;
@@ -104,6 +142,57 @@ function toggleStorageFields() {
         document.getElementById('s3_storage_fields').style.display = 'block';
     }
 }
+
+async function registerPasskey() {
+    const status = document.getElementById('passkey_status');
+    status.innerText = "Requesting passkey registration (check your browser prompts)...";
+    status.style.color = "#888";
+    
+    try {
+        const resp = await fetch('/webauthn/register/begin');
+        if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error(errText || "Failed to start registration");
+        }
+        
+        const options = await resp.json();
+        
+        // Decode challenge and user.id
+        options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+        options.publicKey.user.id = Uint8Array.from(atob(options.publicKey.user.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+        
+        const cred = await navigator.credentials.create({
+            publicKey: options.publicKey
+        });
+        
+        const credential = {
+            id: cred.id,
+            rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+            type: cred.type,
+            response: {
+                attestationObject: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.attestationObject))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+            }
+        };
+
+        const finishResp = await fetch('/webauthn/register/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(credential)
+        });
+
+        if (!finishResp.ok) {
+            const errText = await finishResp.text();
+            throw new Error(errText || "Failed to finish registration on server");
+        }
+        
+        status.innerText = "✓ Passkey registered successfully!";
+        status.style.color = "#81c784";
+    } catch (e) {
+        console.error(e);
+        status.innerText = "Error: " + e.message;
+        status.style.color = "#ff5252";
+    }
+}
 </script>
-{{end}}
 {{end}}

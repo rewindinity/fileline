@@ -53,9 +53,23 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 	}
 
 	_, err := db.ExecContext(ctx, query)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Try to add new columns (ignore errors if they already exist)
+	if dbType == "sqlite" {
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT ''")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
+	} else if dbType == "postgres" {
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) DEFAULT ''")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
+	}
+
+	return nil
 }
 
+// HasAdmin checks if there is at least one admin user in the database.
 func HasAdmin(ctx context.Context, db *sql.DB) (bool, error) {
 	var count int
 	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE role = 'admin'").Scan(&count)
@@ -71,10 +85,37 @@ func CreateAdmin(ctx context.Context, db *sql.DB, username, passwordHash string)
 	return err
 }
 
-// GetUserByUsername retrieves a user's password hash by username
-func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (id int, hash string, role string, err error) {
-	err = db.QueryRowContext(ctx, "SELECT id, password_hash, role FROM users WHERE username = $1", username).Scan(&id, &hash, &role)
-	return
+type User struct {
+	ID           int
+	Username     string
+	PasswordHash string
+	Role         string
+	TOTPSecret   string
+	WebAuthnData string
+}
+
+// GetUserByUsername retrieves a user by username.
+func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User, error) {
+	u := &User{Username: username}
+	var totp, webauthn sql.NullString
+	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data FROM users WHERE username = $1", username).
+		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn)
+	if err != nil {
+		return nil, err
+	}
+	if totp.Valid {
+		u.TOTPSecret = totp.String
+	}
+	if webauthn.Valid {
+		u.WebAuthnData = webauthn.String
+	}
+	return u, nil
+}
+
+// UpdateUserAuthData updates a user's TOTP and WebAuthn data
+func UpdateUserAuthData(ctx context.Context, db *sql.DB, username, totpSecret, webAuthnData string) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET totp_secret = $1, webauthn_data = $2 WHERE username = $3", totpSecret, webAuthnData, username)
+	return err
 }
 
 // UpdatePassword updates a user's password
