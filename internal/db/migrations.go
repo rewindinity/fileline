@@ -123,3 +123,21 @@ func UpdatePassword(ctx context.Context, db *sql.DB, username, passwordHash stri
 	_, err := db.ExecContext(ctx, "UPDATE users SET password_hash = $1 WHERE username = $2", passwordHash, username)
 	return err
 }
+
+// GetUserByID retrieves a user by ID
+func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
+	u := &User{ID: id}
+	var totp, webauthn sql.NullString
+	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data FROM users WHERE id = $1", id).
+		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn)
+	if err != nil {
+		return nil, err
+	}
+	if totp.Valid {
+		u.TOTPSecret = totp.String
+	}
+	if webauthn.Valid {
+		u.WebAuthnData = webauthn.String
+	}
+	return u, nil
+}

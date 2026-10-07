@@ -25,20 +25,13 @@
 
 <script>
   async function loginPasskey() {
-    const username = document.getElementById("username").value;
     const status = document.getElementById("passkey_status");
 
-    if (!username) {
-      status.innerText = "Please enter your username first.";
-      status.style.color = "#ffb74d";
-      return;
-    }
-
-    status.innerText = "Requesting passkey login...";
+    status.innerText = "Requesting passkey login (select your account)...";
     status.style.color = "#888";
 
     try {
-      const resp = await fetch("/webauthn/login/begin?username=" + encodeURIComponent(username));
+      const resp = await fetch("/webauthn/login/begin");
       if (!resp.ok) {
         const errText = await resp.text();
         throw new Error(errText || "Failed to start login");

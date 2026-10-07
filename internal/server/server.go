@@ -22,6 +22,7 @@ import (
 	"fileline/internal/db"
 	"fileline/internal/storage"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
@@ -34,9 +35,9 @@ type Server struct {
 	httpServer *http.Server
 	db         *sql.DB
 	cfg        *config.Config
+	storage    storage.Provider
 	mu         sync.RWMutex
 	tmpls      map[string]*template.Template
-	storage    storage.Provider
 	webAuthn   *webauthn.WebAuthn
 	// Temporary session stores
 	totpTempStore     sync.Map // username -> string (secret)
@@ -133,7 +134,6 @@ func (s *Server) Start() error {
 		if s.cfg.SSLCertPath == "" || s.cfg.SSLKeyPath == "" {
 			return fmt.Errorf("SSL is enabled but cert or key path is missing")
 		}
-		// Configure modern TLS settings
 		s.httpServer.TLSConfig = &tls.Config{
 			MinVersion:               tls.VersionTLS12,
 			PreferServerCipherSuites: true,
@@ -267,6 +267,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			dbConfigured = true
 		}
 
+		// Always parse storage fields since they are always present on setup page
 		storageType := r.FormValue("storage_type")
 		s.cfg.StorageType = storageType
 		if storageType == "local" {
@@ -716,7 +717,6 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.S3Region = r.FormValue("s3_region")
 			s.cfg.S3Bucket = r.FormValue("s3_bucket")
 			s.cfg.S3AccessKey = r.FormValue("s3_access_key")
-
 			secret := r.FormValue("s3_secret_key")
 			if secret != "" {
 				s.cfg.S3SecretKey = secret
@@ -903,7 +903,10 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := auth.NewWebAuthnUser(dbUser)
-	options, sessionData, err := s.webAuthn.BeginRegistration(user)
+	options, sessionData, err := s.webAuthn.BeginRegistration(
+		user,
+		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -967,24 +970,7 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
-	username := r.URL.Query().Get("username")
-	if username == "" {
-		http.Error(w, "Username required", http.StatusBadRequest)
-		return
-	}
-
-	s.mu.RLock()
-	database := s.db
-	s.mu.RUnlock()
-
-	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
-	}
-
-	user := auth.NewWebAuthnUser(dbUser)
-	options, sessionData, err := s.webAuthn.BeginLogin(user)
+	options, sessionData, err := s.webAuthn.BeginDiscoverableLogin()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -992,11 +978,9 @@ func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := generateRandomSessionID()
 	s.webAuthnTempStore.Store(sessionID, *sessionData)
-
-	// Store username in another cookie so finish step knows who is logging in
 	http.SetCookie(w, &http.Cookie{
 		Name:     "wa_login_session",
-		Value:    sessionID + "|" + username,
+		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		MaxAge:   300,
@@ -1011,12 +995,7 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Session expired", http.StatusBadRequest)
 		return
 	}
-	parts := strings.Split(cookie.Value, "|")
-	if len(parts) != 2 {
-		http.Error(w, "Invalid session", http.StatusBadRequest)
-		return
-	}
-	sessionID, username := parts[0], parts[1]
+	sessionID := cookie.Value
 	sessionDataAny, ok := s.webAuthnTempStore.Load(sessionID)
 	if !ok {
 		http.Error(w, "Session expired", http.StatusBadRequest)
@@ -1027,40 +1006,33 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-
-	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
+	var loggedInUsername string
+	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
+		idStr := string(userHandle)
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+			return nil, fmt.Errorf("invalid user handle")
+		}
+		dbUser, err := db.GetUserByID(r.Context(), database, id)
+		if err != nil {
+			return nil, err
+		}
+		loggedInUsername = dbUser.Username
+		return auth.NewWebAuthnUser(dbUser), nil
 	}
 
-	user := auth.NewWebAuthnUser(dbUser)
-	_, err = s.webAuthn.FinishLogin(user, sessionData, r)
+	_, err = s.webAuthn.FinishDiscoverableLogin(handler, sessionData, r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	s.webAuthnTempStore.Delete(sessionID)
-	if dbUser.TOTPSecret != "" {
-		totpSessionID := generateRandomSessionID()
-		s.login2FAStore.Store(totpSessionID, username)
-		http.SetCookie(w, &http.Cookie{
-			Name:     "2fa_session",
-			Value:    totpSessionID,
-			Path:     "/",
-			HttpOnly: true,
-			MaxAge:   300,
-		})
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"2fa", "redirect":"/login/2fa"}`))
-		return
-	}
-	s.setJWTCookie(w, username)
+	s.setJWTCookie(w, loggedInUsername)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok", "redirect":"/"}`))
 }
-
 func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
