@@ -49,6 +49,51 @@
 
     <hr style="border-color: #333; margin: 2rem 0" />
 
+    <h2>Storage Configuration</h2>
+    <div class="form-group">
+      <label for="storage_type">Storage Type</label>
+      <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
+        <option value="local">Local Disk</option>
+        <option value="s3">S3 / Object Storage</option>
+      </select>
+    </div>
+
+    <div id="local_storage_fields">
+      <div class="form-group">
+        <label for="local_path">Uploads Path</label>
+        <input type="text" id="local_path" name="local_path" value="./uploads" />
+      </div>
+    </div>
+
+    <div id="s3_storage_fields" style="display: none">
+      <div class="form-group">
+        <label for="s3_endpoint">S3 Endpoint URL (e.g. s3.amazonaws.com)</label>
+        <input type="text" id="s3_endpoint" name="s3_endpoint" />
+      </div>
+      <div class="form-group">
+        <label for="s3_region">S3 Region (e.g. us-east-1)</label>
+        <input type="text" id="s3_region" name="s3_region" />
+      </div>
+      <div class="form-group">
+        <label for="s3_bucket">S3 Bucket Name</label>
+        <input type="text" id="s3_bucket" name="s3_bucket" />
+      </div>
+      <div class="form-group">
+        <label for="s3_access_key">Access Key</label>
+        <input type="text" id="s3_access_key" name="s3_access_key" />
+      </div>
+      <div class="form-group">
+        <label for="s3_secret_key">Secret Key</label>
+        <input type="password" id="s3_secret_key" name="s3_secret_key" />
+      </div>
+      <div class="form-group" style="display: flex; align-items: center">
+        <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked style="width: auto; margin-right: 10px" />
+        <label for="s3_use_ssl" style="margin-bottom: 0">Use SSL</label>
+      </div>
+    </div>
+
+    <hr style="border-color: #333; margin: 2rem 0" />
+
     <h2>Admin Account</h2>
     <div class="form-group">
       <label for="username">Admin Username</label>
@@ -76,4 +121,17 @@
     }
   }
 </script>
-{{end}} {{end}}
+{{end}}
+<script>
+  function toggleStorageFields() {
+    const type = document.getElementById("storage_type").value;
+    if (type === "local") {
+      document.getElementById("local_storage_fields").style.display = "block";
+      document.getElementById("s3_storage_fields").style.display = "none";
+    } else {
+      document.getElementById("local_storage_fields").style.display = "none";
+      document.getElementById("s3_storage_fields").style.display = "block";
+    }
+  }
+</script>
+{{end}}

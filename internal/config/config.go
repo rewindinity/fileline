@@ -9,24 +9,34 @@ import (
 
 // Config holds the fileline configuration
 type Config struct {
-	DBType       string `json:"db_type"`
-	SQLiteURL    string `json:"sqlite_url"`
-	PostgresURL  string `json:"postgres_url"`
-	Port         int    `json:"port"`
-	SSL          bool   `json:"ssl"`
-	SSLCertPath  string `json:"ssl_cert_path"`
-	SSLKeyPath   string `json:"ssl_key_path"`
-	ReverseProxy bool   `json:"reverse_proxy"`
-	JWTKey       string `json:"jwt_key"`
+	DBType           string `json:"db_type"`
+	SQLiteURL        string `json:"sqlite_url"`
+	PostgresURL      string `json:"postgres_url"`
+	Port             int    `json:"port"`
+	SSL              bool   `json:"ssl"`
+	SSLCertPath      string `json:"ssl_cert_path"`
+	SSLKeyPath       string `json:"ssl_key_path"`
+	ReverseProxy     bool   `json:"reverse_proxy"`
+	JWTKey           string `json:"jwt_key"`
+	StorageType      string `json:"storage_type"` // "local" or "s3"
+	LocalStoragePath string `json:"local_storage_path"`
+	S3Endpoint       string `json:"s3_endpoint"`
+	S3Region         string `json:"s3_region"`
+	S3Bucket         string `json:"s3_bucket"`
+	S3AccessKey      string `json:"s3_access_key"`
+	S3SecretKey      string `json:"s3_secret_key"`
+	S3UseSSL         bool   `json:"s3_use_ssl"`
 }
 
 // DefaultConfig returns a Config with default values
 func DefaultConfig() Config {
 	return Config{
-		Port:         8080,
-		SSL:          false,
-		ReverseProxy: false,
-		JWTKey:       "default-secret-key-change-me",
+		Port:             8080,
+		SSL:              false,
+		ReverseProxy:     false,
+		JWTKey:           "default-secret-key-change-me",
+		StorageType:      "local",
+		LocalStoragePath: "./uploads",
 	}
 }
 
@@ -76,8 +86,35 @@ func Load(configPath string) (*Config, error) {
 	if v, ok := os.LookupEnv("FL_JWT_KEY"); ok {
 		cfg.JWTKey = v
 	}
+	if v, ok := os.LookupEnv("FL_STORAGE_TYPE"); ok {
+		cfg.StorageType = v
+	}
+	if v, ok := os.LookupEnv("FL_LOCAL_STORAGE_PATH"); ok {
+		cfg.LocalStoragePath = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_ENDPOINT"); ok {
+		cfg.S3Endpoint = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_REGION"); ok {
+		cfg.S3Region = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_BUCKET"); ok {
+		cfg.S3Bucket = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_ACCESS_KEY"); ok {
+		cfg.S3AccessKey = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_SECRET_KEY"); ok {
+		cfg.S3SecretKey = v
+	}
+	if v, ok := os.LookupEnv("FL_S3_USE_SSL"); ok {
+		if ssl, err := strconv.ParseBool(v); err == nil {
+			cfg.S3UseSSL = ssl
+		}
+	}
 	return &cfg, nil
 }
+
 // Save writes the current configuration back to config.json.
 func (c *Config) Save(configPath string) error {
 	data, err := json.MarshalIndent(c, "", "  ")

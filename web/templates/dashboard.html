@@ -7,11 +7,67 @@
   </div>
 </div>
 {{end}} {{define "content"}}
-<div style="width: 100%; max-width: 800px">
-  <h2>Dashboard</h2>
-  <div class="container" style="max-width: 100%">
-    <p>FileLine instance is successfully configured and running.</p>
-    <p>This is the general dashboard. Further functionalities will be added here.</p>
+<div style="width: 100%; max-width: 900px">
+  <h2>Upload File</h2>
+  <div class="container" style="max-width: 100%; margin-bottom: 2rem">
+    <form method="POST" action="/upload" enctype="multipart/form-data">
+      <div class="form-group">
+        <label for="file">Select File</label>
+        <input type="file" id="file" name="file" required />
+      </div>
+      <div class="form-group">
+        <label for="custom_name">Custom Name (optional, defaults to original)</label>
+        <input type="text" id="custom_name" name="custom_name" />
+      </div>
+      <div class="form-group">
+        <label for="url_path">URL Path (optional, e.g. 'cat44' for /f/cat44)</label>
+        <input type="text" id="url_path" name="url_path" />
+      </div>
+      <div class="form-group" style="display: flex; align-items: center">
+        <input type="checkbox" id="is_private" name="is_private" style="width: auto; margin-right: 10px" />
+        <label for="is_private" style="margin-bottom: 0">Private File (requires login)</label>
+      </div>
+      <button type="submit">Upload</button>
+    </form>
+  </div>
+
+  <h2>Your Files</h2>
+  <div class="container" style="max-width: 100%; overflow-x: auto">
+    <table style="width: 100%; border-collapse: collapse; text-align: left">
+      <thead>
+        <tr style="border-bottom: 1px solid #333">
+          <th style="padding: 0.75rem">Name</th>
+          <th style="padding: 0.75rem">URL</th>
+          <th style="padding: 0.75rem">Size (Bytes)</th>
+          <th style="padding: 0.75rem">Privacy</th>
+          <th style="padding: 0.75rem">Uploaded</th>
+          <th style="padding: 0.75rem">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Files}}
+        <tr style="border-bottom: 1px solid #333">
+          <td style="padding: 0.75rem">{{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}</td>
+          <td style="padding: 0.75rem"><a href="/f/{{.URLPath}}" target="_blank" style="color: #81c784">/f/{{.URLPath}}</a></td>
+          <td style="padding: 0.75rem">{{.Size}}</td>
+          <td style="padding: 0.75rem">{{if .IsPrivate}}<span style="color: #ff5252">Private</span>{{else}}<span style="color: #4dd0e1">Public</span>{{end}}</td>
+          <td style="padding: 0.75rem">{{.UploadedAt.Format "2006-01-02 15:04"}}</td>
+          <td style="padding: 0.75rem">
+            <form method="POST" action="/delete" style="margin: 0; display: inline-block">
+              <input type="hidden" name="id" value="{{.ID}}" />
+              <button type="submit" style="margin: 0; padding: 0.25rem 0.5rem; background: #ff5252; width: auto; font-size: 0.8rem" onclick="return confirm('Delete this file?');">
+                Delete
+              </button>
+            </form>
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" style="padding: 1rem; text-align: center; color: #999">No files uploaded yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
   </div>
 </div>
 {{end}}

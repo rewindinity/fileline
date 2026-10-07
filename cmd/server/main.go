@@ -23,9 +23,9 @@ func main() {
 		defaultCfg := config.DefaultConfig()
 		cfg = &defaultCfg
 	}
-	
+
 	os.MkdirAll("data", 0755)
-	
+
 	// Root context for application lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -44,9 +44,9 @@ func main() {
 				log.Fatalf("Database migration failed: %v", err)
 			}
 			log.Printf("Successfully connected to %s database and migrated", cfg.DBType)
-			
+
 			// Inject database into server
-			srv = server.New(cfg, database) // Recreate to inject DB, or we can use a SetDB method. 
+			srv = server.New(cfg, database) // Recreate to inject DB, or we can use a SetDB method.
 			// Wait, recreating is fine since we haven't started it yet.
 		}
 	} else {

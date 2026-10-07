@@ -17,6 +17,17 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 			username TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
 			role TEXT NOT NULL DEFAULT 'user'
+		);
+		CREATE TABLE IF NOT EXISTS files (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			original_name TEXT NOT NULL,
+			custom_name TEXT NOT NULL,
+			url_path TEXT UNIQUE NOT NULL,
+			size INTEGER NOT NULL,
+			is_private BOOLEAN NOT NULL DEFAULT 0,
+			storage_type TEXT NOT NULL,
+			storage_path TEXT NOT NULL,
+			uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`
 	case "postgres":
 		query = `
@@ -25,6 +36,17 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 			username VARCHAR(255) UNIQUE NOT NULL,
 			password_hash VARCHAR(255) NOT NULL,
 			role VARCHAR(50) NOT NULL DEFAULT 'user'
+		);
+		CREATE TABLE IF NOT EXISTS files (
+			id SERIAL PRIMARY KEY,
+			original_name VARCHAR(255) NOT NULL,
+			custom_name VARCHAR(255) NOT NULL,
+			url_path VARCHAR(255) UNIQUE NOT NULL,
+			size BIGINT NOT NULL,
+			is_private BOOLEAN NOT NULL DEFAULT false,
+			storage_type VARCHAR(50) NOT NULL,
+			storage_path VARCHAR(255) NOT NULL,
+			uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);`
 	default:
 		return fmt.Errorf("unsupported db type for migrations: %s", dbType)
