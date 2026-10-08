@@ -141,6 +141,22 @@
                         <label for="s3_use_ssl" style="margin-bottom: 0;">Use SSL for S3 connection</label>
                     </div>
                 </div>
+
+                <h3 style="color: #bbb; margin-top: 2rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="max_upload_size_mb">Max Upload Size (MB)</label>
+                        <input type="number" id="max_upload_size_mb" name="max_upload_size_mb" value="{{.Config.MaxUploadSizeMB}}" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="chunk_threshold_mb">Chunk Threshold (MB)</label>
+                        <input type="number" id="chunk_threshold_mb" name="chunk_threshold_mb" value="{{.Config.ChunkThresholdMB}}" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="chunk_size_mb">Chunk Size (MB)</label>
+                        <input type="number" id="chunk_size_mb" name="chunk_size_mb" value="{{.Config.ChunkSizeMB}}" required>
+                    </div>
+                </div>
                 
                 <button type="submit" style="margin-top: 1rem;">Save Storage Config</button>
             </form>

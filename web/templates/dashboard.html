@@ -10,7 +10,7 @@
 <div style="width: 100%; max-width: 900px">
   <h2>Upload File</h2>
   <div class="container" style="max-width: 100%; margin-bottom: 2rem">
-    <form method="POST" action="/upload" enctype="multipart/form-data">
+    <form id="uploadForm" enctype="multipart/form-data">
       <div class="form-group">
         <label for="file">Select File</label>
         <input type="file" id="file" name="file" required />
@@ -27,9 +27,111 @@
         <input type="checkbox" id="is_private" name="is_private" style="width: auto; margin-right: 10px" />
         <label for="is_private" style="margin-bottom: 0">Private File (requires login)</label>
       </div>
-      <button type="submit">Upload</button>
+      <button type="submit" id="uploadBtn">Upload</button>
+      <div id="progressStatus" style="margin-top: 1rem; color: #4dd0e1; font-weight: bold"></div>
     </form>
   </div>
+
+  <script>
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressStatus = document.getElementById('progressStatus');
+
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fileInput = document.getElementById('file');
+        if (!fileInput.files.length) return;
+
+        const file = fileInput.files[0];
+        const customName = document.getElementById('custom_name').value;
+        const urlPath = document.getElementById('url_path').value;
+        const isPrivate = document.getElementById('is_private').checked;
+
+        const maxUploadSize = {{.Config.MaxUploadSizeMB}} * 1024 * 1024;
+        const chunkThreshold = {{.Config.ChunkThresholdMB}} * 1024 * 1024;
+        const chunkSize = {{.Config.ChunkSizeMB}} * 1024 * 1024;
+
+        if (maxUploadSize > 0 && file.size > maxUploadSize) {
+            alert('File is too large. Maximum size is ' + {{.Config.MaxUploadSizeMB}} + ' MB');
+            return;
+        }
+
+        uploadBtn.disabled = true;
+
+        if (file.size > chunkThreshold) {
+            // Chunked upload
+            progressStatus.innerText = 'Initializing chunked upload...';
+
+            try {
+                const totalChunks = Math.ceil(file.size / chunkSize);
+
+                const initRes = await fetch('/api/upload/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_name: file.name,
+                        total_size: file.size,
+                        total_chunks: totalChunks,
+                        is_private: isPrivate,
+                        custom_name: customName,
+                        url_path: urlPath
+                    })
+                });
+
+                if (!initRes.ok) throw new Error(await initRes.text());
+                const { upload_id } = await initRes.json();
+
+                for (let i = 0; i < totalChunks; i++) {
+                    progressStatus.innerText = `Uploading chunk ${i + 1}/${totalChunks}...`;
+                    const start = i * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+
+                    const formData = new FormData();
+                    formData.append('upload_id', upload_id);
+                    formData.append('chunk_index', i);
+                    formData.append('chunk', chunk);
+
+                    const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+                    if (!chunkRes.ok) throw new Error('Failed to upload chunk ' + i);
+                }
+
+                progressStatus.innerText = 'Finalizing upload...';
+                const completeRes = await fetch('/api/upload/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ upload_id })
+                });
+
+                if (!completeRes.ok) throw new Error(await completeRes.text());
+
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = 'Error: ' + err.message;
+                progressStatus.style.color = '#ff5252';
+                uploadBtn.disabled = false;
+            }
+        } else {
+            // Regular upload
+            progressStatus.innerText = 'Uploading...';
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('custom_name', customName);
+            formData.append('url_path', urlPath);
+            if (isPrivate) formData.append('is_private', 'on');
+
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error(await res.text());
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = 'Error: ' + err.message;
+                progressStatus.style.color = '#ff5252';
+                uploadBtn.disabled = false;
+            }
+        }
+    });
+  </script>
 
   <h2>Your Files</h2>
   <div class="container" style="max-width: 100%; overflow-x: auto">

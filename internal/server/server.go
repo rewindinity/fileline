@@ -13,6 +13,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +33,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+type ChunkUpload struct {
+	ID           string
+	OriginalName string
+	CustomName   string
+	URLPath      string
+	TotalSize    int64
+	TotalChunks  int
+	IsPrivate    bool
+	Received     []bool
+	TempDir      string
+	CreatedAt    time.Time
+}
+
 // Server represents the HTTP server for the application.
 type Server struct {
 	httpServer *http.Server
@@ -43,13 +59,16 @@ type Server struct {
 	totpTempStore     sync.Map // username -> string (secret)
 	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
 	login2FAStore     sync.Map // sessionID -> username
+	chunkMu           sync.RWMutex
+	chunkUploads      map[string]*ChunkUpload
 }
 
 // New creates a new Server instance.
 func New(cfg *config.Config, database *sql.DB) *Server {
 	s := &Server{
-		db:  database,
-		cfg: cfg,
+		db:           database,
+		cfg:          cfg,
+		chunkUploads: make(map[string]*ChunkUpload),
 	}
 	// Parse templates safely for each page to avoid block overwriting
 	s.tmpls = make(map[string]*template.Template)
@@ -104,6 +123,9 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/logout", s.logoutHandler)
 	mux.HandleFunc("/f/", s.serveFileHandler)
 	mux.HandleFunc("/upload", s.requireAuth(s.uploadHandler))
+	mux.HandleFunc("/api/upload/init", s.requireAuth(s.chunkUploadInitHandler))
+	mux.HandleFunc("/api/upload/chunk", s.requireAuth(s.chunkUploadHandler))
+	mux.HandleFunc("/api/upload/complete", s.requireAuth(s.chunkUploadCompleteHandler))
 	mux.HandleFunc("/delete", s.requireAuth(s.deleteHandler))
 	mux.HandleFunc("/files", s.requireAuth(s.filesHandler))
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
@@ -409,6 +431,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		"Title":    "Dashboard",
 		"Username": username,
 		"Files":    files,
+		"Config":   s.cfg,
 	})
 }
 
@@ -481,6 +504,14 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+
+	s.mu.RLock()
+	maxSize := s.cfg.MaxUploadSizeMB * 1024 * 1024
+	s.mu.RUnlock()
+	if maxSize > 0 && header.Size > int64(maxSize) {
+		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
+		return
+	}
 
 	originalName := header.Filename
 	customName := r.FormValue("custom_name")
@@ -736,6 +767,15 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 				s.cfg.S3SecretKey = secret
 			}
 			s.cfg.S3UseSSL = r.FormValue("s3_use_ssl") == "on"
+		}
+		if maxUpload, err := strconv.Atoi(r.FormValue("max_upload_size_mb")); err == nil {
+			s.cfg.MaxUploadSizeMB = maxUpload
+		}
+		if threshold, err := strconv.Atoi(r.FormValue("chunk_threshold_mb")); err == nil {
+			s.cfg.ChunkThresholdMB = threshold
+		}
+		if size, err := strconv.Atoi(r.FormValue("chunk_size_mb")); err == nil {
+			s.cfg.ChunkSizeMB = size
 		}
 		s.cfg.Save("config.json")
 		// Reinit storage
@@ -1126,4 +1166,210 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/settings?success=Passkey+deleted+successfully", http.StatusFound)
+}
+
+func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		FileName    string `json:"file_name"`
+		TotalSize   int64  `json:"total_size"`
+		TotalChunks int    `json:"total_chunks"`
+		IsPrivate   bool   `json:"is_private"`
+		CustomName  string `json:"custom_name"`
+		URLPath     string `json:"url_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	s.mu.RLock()
+	maxSize := s.cfg.MaxUploadSizeMB * 1024 * 1024
+	s.mu.RUnlock()
+	if maxSize > 0 && req.TotalSize > int64(maxSize) {
+		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
+		return
+	}
+	uploadID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), req.FileName)
+	tempDir := filepath.Join(os.TempDir(), "fileline_chunks", uploadID)
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
+		return
+	}
+
+	upload := &ChunkUpload{
+		ID:           uploadID,
+		OriginalName: req.FileName,
+		CustomName:   req.CustomName,
+		URLPath:      req.URLPath,
+		TotalSize:    req.TotalSize,
+		TotalChunks:  req.TotalChunks,
+		IsPrivate:    req.IsPrivate,
+		Received:     make([]bool, req.TotalChunks),
+		TempDir:      tempDir,
+		CreatedAt:    time.Now(),
+	}
+	s.chunkMu.Lock()
+	s.chunkUploads[uploadID] = upload
+	s.chunkMu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"upload_id": uploadID,
+	})
+}
+
+func (s *Server) chunkUploadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.ParseMultipartForm(32 << 20) // 32MB max memory for parsing
+	uploadID := r.FormValue("upload_id")
+	chunkIndex, err := strconv.Atoi(r.FormValue("chunk_index"))
+	if err != nil {
+		http.Error(w, "Invalid chunk index", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("chunk")
+	if err != nil {
+		http.Error(w, "Failed to read chunk", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	s.chunkMu.RLock()
+	upload, ok := s.chunkUploads[uploadID]
+	s.chunkMu.RUnlock()
+	if !ok {
+		http.Error(w, "Upload session not found", http.StatusNotFound)
+		return
+	}
+	if chunkIndex < 0 || chunkIndex >= upload.TotalChunks {
+		http.Error(w, "Chunk index out of bounds", http.StatusBadRequest)
+		return
+	}
+	chunkPath := filepath.Join(upload.TempDir, fmt.Sprintf("%d", chunkIndex))
+	dst, err := os.Create(chunkPath)
+	if err != nil {
+		http.Error(w, "Failed to save chunk to disk", http.StatusInternalServerError)
+		return
+	}
+	io.Copy(dst, file)
+	dst.Close()
+	s.chunkMu.Lock()
+	upload.Received[chunkIndex] = true
+	s.chunkMu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		UploadID string `json:"upload_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+	s.chunkMu.RLock()
+	upload, ok := s.chunkUploads[req.UploadID]
+	s.chunkMu.RUnlock()
+	if !ok {
+		http.Error(w, "Upload session not found", http.StatusNotFound)
+		return
+	}
+	for i, received := range upload.Received {
+		if !received {
+			http.Error(w, fmt.Sprintf("Missing chunk %d", i), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Assemble file
+	assembledPath := filepath.Join(upload.TempDir, "assembled")
+	finalFile, err := os.Create(assembledPath)
+	if err != nil {
+		http.Error(w, "Failed to create assembled file", http.StatusInternalServerError)
+		return
+	}
+
+	var actualSize int64
+	for i := 0; i < upload.TotalChunks; i++ {
+		chunkPath := filepath.Join(upload.TempDir, fmt.Sprintf("%d", i))
+		chunkData, err := os.ReadFile(chunkPath)
+		if err != nil {
+			finalFile.Close()
+			http.Error(w, "Failed to read chunk from disk", http.StatusInternalServerError)
+			return
+		}
+		n, err := finalFile.Write(chunkData)
+		if err != nil {
+			finalFile.Close()
+			http.Error(w, "Failed to write assembled file", http.StatusInternalServerError)
+			return
+		}
+		actualSize += int64(n)
+	}
+	finalFile.Close()
+
+	// Clean up temp dir and session after we are done storing
+	defer func() {
+		os.RemoveAll(upload.TempDir)
+		s.chunkMu.Lock()
+		delete(s.chunkUploads, upload.ID)
+		s.chunkMu.Unlock()
+	}()
+
+	// Re-open for storage provider
+	assembledFile, err := os.Open(assembledPath)
+	if err != nil {
+		http.Error(w, "Failed to open assembled file", http.StatusInternalServerError)
+		return
+	}
+	defer assembledFile.Close()
+
+	urlPath := upload.URLPath
+	if urlPath == "" {
+		if upload.CustomName != "" {
+			urlPath = upload.CustomName
+		} else {
+			urlPath = upload.OriginalName
+		}
+	}
+
+	s.mu.RLock()
+	storageType := s.cfg.StorageType
+	st := s.storage
+	database := s.db
+	s.mu.RUnlock()
+	storageKey := fmt.Sprintf("%d-%s", time.Now().UnixNano(), upload.OriginalName)
+	if err := st.Save(r.Context(), storageKey, assembledFile); err != nil {
+		http.Error(w, "Failed to save file to storage: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	f := &db.File{
+		OriginalName: upload.OriginalName,
+		CustomName:   upload.CustomName,
+		URLPath:      urlPath,
+		Size:         actualSize,
+		IsPrivate:    upload.IsPrivate,
+		StorageType:  storageType,
+		StoragePath:  storageKey,
+	}
+
+	if err := db.InsertFile(r.Context(), database, f); err != nil {
+		st.Delete(r.Context(), storageKey) // Rollback
+		http.Error(w, "Failed to save file metadata: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }

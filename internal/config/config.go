@@ -26,6 +26,9 @@ type Config struct {
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
+	MaxUploadSizeMB  int    `json:"max_upload_size_mb"`
+	ChunkThresholdMB int    `json:"chunk_threshold_mb"`
+	ChunkSizeMB      int    `json:"chunk_size_mb"`
 	Domain           string `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
 	EnvOnly          bool   `json:"-"`      // Not serialized
 }
@@ -40,6 +43,9 @@ func DefaultConfig() Config {
 		StorageType:      "local",
 		LocalStoragePath: "./uploads",
 		Domain:           "localhost",
+		MaxUploadSizeMB:  1024,
+		ChunkThresholdMB: 50,
+		ChunkSizeMB:      10,
 	}
 }
 
@@ -116,6 +122,21 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	}
 	if v, ok := os.LookupEnv("FL_DOMAIN"); ok {
 		cfg.Domain = v
+	}
+	if v, ok := os.LookupEnv("FL_MAX_UPLOAD_SIZE_MB"); ok {
+		if limit, err := strconv.Atoi(v); err == nil {
+			cfg.MaxUploadSizeMB = limit
+		}
+	}
+	if v, ok := os.LookupEnv("FL_CHUNK_THRESHOLD_MB"); ok {
+		if threshold, err := strconv.Atoi(v); err == nil {
+			cfg.ChunkThresholdMB = threshold
+		}
+	}
+	if v, ok := os.LookupEnv("FL_CHUNK_SIZE_MB"); ok {
+		if size, err := strconv.Atoi(v); err == nil {
+			cfg.ChunkSizeMB = size
+		}
 	}
 	return &cfg, nil
 }
