@@ -14,8 +14,35 @@ type WebAuthnUser struct {
 }
 
 type Passkey struct {
-	webauthn.Credential
-	Name string `json:"name"`
+	Credential webauthn.Credential `json:"credential"`
+	Name       string              `json:"name"`
+}
+
+func (p *Passkey) UnmarshalJSON(data []byte) error {
+	// First try to unmarshal into the new wrapper format
+	type Alias Passkey
+	var alias Alias
+	if err := json.Unmarshal(data, &alias); err == nil && alias.Credential.ID != nil {
+		*p = Passkey(alias)
+		return nil
+	}
+
+	// Fallback to legacy format
+	var cred webauthn.Credential
+	if err := json.Unmarshal(data, &cred); err != nil {
+		return err
+	}
+	p.Credential = cred
+
+	// Try to extract name from root level if present
+	var root struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &root); err == nil && root.Name != "" {
+		p.Name = root.Name
+	}
+
+	return nil
 }
 
 func NewWebAuthnUser(u *db.User) *WebAuthnUser {

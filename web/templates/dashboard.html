@@ -23,12 +23,12 @@
         <label for="url_path">URL Path (optional, e.g. 'cat44' for /f/cat44)</label>
         <input type="text" id="url_path" name="url_path" />
       </div>
-      {{if gt (len .Config.Drives) 0}}
+      {{if gt (len .EnabledDrives) 0}}
       <div class="form-group">
         <label for="drive_id">Storage Drive</label>
         <select id="drive_id" name="drive_id" style="width: 100%; padding: 0.5rem; background: #222; color: #eee; border: 1px solid #333; border-radius: 4px">
           <option value="default">Default Configured Storage</option>
-          {{range .Config.Drives}}
+          {{range .EnabledDrives}}
           <option value="{{.ID}}">{{.Name}} ({{.Type}})</option>
           {{end}}
         </select>

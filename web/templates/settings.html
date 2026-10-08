@@ -70,7 +70,6 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid #333; background: #222;">
                     <div>
                         <span style="font-weight: bold;">{{.Name}}</span>
-                        <div style="font-size: 0.8rem; color: #666; font-family: monospace; overflow: hidden; text-overflow: ellipsis; max-width: 200px;">{{.ID}}</div>
                     </div>
                     <form method="POST" action="/settings/webauthn/delete" style="margin: 0;">
                         <input type="hidden" name="id" value="{{.ID}}">
@@ -95,7 +94,7 @@
                 <p style="color: #ffb74d; margin: 0;">Running in <strong>ENV-only</strong> mode. Storage configuration must be managed via environment variables and cannot be modified here.</p>
             </div>
             {{else}}
-            <form method="POST" action="/settings/storage">
+            <form id="storageForm" method="POST" action="/settings/storage">
                 <div class="form-group">
                     <label for="storage_type">Storage Type</label>
                     <select id="storage_type" name="storage_type" onchange="toggleStorageFields()" style="width: 100%; padding: 0.75rem; background: #222; border: 1px solid #444; color: white; border-radius: 4px;">
@@ -143,9 +142,15 @@
                 </div>
 
                 <div style="margin-top: 2rem;">
-                    <h3 style="color: #bbb; margin-bottom: 1rem;">Additional Storage Drives (Multiple S3/Local)</h3>
-                    <p style="color: #999; font-size: 0.9rem; margin-bottom: 1rem;">Configure additional drives here using JSON format (advanced). Each drive must have an id, name, type (s3/local), and respective configuration fields.</p>
-                    <textarea name="drives_json" rows="6" style="width: 100%; font-family: monospace; background: #222; color: #eee; padding: 0.5rem; border: 1px solid #333; border-radius: 4px;">{{.DrivesJSON}}</textarea>
+                    <h3 style="color: #bbb; margin-bottom: 1rem;">Additional Storage Drives</h3>
+                    <p style="color: #999; font-size: 0.9rem; margin-bottom: 1rem;">Configure additional drives. You can select an active drive when uploading a file.</p>
+                    
+                    <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1rem;"></div>
+                    
+                    <button type="button" onclick="addDrive()" style="background: #333; color: white; border: 1px dashed #666; width: 100%; padding: 0.75rem;">+ Add Storage Drive</button>
+                    
+                    <!-- Hidden field to submit JSON -->
+                    <input type="hidden" id="drives_json_input" name="drives_json">
                 </div>
 
                 <h3 style="color: #bbb; margin-top: 2rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
@@ -245,5 +250,128 @@ async function registerPasskey() {
         status.style.color = "#ff5252";
     }
 }
+</script>
+<script>
+let drives = [];
+try {
+    const raw = {{.DrivesJSON}};
+    if (typeof raw === 'string') {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) drives = parsed;
+    } else if (Array.isArray(raw)) {
+        drives = raw;
+    }
+} catch (e) {
+    console.error("Failed to parse initial drives json", e);
+}
+
+const drivesContainer = document.getElementById('drives_container');
+const storageForm = document.getElementById('storageForm');
+const drivesJsonInput = document.getElementById('drives_json_input');
+
+function renderDrives() {
+    drivesContainer.innerHTML = '';
+    drives.forEach((d, idx) => {
+        const div = document.createElement('div');
+        div.style = 'border: 1px solid #444; border-radius: 6px; padding: 1rem; background: #1e1e1e;';
+        
+        div.innerHTML = `
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h4 style="margin: 0; color: #81c784;">Drive #${idx + 1}</h4>
+                <button type="button" onclick="removeDrive(${idx})" style="background: transparent; color: #ff5252; padding: 0.25rem 0.5rem; font-size: 0.9rem; border: 1px solid #ff5252;">Remove</button>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label>Drive ID (must be unique)</label>
+                    <input type="text" value="${d.id || ''}" onchange="updateDrive(${idx}, 'id', this.value)" placeholder="e.g. s3-backup" required>
+                </div>
+                <div class="form-group">
+                    <label>Internal Name</label>
+                    <input type="text" value="${d.name || ''}" onchange="updateDrive(${idx}, 'name', this.value)" placeholder="e.g. S3 Backup Server" required>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label>Type</label>
+                    <select onchange="updateDrive(${idx}, 'type', this.value); renderDrives();" style="width: 100%; padding: 0.5rem; background: #222; color: #eee; border: 1px solid #333; border-radius: 4px;">
+                        <option value="s3" ${d.type === 's3' ? 'selected' : ''}>S3 Compatible</option>
+                        <option value="local" ${d.type === 'local' ? 'selected' : ''}>Local Storage</option>
+                    </select>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; margin-top: 1.5rem;">
+                    <input type="checkbox" onchange="updateDrive(${idx}, 'enabled', this.checked)" ${d.enabled ? 'checked' : ''} style="width: auto; margin-right: 10px;">
+                    <label style="margin-bottom: 0;">Enabled for uploads</label>
+                </div>
+            </div>
+
+            ${d.type === 'local' ? `
+            <div class="form-group">
+                <label>Local Path</label>
+                <input type="text" value="${d.local_storage_path || ''}" onchange="updateDrive(${idx}, 'local_storage_path', this.value)" placeholder="./uploads">
+            </div>
+            ` : `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label>S3 Endpoint</label>
+                    <input type="text" value="${d.s3_endpoint || ''}" onchange="updateDrive(${idx}, 's3_endpoint', this.value)" placeholder="s3.example.com">
+                </div>
+                <div class="form-group">
+                    <label>S3 Region</label>
+                    <input type="text" value="${d.s3_region || ''}" onchange="updateDrive(${idx}, 's3_region', this.value)">
+                </div>
+                <div class="form-group">
+                    <label>S3 Bucket</label>
+                    <input type="text" value="${d.s3_bucket || ''}" onchange="updateDrive(${idx}, 's3_bucket', this.value)">
+                </div>
+                <div class="form-group">
+                    <label>S3 Access Key</label>
+                    <input type="text" value="${d.s3_access_key || ''}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
+                </div>
+                <div class="form-group">
+                    <label>S3 Secret Key</label>
+                    <input type="password" value="${d.s3_secret_key || ''}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; margin-top: 1.5rem;">
+                    <input type="checkbox" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${d.s3_use_ssl ? 'checked' : ''} style="width: auto; margin-right: 10px;">
+                    <label style="margin-bottom: 0;">Use SSL</label>
+                </div>
+            </div>
+            `}
+        `;
+        drivesContainer.appendChild(div);
+    });
+}
+
+function updateDrive(idx, field, val) {
+    drives[idx][field] = val;
+}
+
+function addDrive() {
+    drives.push({
+        id: 'drive-' + Date.now(),
+        name: 'New Drive',
+        type: 's3',
+        enabled: true,
+        s3_use_ssl: true
+    });
+    renderDrives();
+}
+
+function removeDrive(idx) {
+    if (confirm("Remove this drive?")) {
+        drives.splice(idx, 1);
+        renderDrives();
+    }
+}
+
+if (storageForm) {
+    storageForm.addEventListener('submit', (e) => {
+        drivesJsonInput.value = JSON.stringify(drives);
+    });
+}
+
+renderDrives();
 </script>
 {{end}}

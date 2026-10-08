@@ -11,6 +11,7 @@ type Drive struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	Type             string `json:"type"` // "local" or "s3"
+	Enabled          bool   `json:"enabled"`
 	LocalStoragePath string `json:"local_storage_path"`
 	S3Endpoint       string `json:"s3_endpoint"`
 	S3Region         string `json:"s3_region"`

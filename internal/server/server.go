@@ -430,11 +430,20 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load files", http.StatusInternalServerError)
 		return
 	}
+
+	var enabledDrives []config.Drive
+	for _, d := range s.cfg.Drives {
+		if d.Enabled {
+			enabledDrives = append(enabledDrives, d)
+		}
+	}
+
 	s.renderTemplate(w, "dashboard.html", map[string]interface{}{
-		"Title":    "Dashboard",
-		"Username": username,
-		"Files":    files,
-		"Config":   s.cfg,
+		"Title":         "Dashboard",
+		"Username":      username,
+		"Files":         files,
+		"Config":        s.cfg,
+		"EnabledDrives": enabledDrives,
 	})
 }
 
