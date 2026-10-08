@@ -114,6 +114,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
 	mux.HandleFunc("/webauthn/register/begin", s.requireAuth(s.webAuthnRegisterBegin))
 	mux.HandleFunc("/webauthn/register/finish", s.requireAuth(s.webAuthnRegisterFinish))
+	mux.HandleFunc("/settings/webauthn/delete", s.requireAuth(s.webAuthnDeleteHandler))
 	mux.HandleFunc("/webauthn/login/begin", s.webAuthnLoginBegin)
 	mux.HandleFunc("/webauthn/login/finish", s.webAuthnLoginFinish)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
@@ -677,10 +678,23 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
+
+	var passkeys []webauthn.Credential
+	if user.WebAuthnData != "" {
+		json.Unmarshal([]byte(user.WebAuthnData), &passkeys)
+	}
+	var passkeysDisplay []map[string]interface{}
+	for i, pk := range passkeys {
+		passkeysDisplay = append(passkeysDisplay, map[string]interface{}{
+			"Index": i + 1,
+			"ID":    base64.URLEncoding.EncodeToString(pk.ID),
+		})
+	}
 	s.renderTemplate(w, "settings.html", map[string]interface{}{
 		"Title":          "Settings",
 		"Username":       username,
 		"User":           user,
+		"Passkeys":       passkeysDisplay,
 		"Config":         cfg,
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
@@ -1059,4 +1073,57 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/settings?success=2FA+Disabled+Successfully", http.StatusFound)
+}
+
+func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	idToDelete := r.FormValue("id")
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.WebAuthnData == "" {
+		http.Redirect(w, r, "/settings?error=User+or+passkeys+not+found", http.StatusFound)
+		return
+	}
+
+	var passkeys []webauthn.Credential
+	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+parse+passkeys", http.StatusFound)
+		return
+	}
+
+	var updatedPasskeys []webauthn.Credential
+	deleted := false
+	for _, pk := range passkeys {
+		encodedID := base64.URLEncoding.EncodeToString(pk.ID)
+		if encodedID == idToDelete {
+			deleted = true
+			continue
+		}
+		updatedPasskeys = append(updatedPasskeys, pk)
+	}
+
+	if !deleted {
+		http.Redirect(w, r, "/settings?error=Passkey+not+found", http.StatusFound)
+		return
+	}
+	var updatedJSON []byte
+	if len(updatedPasskeys) > 0 {
+		updatedJSON, _ = json.Marshal(updatedPasskeys)
+	} else {
+		updatedJSON = []byte("[]")
+	}
+	if err := db.UpdateUserAuthData(r.Context(), database, username, user.TOTPSecret, string(updatedJSON)); err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+delete+passkey", http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/settings?success=Passkey+deleted+successfully", http.StatusFound)
 }
