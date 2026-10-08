@@ -41,6 +41,7 @@ type ChunkUpload struct {
 	TotalSize    int64
 	TotalChunks  int
 	IsPrivate    bool
+	DriveID      string
 	Received     []bool
 	TempDir      string
 	CreatedAt    time.Time
@@ -51,10 +52,12 @@ type Server struct {
 	httpServer *http.Server
 	db         *sql.DB
 	cfg        *config.Config
-	storage    storage.Provider
-	mu         sync.RWMutex
-	tmpls      map[string]*template.Template
-	webAuthn   *webauthn.WebAuthn
+	// Storage
+	storage       storage.Provider            // Default legacy provider
+	storageDrives map[string]storage.Provider // Configured drives
+	mu            sync.RWMutex
+	tmpls         map[string]*template.Template
+	webAuthn      *webauthn.WebAuthn
 	// Temporary session stores
 	totpTempStore     sync.Map // username -> string (secret)
 	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
@@ -88,7 +91,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		st, _ = storage.NewProvider(context.Background(), cfg)
 	}
 	s.storage = st
-
+	s.initDrives(context.Background())
 	// Initialize WebAuthn
 	schema := "http"
 	if cfg.SSL || cfg.ReverseProxy {
@@ -525,10 +528,14 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isPrivate := r.FormValue("is_private") == "on"
+	driveID := r.FormValue("drive_id")
 
 	s.mu.RLock()
-	storageType := s.cfg.StorageType
-	st := s.storage
+	st := s.getProvider(driveID)
+	storageType := driveID
+	if storageType == "" || storageType == "default" {
+		storageType = s.cfg.StorageType
+	}
 	database := s.db
 	s.mu.RUnlock()
 
@@ -570,7 +577,6 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	database := s.db
-	st := s.storage
 	s.mu.RUnlock()
 
 	f, err := db.GetFileByID(r.Context(), database, id)
@@ -578,6 +584,9 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
+	s.mu.RLock()
+	st := s.getProvider(f.StorageType)
+	s.mu.RUnlock()
 	if err := st.Delete(r.Context(), f.StoragePath); err != nil {
 		log.Printf("Warning: failed to delete file from storage: %v", err)
 	}
@@ -600,7 +609,6 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	database := s.db
-	st := s.storage
 	s.mu.RUnlock()
 
 	f, err := db.GetFileByURL(r.Context(), database, urlPath)
@@ -617,14 +625,19 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		token, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-			return []byte(s.cfg.JWTKey), nil
+			s.mu.RLock()
+			key := []byte(s.cfg.JWTKey)
+			s.mu.RUnlock()
+			return key, nil
 		})
 		if err != nil || !token.Valid {
 			s.render404(w)
 			return
 		}
 	}
-
+	s.mu.RLock()
+	st := s.getProvider(f.StorageType)
+	s.mu.RUnlock()
 	reader, err := st.Get(r.Context(), f.StoragePath)
 	if err != nil {
 		s.render404(w)
@@ -710,16 +723,25 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	errorMsg := r.URL.Query().Get("error")
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 
-	var passkeys []webauthn.Credential
+	var passkeys []auth.Passkey
 	if user.WebAuthnData != "" {
 		json.Unmarshal([]byte(user.WebAuthnData), &passkeys)
 	}
 	var passkeysDisplay []map[string]interface{}
 	for i, pk := range passkeys {
+		name := pk.Name
+		if name == "" {
+			name = fmt.Sprintf("Passkey %d", i+1)
+		}
 		passkeysDisplay = append(passkeysDisplay, map[string]interface{}{
 			"Index": i + 1,
-			"ID":    base64.URLEncoding.EncodeToString(pk.ID),
+			"Name":  name,
+			"ID":    base64.URLEncoding.EncodeToString(pk.Credential.ID),
 		})
+	}
+	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
+	if string(drivesJSONBytes) == "null" {
+		drivesJSONBytes = []byte("[]")
 	}
 	s.renderTemplate(w, "settings.html", map[string]interface{}{
 		"Title":          "Settings",
@@ -727,6 +749,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"User":           user,
 		"Passkeys":       passkeysDisplay,
 		"Config":         cfg,
+		"DrivesJSON":     string(drivesJSONBytes),
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
@@ -777,6 +800,15 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		if size, err := strconv.Atoi(r.FormValue("chunk_size_mb")); err == nil {
 			s.cfg.ChunkSizeMB = size
 		}
+		drivesJSON := r.FormValue("drives_json")
+		if drivesJSON != "" {
+			var newDrives []config.Drive
+			if err := json.Unmarshal([]byte(drivesJSON), &newDrives); err == nil {
+				s.cfg.Drives = newDrives
+			} else {
+				log.Printf("Warning: failed to parse drives_json: %v", err)
+			}
+		}
 		s.cfg.Save("config.json")
 		// Reinit storage
 		st, err := storage.NewProvider(r.Context(), s.cfg)
@@ -785,6 +817,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Printf("Failed to reinitialize storage: %v", err)
 		}
+		s.initDrives(r.Context())
 		s.mu.Unlock()
 		http.Redirect(w, r, "/settings?success=Storage+settings+saved", http.StatusFound)
 		return
@@ -1010,10 +1043,20 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Add credential
-	creds := user.WebAuthnCredentials()
-	creds = append(creds, *credential)
-	credsJSON, _ := json.Marshal(creds)
+	passkeyName := r.URL.Query().Get("name")
+	if passkeyName == "" {
+		passkeyName = "Passkey " + time.Now().Format("2006-01-02 15:04")
+	}
+	var passkeys []auth.Passkey
+	if dbUser.WebAuthnData != "" {
+		_ = json.Unmarshal([]byte(dbUser.WebAuthnData), &passkeys)
+	}
+	newPasskey := auth.Passkey{
+		Credential: *credential,
+		Name:       passkeyName,
+	}
+	passkeys = append(passkeys, newPasskey)
+	credsJSON, _ := json.Marshal(passkeys)
 	if err := db.UpdateUserAuthData(r.Context(), database, username, dbUser.TOTPSecret, string(credsJSON)); err != nil {
 		http.Error(w, "Failed to save credential", http.StatusInternalServerError)
 		return
@@ -1133,16 +1176,16 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var passkeys []webauthn.Credential
+	var passkeys []auth.Passkey
 	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
 		http.Redirect(w, r, "/settings?error=Failed+to+parse+passkeys", http.StatusFound)
 		return
 	}
 
-	var updatedPasskeys []webauthn.Credential
+	var updatedPasskeys []auth.Passkey
 	deleted := false
 	for _, pk := range passkeys {
-		encodedID := base64.URLEncoding.EncodeToString(pk.ID)
+		encodedID := base64.URLEncoding.EncodeToString(pk.Credential.ID)
 		if encodedID == idToDelete {
 			deleted = true
 			continue
@@ -1180,6 +1223,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		IsPrivate   bool   `json:"is_private"`
 		CustomName  string `json:"custom_name"`
 		URLPath     string `json:"url_path"`
+		DriveID     string `json:"drive_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -1207,6 +1251,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		TotalSize:    req.TotalSize,
 		TotalChunks:  req.TotalChunks,
 		IsPrivate:    req.IsPrivate,
+		DriveID:      req.DriveID,
 		Received:     make([]bool, req.TotalChunks),
 		TempDir:      tempDir,
 		CreatedAt:    time.Now(),
@@ -1344,8 +1389,11 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	s.mu.RLock()
-	storageType := s.cfg.StorageType
-	st := s.storage
+	st := s.getProvider(upload.DriveID)
+	storageType := upload.DriveID
+	if storageType == "" || storageType == "default" {
+		storageType = s.cfg.StorageType
+	}
 	database := s.db
 	s.mu.RUnlock()
 	storageKey := fmt.Sprintf("%d-%s", time.Now().UnixNano(), upload.OriginalName)
@@ -1372,4 +1420,26 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
+}
+
+func (s *Server) initDrives(ctx context.Context) {
+	s.storageDrives = make(map[string]storage.Provider)
+	for _, drive := range s.cfg.Drives {
+		p, err := storage.NewProviderFromDrive(ctx, drive)
+		if err == nil {
+			s.storageDrives[drive.ID] = p
+		} else {
+			log.Printf("Warning: failed to initialize drive %s: %v", drive.Name, err)
+		}
+	}
+}
+
+func (s *Server) getProvider(driveID string) storage.Provider {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if p, ok := s.storageDrives[driveID]; ok {
+		return p
+	}
+	// Fallback to default
+	return s.storage
 }

@@ -13,6 +13,11 @@ type WebAuthnUser struct {
 	dbUser *db.User
 }
 
+type Passkey struct {
+	webauthn.Credential
+	Name string `json:"name"`
+}
+
 func NewWebAuthnUser(u *db.User) *WebAuthnUser {
 	return &WebAuthnUser{dbUser: u}
 }
@@ -34,9 +39,13 @@ func (u *WebAuthnUser) WebAuthnIcon() string {
 }
 
 func (u *WebAuthnUser) WebAuthnCredentials() []webauthn.Credential {
+	var passkeys []Passkey
 	var creds []webauthn.Credential
 	if u.dbUser.WebAuthnData != "" {
-		_ = json.Unmarshal([]byte(u.dbUser.WebAuthnData), &creds)
+		_ = json.Unmarshal([]byte(u.dbUser.WebAuthnData), &passkeys)
+		for _, pk := range passkeys {
+			creds = append(creds, pk.Credential)
+		}
 	}
 	return creds
 }

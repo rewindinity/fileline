@@ -69,7 +69,7 @@
                 {{range .Passkeys}}
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-bottom: 1px solid #333; background: #222;">
                     <div>
-                        <span style="font-weight: bold;">Passkey {{.Index}}</span>
+                        <span style="font-weight: bold;">{{.Name}}</span>
                         <div style="font-size: 0.8rem; color: #666; font-family: monospace; overflow: hidden; text-overflow: ellipsis; max-width: 200px;">{{.ID}}</div>
                     </div>
                     <form method="POST" action="/settings/webauthn/delete" style="margin: 0;">
@@ -140,6 +140,12 @@
                         <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}} style="width: auto; margin-right: 10px;">
                         <label for="s3_use_ssl" style="margin-bottom: 0;">Use SSL for S3 connection</label>
                     </div>
+                </div>
+
+                <div style="margin-top: 2rem;">
+                    <h3 style="color: #bbb; margin-bottom: 1rem;">Additional Storage Drives (Multiple S3/Local)</h3>
+                    <p style="color: #999; font-size: 0.9rem; margin-bottom: 1rem;">Configure additional drives here using JSON format (advanced). Each drive must have an id, name, type (s3/local), and respective configuration fields.</p>
+                    <textarea name="drives_json" rows="6" style="width: 100%; font-family: monospace; background: #222; color: #eee; padding: 0.5rem; border: 1px solid #333; border-radius: 4px;">{{.DrivesJSON}}</textarea>
                 </div>
 
                 <h3 style="color: #bbb; margin-top: 2rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
@@ -215,7 +221,12 @@ async function registerPasskey() {
             }
         };
 
-        const finishResp = await fetch('/webauthn/register/finish', {
+        let passkeyName = prompt('Enter a name for this Passkey (e.g., MacBook TouchID, YubiKey):');
+        if (!passkeyName) {
+            passkeyName = "Passkey";
+        }
+
+        const finishResp = await fetch('/webauthn/register/finish?name=' + encodeURIComponent(passkeyName), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(credential)

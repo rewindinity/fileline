@@ -23,6 +23,17 @@
         <label for="url_path">URL Path (optional, e.g. 'cat44' for /f/cat44)</label>
         <input type="text" id="url_path" name="url_path" />
       </div>
+      {{if gt (len .Config.Drives) 0}}
+      <div class="form-group">
+        <label for="drive_id">Storage Drive</label>
+        <select id="drive_id" name="drive_id" style="width: 100%; padding: 0.5rem; background: #222; color: #eee; border: 1px solid #333; border-radius: 4px">
+          <option value="default">Default Configured Storage</option>
+          {{range .Config.Drives}}
+          <option value="{{.ID}}">{{.Name}} ({{.Type}})</option>
+          {{end}}
+        </select>
+      </div>
+      {{end}}
       <div class="form-group" style="display: flex; align-items: center">
         <input type="checkbox" id="is_private" name="is_private" style="width: auto; margin-right: 10px" />
         <label for="is_private" style="margin-bottom: 0">Private File (requires login)</label>
@@ -46,6 +57,8 @@
         const customName = document.getElementById('custom_name').value;
         const urlPath = document.getElementById('url_path').value;
         const isPrivate = document.getElementById('is_private').checked;
+        const driveSelect = document.getElementById('drive_id');
+        const driveId = driveSelect ? driveSelect.value : '';
 
         const maxUploadSize = {{.Config.MaxUploadSizeMB}} * 1024 * 1024;
         const chunkThreshold = {{.Config.ChunkThresholdMB}} * 1024 * 1024;
@@ -74,7 +87,8 @@
                         total_chunks: totalChunks,
                         is_private: isPrivate,
                         custom_name: customName,
-                        url_path: urlPath
+                        url_path: urlPath,
+                        drive_id: driveId
                     })
                 });
 
@@ -118,6 +132,7 @@
             formData.append('file', file);
             formData.append('custom_name', customName);
             formData.append('url_path', urlPath);
+            if (driveId) formData.append('drive_id', driveId);
             if (isPrivate) formData.append('is_private', 'on');
 
             try {

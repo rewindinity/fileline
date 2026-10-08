@@ -104,6 +104,38 @@ func NewS3Provider(ctx context.Context, cfg *fileline_config.Config) (*S3Provide
 	}, nil
 }
 
+func NewS3ProviderFromDrive(ctx context.Context, drive fileline_config.Drive) (*S3Provider, error) {
+	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+		if drive.S3Endpoint != "" {
+			schema := "https"
+			if !drive.S3UseSSL {
+				schema = "http"
+			}
+			return aws.Endpoint{
+				PartitionID:   "aws",
+				URL:           fmt.Sprintf("%s://%s", schema, drive.S3Endpoint),
+				SigningRegion: drive.S3Region,
+			}, nil
+		}
+		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+	})
+	awsCfg, err := aws_config.LoadDefaultConfig(ctx,
+		aws_config.WithRegion(drive.S3Region),
+		aws_config.WithEndpointResolverWithOptions(resolver),
+		aws_config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(drive.S3AccessKey, drive.S3SecretKey, "")),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load s3 config: %w", err)
+	}
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
+	return &S3Provider{
+		client: client,
+		bucket: drive.S3Bucket,
+	}, nil
+}
+
 func (p *S3Provider) Save(ctx context.Context, key string, reader io.Reader) error {
 	_, err := p.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(p.bucket),
@@ -139,6 +171,17 @@ func NewProvider(ctx context.Context, cfg *fileline_config.Config) (Provider, er
 	}
 	// default to local
 	path := cfg.LocalStoragePath
+	if path == "" {
+		path = "./uploads"
+	}
+	return NewLocalProvider(path)
+}
+
+func NewProviderFromDrive(ctx context.Context, drive fileline_config.Drive) (Provider, error) {
+	if drive.Type == "s3" {
+		return NewS3ProviderFromDrive(ctx, drive)
+	}
+	path := drive.LocalStoragePath
 	if path == "" {
 		path = "./uploads"
 	}

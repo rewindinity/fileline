@@ -7,18 +7,10 @@ import (
 	"strconv"
 )
 
-// Config holds the fileline configuration
-type Config struct {
-	DBType           string `json:"db_type"`
-	SQLiteURL        string `json:"sqlite_url"`
-	PostgresURL      string `json:"postgres_url"`
-	Port             int    `json:"port"`
-	SSL              bool   `json:"ssl"`
-	SSLCertPath      string `json:"ssl_cert_path"`
-	SSLKeyPath       string `json:"ssl_key_path"`
-	ReverseProxy     bool   `json:"reverse_proxy"`
-	JWTKey           string `json:"jwt_key"`
-	StorageType      string `json:"storage_type"` // "local" or "s3"
+type Drive struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Type             string `json:"type"` // "local" or "s3"
 	LocalStoragePath string `json:"local_storage_path"`
 	S3Endpoint       string `json:"s3_endpoint"`
 	S3Region         string `json:"s3_region"`
@@ -26,11 +18,34 @@ type Config struct {
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
-	MaxUploadSizeMB  int    `json:"max_upload_size_mb"`
-	ChunkThresholdMB int    `json:"chunk_threshold_mb"`
-	ChunkSizeMB      int    `json:"chunk_size_mb"`
-	Domain           string `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
-	EnvOnly          bool   `json:"-"`      // Not serialized
+}
+
+// Config holds the fileline configuration
+type Config struct {
+	DBType       string `json:"db_type"`
+	SQLiteURL    string `json:"sqlite_url"`
+	PostgresURL  string `json:"postgres_url"`
+	Port         int    `json:"port"`
+	SSL          bool   `json:"ssl"`
+	SSLCertPath  string `json:"ssl_cert_path"`
+	SSLKeyPath   string `json:"ssl_key_path"`
+	ReverseProxy bool   `json:"reverse_proxy"`
+	JWTKey       string `json:"jwt_key"`
+	// Legacy fields
+	StorageType      string  `json:"storage_type"` // "local" or "s3"
+	LocalStoragePath string  `json:"local_storage_path"`
+	S3Endpoint       string  `json:"s3_endpoint"`
+	S3Region         string  `json:"s3_region"`
+	S3Bucket         string  `json:"s3_bucket"`
+	S3AccessKey      string  `json:"s3_access_key"`
+	S3SecretKey      string  `json:"s3_secret_key"`
+	S3UseSSL         bool    `json:"s3_use_ssl"`
+	Drives           []Drive `json:"drives"`
+	MaxUploadSizeMB  int     `json:"max_upload_size_mb"`
+	ChunkThresholdMB int     `json:"chunk_threshold_mb"`
+	ChunkSizeMB      int     `json:"chunk_size_mb"`
+	Domain           string  `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
+	EnvOnly          bool    `json:"-"`      // Not serialized
 }
 
 // DefaultConfig returns a Config with default values
