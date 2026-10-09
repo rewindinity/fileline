@@ -1,106 +1,66 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} - FileLine</title>
-    <style>
-      body {
-        background-color: #121212;
-        color: #e0e0e0;
-        font-family:
-          system-ui,
-          -apple-system,
-          sans-serif;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        min-height: 100vh;
-      }
-      main {
-        flex: 1;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        padding: 2rem;
-      }
-      .container {
-        background: #1e1e1e;
-        padding: 2rem;
-        border-radius: 8px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-        width: 100%;
-        max-width: 400px;
-      }
-      h1 {
-        margin-top: 0;
-        font-size: 1.5rem;
-        text-align: center;
-        color: #ffffff;
-      }
-      .form-group {
-        margin-bottom: 1rem;
-      }
-      label {
-        display: block;
-        margin-bottom: 0.5rem;
-        font-size: 0.9rem;
-      }
-      input,
-      select {
-        width: 100%;
-        padding: 0.75rem;
-        border: 1px solid #333;
-        background: #2a2a2a;
-        color: #fff;
-        border-radius: 4px;
-        box-sizing: border-box;
-      }
-      input:focus,
-      select:focus {
-        outline: none;
-        border-color: #5c6bc0;
-      }
-      button {
-        width: 100%;
-        padding: 0.75rem;
-        background: #5c6bc0;
-        color: #fff;
-        border: none;
-        border-radius: 4px;
-        font-size: 1rem;
-        cursor: pointer;
-        margin-top: 1rem;
-      }
-      button:hover {
-        background: #3f51b5;
-      }
-      .error {
-        color: #ff5252;
-        background: #ffebee;
-        padding: 0.5rem;
-        border-radius: 4px;
-        margin-bottom: 1rem;
-        font-size: 0.9rem;
-        background-color: rgba(255, 82, 82, 0.1);
-      }
-      .nav {
-        background: #1e1e1e;
-        padding: 1rem 2rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .nav a {
-        color: #e0e0e0;
-        text-decoration: none;
-      }
-    </style>
+    <link rel="stylesheet" href="/static/css/style.css">
     {{block "head" .}}{{end}}
-  </head>
-  <body>
-    {{block "nav" .}}{{end}}
-    <main>{{block "content" .}}{{end}}</main>
-  </body>
+</head>
+<body>
+    {{if .Username}}
+    <header class="top-navbar">
+        <div class="nav-container">
+            <a href="/" class="brand">
+                <img src="/static/logo.svg" alt="FileLine Logo">
+                <span>FileLine</span>
+            </a>
+            <button class="mobile-nav-toggle" id="mobileNavBtn">
+                <img src="/static/icons/bx-list-ul.svg" alt="Menu" style="width: 24px; filter: brightness(0) invert(1);">
+            </button>
+            <nav class="nav-links" id="navLinks">
+                <a href="/" class="nav-item {{if eq .Title "Dashboard"}}active{{end}}">
+                    <img src="/static/icons/bxs-dashboard.svg" alt="Dashboard">
+                    Dashboard
+                </a>
+                <a href="/files" class="nav-item {{if eq .Title "My Files"}}active{{end}}">
+                    <img src="/static/icons/bxs-folder.svg" alt="Files">
+                    My Files
+                </a>
+                <a href="/settings" class="nav-item {{if eq .Title "Settings"}}active{{end}}">
+                    <img src="/static/icons/bxs-cog.svg" alt="Settings">
+                    Settings
+                </a>
+                <a href="/logout" class="nav-item" style="color: var(--error);">
+                    <img src="/static/icons/bx-log-out.svg" alt="Logout" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+                    Logout ({{.Username}})
+                </a>
+            </nav>
+        </div>
+    </header>
+    
+    <div class="app-layout">
+        <main class="main-content">
+            {{block "content" .}}{{end}}
+        </main>
+    </div>
+    
+    <script>
+        document.getElementById('mobileNavBtn')?.addEventListener('click', function() {
+            document.getElementById('navLinks').classList.toggle('show');
+        });
+    </script>
+    {{else}}
+    <div class="auth-layout">
+        <div class="auth-card">
+            <div class="auth-header">
+                <img src="/static/logo.svg" alt="FileLine Logo" style="width: 48px; margin-bottom: 1rem;">
+                <h1>FileLine</h1>
+                <p class="text-muted">{{.Title}}</p>
+            </div>
+            {{block "content" .}}{{end}}
+        </div>
+    </div>
+    {{end}}
+</body>
 </html>

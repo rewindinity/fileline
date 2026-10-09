@@ -1,65 +1,69 @@
-{{template "base.html" .}} {{define "nav"}}
-<div class="nav">
-  <div style="font-weight: bold; font-size: 1.2rem"><a href="/" style="color: white">FileLine</a></div>
+{{template "base.html" .}} {{define "content"}}
+<div class="page-header">
   <div>
-    <span>Welcome, {{.Username}}</span>
-    <a href="/settings" style="margin-left: 1rem; color: #4dd0e1">Settings</a>
-    <a href="/logout" style="margin-left: 1rem; color: #ff5252">Logout</a>
+    <h1 style="margin-bottom: 0.25rem">My Files</h1>
+    <p class="text-muted">Manage all your uploaded files</p>
+  </div>
+  <div class="header-actions">
+    <a href="/" class="btn btn-primary">
+      <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" style="width: 18px; filter: brightness(0) invert(1)" />
+      Upload New
+    </a>
   </div>
 </div>
-{{end}} {{define "content"}}
-<div style="width: 100%; max-width: 900px">
-  <div style="display: flex; justify-content: space-between; align-items: center">
-    <h2>All Files</h2>
-    <a href="/" style="color: #4dd0e1">&larr; Back to Dashboard</a>
-  </div>
 
-  <div class="container" style="max-width: 100%; overflow-x: auto">
-    <table style="width: 100%; border-collapse: collapse; text-align: left">
+<div class="card">
+  <div class="table-responsive">
+    <table>
       <thead>
-        <tr style="border-bottom: 1px solid #333">
-          <th style="padding: 0.75rem">Name</th>
-          <th style="padding: 0.75rem">URL</th>
-          <th style="padding: 0.75rem">Size (Bytes)</th>
-          <th style="padding: 0.75rem">Privacy</th>
-          <th style="padding: 0.75rem">Uploaded</th>
-          <th style="padding: 0.75rem">Action</th>
+        <tr>
+          <th>Name</th>
+          <th>URL</th>
+          <th>Size</th>
+          <th>Privacy</th>
+          <th>Date</th>
+          <th style="text-align: right">Actions</th>
         </tr>
       </thead>
       <tbody>
         {{range .Files}}
-        <tr style="border-bottom: 1px solid #333">
-          <td style="padding: 0.75rem">{{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}</td>
-          <td style="padding: 0.75rem"><a href="/f/{{.URLPath}}" target="_blank" style="color: #81c784">/f/{{.URLPath}}</a></td>
-          <td style="padding: 0.75rem">{{.Size}}</td>
-          <td style="padding: 0.75rem">{{if .IsPrivate}}<span style="color: #ff5252">Private</span>{{else}}<span style="color: #4dd0e1">Public</span>{{end}}</td>
-          <td style="padding: 0.75rem">{{.UploadedAt.Format "2006-01-02 15:04"}}</td>
-          <td style="padding: 0.75rem">
-            <a
-              href="/edit?id={{.ID}}"
-              style="
-                display: inline-block;
-                padding: 0.25rem 0.5rem;
-                background: #5c6bc0;
-                color: white;
-                text-decoration: none;
-                font-size: 0.8rem;
-                border-radius: 4px;
-                margin-right: 0.5rem;
-              "
-              >Edit</a
-            >
-            <form method="POST" action="/delete" style="margin: 0; display: inline-block">
-              <input type="hidden" name="id" value="{{.ID}}" />
-              <button type="submit" style="margin: 0; padding: 0.25rem 0.5rem; background: #ff5252; width: auto; font-size: 0.8rem" onclick="return confirm('Delete this file?');">
-                Delete
-              </button>
-            </form>
+        <tr>
+          <td>
+            <div class="file-name-cell">
+              <img src="/static/icons/bxs-file.svg" alt="File" />
+              {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
+            </div>
+          </td>
+          <td><a href="/f/{{.URLPath}}" target="_blank">/f/{{.URLPath}}</a></td>
+          <td>{{FormatSize .Size}}</td>
+          <td>
+            {{if .IsPrivate}}
+            <span class="badge badge-private">Private</span>
+            {{else}}
+            <span class="badge badge-public">Public</span>
+            {{end}}
+          </td>
+          <td>{{.UploadedAt.Format "Jan 02, 2006 15:04"}}</td>
+          <td style="text-align: right">
+            <div class="actions" style="justify-content: flex-end">
+              <a href="/edit?id={{.ID}}" class="icon-btn" title="Edit">
+                <img src="/static/icons/bxs-edit.svg" alt="Edit" />
+              </a>
+              <form method="POST" action="/delete" style="margin: 0; display: inline-block" onsubmit="return confirm('Are you sure you want to delete this file?');">
+                <input type="hidden" name="id" value="{{.ID}}" />
+                <button type="submit" class="icon-btn" title="Delete">
+                  <img src="/static/icons/bxs-trash.svg" alt="Delete" />
+                </button>
+              </form>
+            </div>
           </td>
         </tr>
         {{else}}
         <tr>
-          <td colspan="6" style="padding: 1rem; text-align: center; color: #999">No files uploaded yet.</td>
+          <td colspan="6" class="text-center text-muted" style="padding: 3rem">
+            <img src="/static/icons/bx-data.svg" alt="No Data" style="width: 48px; opacity: 0.5; margin-bottom: 1rem; filter: brightness(0) invert(0.6)" />
+            <br />No files uploaded yet.
+          </td>
         </tr>
         {{end}}
       </tbody>

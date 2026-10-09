@@ -1,13 +1,24 @@
 {{template "base.html" .}} {{define "content"}}
-<div class="container" style="max-width: 600px">
-  <h1>Edit File Details</h1>
+<div class="page-header">
+  <div>
+    <h1 style="margin-bottom: 0.25rem">Edit File</h1>
+    <p class="text-muted">Update file details</p>
+  </div>
+  <div class="header-actions">
+    <a href="/files" class="btn btn-secondary">
+      <img src="/static/icons/bx-arrow-back.svg" alt="Back" style="width: 18px; filter: brightness(0) invert(0.6)" />
+      Back to Files
+    </a>
+  </div>
+</div>
 
+<div class="card" style="max-width: 600px; margin: 0 auto">
   <form method="POST" action="/edit">
     <input type="hidden" name="id" value="{{.File.ID}}" />
 
     <div class="form-group">
-      <label>Original Name (Read-only)</label>
-      <input type="text" value="{{.File.OriginalName}}" readonly style="background: #222; color: #888" />
+      <label>Original Name <span class="text-muted">(Read-only)</span></label>
+      <input type="text" value="{{.File.OriginalName}}" readonly style="background-color: var(--bg-base); opacity: 0.7; cursor: not-allowed" />
     </div>
 
     <div class="form-group">
@@ -20,14 +31,14 @@
       <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}" />
     </div>
 
-    <div class="form-group" style="display: flex; align-items: center">
-      <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}} style="width: auto; margin-right: 10px" />
-      <label for="is_private" style="margin-bottom: 0">Private File (requires login)</label>
+    <div class="checkbox-group mt-1 mb-2">
+      <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}} />
+      <label for="is_private">Private File (requires login)</label>
     </div>
 
-    <div style="display: flex; gap: 1rem; margin-top: 2rem">
-      <a href="/" style="padding: 0.75rem; background: #333; color: #fff; text-decoration: none; border-radius: 4px; text-align: center; flex: 1">Cancel</a>
-      <button type="submit" style="margin-top: 0; flex: 1">Save Changes</button>
+    <div style="display: flex; gap: 1rem">
+      <a href="/files" class="btn btn-secondary" style="flex: 1">Cancel</a>
+      <button type="submit" class="btn btn-primary" style="flex: 1">Save Changes</button>
     </div>
   </form>
 </div>

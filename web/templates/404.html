@@ -1,8 +1,15 @@
 {{template "base.html" .}} {{define "content"}}
-<div class="container" style="text-align: center">
-  <h1 style="font-size: 3rem; margin-bottom: 1rem">404</h1>
-  <h2>File Not Found</h2>
-  <p style="color: #999">The requested file does not exist or you don't have permission to view it.</p>
-  <a href="/" style="display: inline-block; margin-top: 2rem; color: #5c6bc0; text-decoration: none">Return to Dashboard</a>
+<div class="auth-layout">
+  <div class="auth-card text-center" style="padding: 4rem 2rem">
+    <img
+      src="/static/icons/bxs-error-circle.svg"
+      alt="404"
+      style="width: 64px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%); margin-bottom: 1.5rem"
+    />
+    <h1 style="font-size: 3rem; margin-bottom: 0.5rem; letter-spacing: -0.05em">404</h1>
+    <h2 style="color: var(--text-secondary); margin-bottom: 1rem">File Not Found</h2>
+    <p class="text-muted" style="margin-bottom: 2rem">The requested file does not exist or you don't have permission to view it.</p>
+    <a href="/" class="btn btn-primary">Return to Dashboard</a>
+  </div>
 </div>
 {{end}}

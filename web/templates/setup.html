@@ -1,8 +1,14 @@
 {{template "base.html" .}} {{define "content"}}
-<div class="container">
-  <h1>FileLine Setup</h1>
+<div>
   {{if .Error}}
-  <div class="error">{{.Error}}</div>
+  <div class="alert alert-error">
+    <img
+      src="/static/icons/bxs-error-circle.svg"
+      alt="Error"
+      style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
+    />
+    {{.Error}}
+  </div>
   {{end}}
   <form method="POST" action="/setup">
     {{if not .DBConfigured}}
@@ -44,10 +50,10 @@
       </div>
     </div>
     {{else}}
-    <p style="text-align: center; color: #81c784">Database configured via environment variables.</p>
+    <p class="text-muted text-center" style="color: var(--success)">Database configured via environment variables.</p>
     {{end}}
 
-    <hr style="border-color: #333; margin: 2rem 0" />
+    <hr style="border-color: var(--border-color); margin: 2rem 0" />
 
     <h2>Storage Configuration</h2>
     <div class="form-group">
@@ -86,13 +92,13 @@
         <label for="s3_secret_key">Secret Key</label>
         <input type="password" id="s3_secret_key" name="s3_secret_key" />
       </div>
-      <div class="form-group" style="display: flex; align-items: center">
-        <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked style="width: auto; margin-right: 10px" />
-        <label for="s3_use_ssl" style="margin-bottom: 0">Use SSL</label>
+      <div class="checkbox-group">
+        <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked />
+        <label for="s3_use_ssl">Use SSL</label>
       </div>
     </div>
 
-    <hr style="border-color: #333; margin: 2rem 0" />
+    <hr style="border-color: var(--border-color); margin: 2rem 0" />
 
     <h2>Admin Account</h2>
     <div class="form-group">
@@ -104,7 +110,7 @@
       <input type="password" id="password" name="password" required />
     </div>
 
-    <button type="submit">Complete Setup</button>
+    <button type="submit" class="btn btn-primary btn-block">Complete Setup</button>
   </form>
 </div>
 

@@ -1,8 +1,14 @@
 {{template "base.html" .}} {{define "content"}}
-<div class="container">
-  <h1>Login</h1>
+<div>
   {{if .Error}}
-  <div class="error">{{.Error}}</div>
+  <div class="alert alert-error">
+    <img
+      src="/static/icons/bxs-error-circle.svg"
+      alt="Error"
+      style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
+    />
+    {{.Error}}
+  </div>
   {{end}}
   <form method="POST" action="/login">
     <div class="form-group">
@@ -13,13 +19,16 @@
       <label for="password">Password</label>
       <input type="password" id="password" name="password" required />
     </div>
-    <button type="submit">Sign In</button>
+    <button type="submit" class="btn btn-primary btn-block">Sign In</button>
   </form>
 
   <div style="text-align: center; margin-top: 2rem">
-    <p style="color: #888">OR</p>
-    <button type="button" onclick="loginPasskey()" style="background: #4dd0e1; color: #121212">Login with Passkey</button>
-    <p id="passkey_status" style="margin-top: 1rem"></p>
+    <p class="text-muted" style="margin-bottom: 1rem">OR</p>
+    <button type="button" class="btn btn-secondary btn-block" onclick="loginPasskey()">
+      <img src="/static/icons/bxs-key.svg" alt="Passkey" style="width: 20px; filter: brightness(0) invert(0.8)" />
+      Login with Passkey
+    </button>
+    <p id="passkey_status" style="margin-top: 1rem" class="text-muted"></p>
   </div>
 </div>
 
