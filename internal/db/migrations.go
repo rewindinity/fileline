@@ -61,9 +61,13 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 	if dbType == "sqlite" {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
+		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	} else if dbType == "postgres" {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
+		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	}
 
 	return nil
@@ -86,20 +90,22 @@ func CreateAdmin(ctx context.Context, db *sql.DB, username, passwordHash string)
 }
 
 type User struct {
-	ID           int
-	Username     string
-	PasswordHash string
-	Role         string
-	TOTPSecret   string
-	WebAuthnData string
+	ID             int
+	Username       string
+	PasswordHash   string
+	Role           string
+	TOTPSecret     string
+	WebAuthnData   string
+	StorageQuotaMB int
 }
 
 // GetUserByUsername retrieves a user by username.
 func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User, error) {
 	u := &User{Username: username}
 	var totp, webauthn sql.NullString
-	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data FROM users WHERE username = $1", username).
-		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn)
+	var quota sql.NullInt64
+	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb FROM users WHERE username = $1", username).
+		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +114,9 @@ func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User,
 	}
 	if webauthn.Valid {
 		u.WebAuthnData = webauthn.String
+	}
+	if quota.Valid {
+		u.StorageQuotaMB = int(quota.Int64)
 	}
 	return u, nil
 }
@@ -128,8 +137,9 @@ func UpdatePassword(ctx context.Context, db *sql.DB, username, passwordHash stri
 func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	u := &User{ID: id}
 	var totp, webauthn sql.NullString
-	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data FROM users WHERE id = $1", id).
-		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn)
+	var quota sql.NullInt64
+	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data, storage_quota_mb FROM users WHERE id = $1", id).
+		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota)
 	if err != nil {
 		return nil, err
 	}
@@ -139,5 +149,42 @@ func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	if webauthn.Valid {
 		u.WebAuthnData = webauthn.String
 	}
+	if quota.Valid {
+		u.StorageQuotaMB = int(quota.Int64)
+	}
 	return u, nil
+}
+
+// GetAllUsers retrieves all users
+func GetAllUsers(ctx context.Context, database *sql.DB) ([]*User, error) {
+	rows, err := database.QueryContext(ctx, "SELECT id, username, password_hash, role, storage_quota_mb FROM users ORDER BY id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []*User
+	for rows.Next() {
+		u := &User{}
+		var quota sql.NullInt64
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &quota); err != nil {
+			return nil, err
+		}
+		if quota.Valid {
+			u.StorageQuotaMB = int(quota.Int64)
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+// CreateSubuser creates a new user
+func CreateSubuser(ctx context.Context, database *sql.DB, username, passwordHash string, quotaMB int) error {
+	_, err := database.ExecContext(ctx, "INSERT INTO users (username, password_hash, role, storage_quota_mb) VALUES ($1, $2, 'user', $3)", username, passwordHash, quotaMB)
+	return err
+}
+
+// DeleteUser deletes a user
+func DeleteUser(ctx context.Context, database *sql.DB, username string) error {
+	_, err := database.ExecContext(ctx, "DELETE FROM users WHERE username = $1 AND role != 'admin'", username)
+	return err
 }

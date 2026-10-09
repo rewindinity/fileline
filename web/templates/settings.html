@@ -84,6 +84,7 @@
             <p id="passkey_status" style="margin-top: 1rem; font-weight: bold;"></p>
         </div>
 
+        {{if eq .User.Role "admin"}}
         <!-- Storage Configuration Section -->
         <div class="container" style="max-width: 100%; margin: 0;">
             <h2 style="margin-top: 0; color: #e0e0e0;">Storage Configuration</h2>
@@ -173,6 +174,58 @@
             </form>
             {{end}}
         </div>
+        
+        <!-- Users Management Section -->
+        <div class="container" style="max-width: 100%; margin: 0; margin-top: 2rem;">
+            <h2 style="margin-top: 0; color: #e0e0e0;">Users Management</h2>
+            <hr style="border-color: #333; margin-bottom: 1.5rem;">
+            
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 1rem;">
+                <tr style="background: #222; text-align: left;">
+                    <th style="padding: 0.5rem; border: 1px solid #333;">Username</th>
+                    <th style="padding: 0.5rem; border: 1px solid #333;">Role</th>
+                    <th style="padding: 0.5rem; border: 1px solid #333;">Quota (MB)</th>
+                    <th style="padding: 0.5rem; border: 1px solid #333;">Actions</th>
+                </tr>
+                {{range .AllUsers}}
+                <tr>
+                    <td style="padding: 0.5rem; border: 1px solid #333;">{{.Username}}</td>
+                    <td style="padding: 0.5rem; border: 1px solid #333;">{{.Role}}</td>
+                    <td style="padding: 0.5rem; border: 1px solid #333;">
+                        {{if eq .StorageQuotaMB 0}}Unlimited{{else}}{{.StorageQuotaMB}}{{end}}
+                    </td>
+                    <td style="padding: 0.5rem; border: 1px solid #333;">
+                        {{if ne .Username $.Username}}
+                        <form method="POST" action="/settings/users/delete" style="display: inline;">
+                            <input type="hidden" name="username" value="{{.Username}}">
+                            <button type="submit" style="background: transparent; color: #ff5252; padding: 0.25rem 0.5rem; font-size: 0.8rem; border: 1px solid #ff5252;">Delete</button>
+                        </form>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </table>
+
+            <h3 style="color: #bbb; margin-bottom: 1rem;">Add Subuser</h3>
+            <form method="POST" action="/settings/users/add">
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; align-items: end;">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" name="new_username" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" name="new_password" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Quota (MB, 0=unlimited)</label>
+                        <input type="number" name="new_quota" value="5120" required>
+                    </div>
+                    <button type="submit" style="margin-bottom: 1rem;">Add User</button>
+                </div>
+            </form>
+        </div>
+        {{end}}
     </div>
 </div>
 

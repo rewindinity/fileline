@@ -42,6 +42,7 @@ type ChunkUpload struct {
 	TotalChunks  int
 	IsPrivate    bool
 	DriveID      string
+	UserID       int
 	Received     []bool
 	TempDir      string
 	CreatedAt    time.Time
@@ -75,9 +76,24 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	// Parse templates safely for each page to avoid block overwriting
 	s.tmpls = make(map[string]*template.Template)
+	funcs := template.FuncMap{
+		"FormatSize": func(b int64) string {
+			const unit = 1024
+			if b < unit {
+				return fmt.Sprintf("%d B", b)
+			}
+			div, exp := int64(unit), 0
+			for n := b / unit; n >= unit; n /= unit {
+				div *= unit
+				exp++
+			}
+			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+		},
+	}
 	pages := []string{"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html"}
 	for _, page := range pages {
-		t, err := template.ParseFiles("web/templates/base.html", "web/templates/"+page)
+		t := template.New("base.html").Funcs(funcs)
+		t, err := t.ParseFiles("web/templates/base.html", "web/templates/"+page)
 		if err != nil {
 			log.Printf("Warning: failed to parse template %s: %v", page, err)
 		} else {
@@ -120,6 +136,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 
 	// Routes
 	mux.HandleFunc("/health", s.healthHandler)
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 	mux.HandleFunc("/setup", s.setupHandler)
 	mux.HandleFunc("/login", s.loginHandler)
 	mux.HandleFunc("/login/2fa", s.login2FAHandler)
@@ -134,6 +151,8 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
 	mux.HandleFunc("/settings", s.requireAuth(s.settingsHandler))
 	mux.HandleFunc("/settings/", s.requireAuth(s.settingsActionHandler))
+	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
+	mux.HandleFunc("/settings/users/delete", s.requireAuth(s.deleteUserHandler))
 	mux.HandleFunc("/settings/2fa/generate", s.requireAuth(s.totpGenerateHandler))
 	mux.HandleFunc("/settings/2fa/verify", s.requireAuth(s.totpVerifyHandler))
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
@@ -424,13 +443,23 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	filterID := user.ID
+	if user.Role == "admin" {
+		filterID = 0
+	}
 
-	files, err := db.GetRecentFiles(r.Context(), database, 10)
+	files, err := db.GetRecentFiles(r.Context(), database, 10, filterID)
 	if err != nil {
 		http.Error(w, "Failed to load files", http.StatusInternalServerError)
 		return
 	}
 
+	totalUsedBytes, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
 	var enabledDrives []config.Drive
 	for _, d := range s.cfg.Drives {
 		if d.Enabled {
@@ -439,11 +468,13 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderTemplate(w, "dashboard.html", map[string]interface{}{
-		"Title":         "Dashboard",
-		"Username":      username,
-		"Files":         files,
-		"Config":        s.cfg,
-		"EnabledDrives": enabledDrives,
+		"Title":          "Dashboard",
+		"Username":       username,
+		"User":           user,
+		"Files":          files,
+		"TotalUsedBytes": totalUsedBytes,
+		"Config":         s.cfg,
+		"EnabledDrives":  enabledDrives,
 	})
 }
 
@@ -548,6 +579,20 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	database := s.db
 	s.mu.RUnlock()
 
+	username := r.Context().Value("username").(string)
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if user.StorageQuotaMB > 0 {
+		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
+		if total+header.Size > int64(user.StorageQuotaMB)*1024*1024 {
+			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
+			return
+		}
+	}
+
 	// Generate a unique storage key
 	storageKey := fmt.Sprintf("%d-%s", time.Now().UnixNano(), originalName)
 
@@ -564,6 +609,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		IsPrivate:    isPrivate,
 		StorageType:  storageType,
 		StoragePath:  storageKey,
+		UserID:       user.ID,
 	}
 
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
@@ -591,6 +637,16 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	f, err := db.GetFileByID(r.Context(), database, id)
 	if err != nil {
 		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if user.Role != "admin" && f.UserID != user.ID {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	s.mu.RLock()
@@ -671,7 +727,16 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 	database := s.db
 	s.mu.RUnlock()
 
-	files, err := db.GetAllFiles(r.Context(), database)
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	filterID := user.ID
+	if user.Role == "admin" {
+		filterID = 0
+	}
+	files, err := db.GetAllFiles(r.Context(), database, filterID)
 	if err != nil {
 		http.Error(w, "Failed to load files", http.StatusInternalServerError)
 		return
@@ -679,6 +744,7 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 	s.renderTemplate(w, "files.html", map[string]interface{}{
 		"Title":    "All Files",
 		"Username": username,
+		"User":     user,
 		"Files":    files,
 	})
 }
@@ -698,9 +764,15 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 			s.render404(w)
 			return
 		}
+		user, _ := db.GetUserByUsername(r.Context(), database, username)
+		if user.Role != "admin" && f.UserID != user.ID {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 		s.renderTemplate(w, "edit_file.html", map[string]interface{}{
 			"Title":    "Edit File",
 			"Username": username,
+			"User":     user,
 			"File":     f,
 		})
 		return
@@ -709,6 +781,16 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		var id int
 		fmt.Sscanf(r.FormValue("id"), "%d", &id)
+		f, err := db.GetFileByID(r.Context(), database, id)
+		if err != nil {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		user, _ := db.GetUserByUsername(r.Context(), database, username)
+		if user.Role != "admin" && f.UserID != user.ID {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 		customName := r.FormValue("custom_name")
 		urlPath := r.FormValue("url_path")
 		isPrivate := r.FormValue("is_private") == "on"
@@ -748,6 +830,10 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 			"ID":    base64.URLEncoding.EncodeToString(pk.Credential.ID),
 		})
 	}
+	var allUsers []*db.User
+	if user.Role == "admin" {
+		allUsers, _ = db.GetAllUsers(r.Context(), database)
+	}
 	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
 	if string(drivesJSONBytes) == "null" {
 		drivesJSONBytes = []byte("[]")
@@ -756,6 +842,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"Title":          "Settings",
 		"Username":       username,
 		"User":           user,
+		"AllUsers":       allUsers,
 		"Passkeys":       passkeysDisplay,
 		"Config":         cfg,
 		"DrivesJSON":     string(drivesJSONBytes),
@@ -763,6 +850,64 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
 	})
+}
+
+func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	newUsername := r.FormValue("new_username")
+	newPassword := r.FormValue("new_password")
+	var quotaMB int
+	fmt.Sscanf(r.FormValue("new_quota"), "%d", &quotaMB)
+	if newUsername == "" || newPassword == "" {
+		http.Redirect(w, r, "/settings?error=Invalid+user+data", http.StatusFound)
+		return
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err := db.CreateSubuser(r.Context(), database, newUsername, string(hash), quotaMB); err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+create+user", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/settings?success=User+created+successfully", http.StatusFound)
+}
+
+func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	targetUser := r.FormValue("username")
+	if targetUser == username {
+		http.Redirect(w, r, "/settings?error=Cannot+delete+yourself", http.StatusFound)
+		return
+	}
+	if err := db.DeleteUser(r.Context(), database, targetUser); err != nil {
+		http.Redirect(w, r, "/settings?error=Failed+to+delete+user", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/settings?success=User+deleted+successfully", http.StatusFound)
 }
 
 func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
@@ -1245,6 +1390,22 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
 		return
 	}
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if user.StorageQuotaMB > 0 {
+		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
+		if total+req.TotalSize > int64(user.StorageQuotaMB)*1024*1024 {
+			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
+			return
+		}
+	}
 	uploadID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), req.FileName)
 	tempDir := filepath.Join(os.TempDir(), "fileline_chunks", uploadID)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
@@ -1261,6 +1422,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		TotalChunks:  req.TotalChunks,
 		IsPrivate:    req.IsPrivate,
 		DriveID:      req.DriveID,
+		UserID:       user.ID,
 		Received:     make([]bool, req.TotalChunks),
 		TempDir:      tempDir,
 		CreatedAt:    time.Now(),
@@ -1419,6 +1581,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		IsPrivate:    upload.IsPrivate,
 		StorageType:  storageType,
 		StoragePath:  storageKey,
+		UserID:       upload.UserID,
 	}
 
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
