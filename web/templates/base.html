@@ -4,20 +4,43 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}} - FileLine</title>
+    <link rel="icon" href="/logo?v={{.Config.CustomLogo}}">
+    <link rel="stylesheet" href="/static/css/themes.css">
     <link rel="stylesheet" href="/static/css/style.css">
     {{block "head" .}}{{end}}
+    
+    {{$theme := .Config.Theme}}
+    {{$accentHex := .Config.CustomAccentHex}}
+
+    {{if .User}}
+        {{if and .User.Theme (ne .User.Theme "global")}}
+            {{$theme = .User.Theme}}
+        {{end}}
+        {{if and .User.Accent (ne .User.Accent "global")}}
+            {{$accentHex = .User.Accent}}
+        {{end}}
+    {{end}}
+    
+    {{if eq $theme ""}}{{$theme = "dark-blue"}}{{end}}
+    {{if eq $theme "dark"}}{{$theme = "dark-blue"}}{{end}}
+    {{if eq $theme "light"}}{{$theme = "light-blue"}}{{end}}
+    
+    {{if eq $accentHex ""}}{{$accentHex = "#2563eb"}}{{end}}
+            
 </head>
-<body>
+<body class="theme-{{$theme}}" style="--accent-primary: {{$accentHex}};">
     {{if .Username}}
     <header class="top-navbar">
         <div class="nav-container">
             <a href="/" class="brand">
-                <img src="/static/logo.svg" alt="FileLine Logo">
+                <img src="/logo?v={{.Config.CustomLogo}}" alt="FileLine Logo" class="logo-img">
                 <span>FileLine</span>
             </a>
+            
             <button class="mobile-nav-toggle" id="mobileNavBtn">
                 <img src="/static/icons/bx-list-ul.svg" alt="Menu" style="width: 24px; filter: brightness(0) invert(1);">
             </button>
+            
             <nav class="nav-links" id="navLinks">
                 <a href="/" class="nav-item {{if eq .Title "Dashboard"}}active{{end}}">
                     <img src="/static/icons/bxs-dashboard.svg" alt="Dashboard">
@@ -54,7 +77,7 @@
     <div class="auth-layout">
         <div class="auth-card">
             <div class="auth-header">
-                <img src="/static/logo.svg" alt="FileLine Logo" style="width: 48px; margin-bottom: 1rem;">
+                <img src="/logo?v={{.Config.CustomLogo}}" alt="FileLine Logo" style="width: 48px; margin-bottom: 1rem;" class="logo-img">
                 <h1>FileLine</h1>
                 <p class="text-muted">{{.Title}}</p>
             </div>

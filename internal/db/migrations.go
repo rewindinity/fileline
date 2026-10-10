@@ -62,11 +62,15 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'global'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent TEXT DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	} else if dbType == "postgres" {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme VARCHAR(50) DEFAULT 'global'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent VARCHAR(50) DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	}
 
@@ -97,15 +101,17 @@ type User struct {
 	TOTPSecret     string
 	WebAuthnData   string
 	StorageQuotaMB int
+	Theme          string
+	Accent         string
 }
 
 // GetUserByUsername retrieves a user by username.
 func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User, error) {
 	u := &User{Username: username}
-	var totp, webauthn sql.NullString
+	var totp, webauthn, theme, accent sql.NullString
 	var quota sql.NullInt64
-	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb FROM users WHERE username = $1", username).
-		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota)
+	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent FROM users WHERE username = $1", username).
+		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +123,12 @@ func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User,
 	}
 	if quota.Valid {
 		u.StorageQuotaMB = int(quota.Int64)
+	}
+	if theme.Valid {
+		u.Theme = theme.String
+	}
+	if accent.Valid {
+		u.Accent = accent.String
 	}
 	return u, nil
 }
@@ -136,10 +148,10 @@ func UpdatePassword(ctx context.Context, db *sql.DB, username, passwordHash stri
 // GetUserByID retrieves a user by ID
 func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	u := &User{ID: id}
-	var totp, webauthn sql.NullString
+	var totp, webauthn, theme, accent sql.NullString
 	var quota sql.NullInt64
-	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data, storage_quota_mb FROM users WHERE id = $1", id).
-		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota)
+	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent FROM users WHERE id = $1", id).
+		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +163,12 @@ func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	}
 	if quota.Valid {
 		u.StorageQuotaMB = int(quota.Int64)
+	}
+	if theme.Valid {
+		u.Theme = theme.String
+	}
+	if accent.Valid {
+		u.Accent = accent.String
 	}
 	return u, nil
 }
@@ -186,5 +204,11 @@ func CreateSubuser(ctx context.Context, database *sql.DB, username, passwordHash
 // DeleteUser deletes a user
 func DeleteUser(ctx context.Context, database *sql.DB, username string) error {
 	_, err := database.ExecContext(ctx, "DELETE FROM users WHERE username = $1 AND role != 'admin'", username)
+	return err
+}
+
+// UpdateUserTheme updates a user's theme and accent preference
+func UpdateUserTheme(ctx context.Context, db *sql.DB, username, theme, accent string) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET theme = $1, accent = $2 WHERE username = $3", theme, accent, username)
 	return err
 }

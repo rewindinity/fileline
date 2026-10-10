@@ -1,0 +1,170 @@
+/* Base values */
+:root {
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --transition: 0.2s ease;
+  --error: #ef4444;
+  --error-bg: rgba(239, 68, 68, 0.1);
+  --success: #10b981;
+  --success-bg: rgba(16, 185, 129, 0.1);
+  --warning: #f59e0b;
+}
+
+/* Base Accent  */
+body {
+  --accent-primary: #2563eb;
+  --accent-hover: color-mix(in srgb, var(--accent-primary) 80%, black);
+  --accent-light: color-mix(in srgb, var(--accent-primary) 15%, transparent);
+}
+
+/* DARK THEMES */
+body.theme-dark-blue {
+  --bg-base: #06080f;
+  --bg-surface: #0d111a;
+  --bg-surface-hover: #161c2a;
+  --bg-elevated: #1a2233;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --border-color: #1e2536;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+body.theme-dark-green {
+  --bg-base: #060f0a;
+  --bg-surface: #0d1a12;
+  --bg-surface-hover: #162a1d;
+  --bg-elevated: #1a3324;
+  --text-primary: #f8fafc;
+  --text-secondary: #94b8a3;
+  --border-color: #1e3625;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+body.theme-dark-red {
+  --bg-base: #0f0606;
+  --bg-surface: #1a0d0d;
+  --bg-surface-hover: #2a1616;
+  --bg-elevated: #331a1a;
+  --text-primary: #fcf8f8;
+  --text-secondary: #b89494;
+  --border-color: #361e1e;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+body.theme-oled {
+  --bg-base: #000000;
+  --bg-surface: #0a0a0a;
+  --bg-surface-hover: #141414;
+  --bg-elevated: #1a1a1a;
+  --text-primary: #ffffff;
+  --text-secondary: #a1a1aa;
+  --border-color: #27272a;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+/* LIGHT THEMES */
+body.theme-light-blue {
+  --bg-base: #f1f5f9;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #e2e8f0;
+  --bg-elevated: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --border-color: #e2e8f0;
+  --icon-filter: brightness(0) invert(0.4);
+  --icon-filter-hover: brightness(0) invert(0);
+}
+
+body.theme-light-green {
+  --bg-base: #f1f9f5;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #e2f0e8;
+  --bg-elevated: #cbd5e1;
+  --text-primary: #0f2a17;
+  --text-secondary: #476955;
+  --border-color: #e2f0e8;
+  --icon-filter: brightness(0) invert(0.4);
+  --icon-filter-hover: brightness(0) invert(0);
+}
+
+body.theme-light-red {
+  --bg-base: #f9f1f1;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f0e2e2;
+  --bg-elevated: #d5cbcb;
+  --text-primary: #2a0f0f;
+  --text-secondary: #694747;
+  --border-color: #f0e2e2;
+  --icon-filter: brightness(0) invert(0.4);
+  --icon-filter-hover: brightness(0) invert(0);
+}
+
+body.theme-dark-orange {
+  --bg-base: #0f0a06;
+  --bg-surface: #1a110d;
+  --bg-surface-hover: #2a1c16;
+  --bg-elevated: #33221a;
+  --text-primary: #fcfaf8;
+  --text-secondary: #b8a394;
+  --border-color: #36251e;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+body.theme-dark-purple {
+  --bg-base: #0a060f;
+  --bg-surface: #110d1a;
+  --bg-surface-hover: #1c162a;
+  --bg-elevated: #221a33;
+  --text-primary: #faf8fc;
+  --text-secondary: #a394b8;
+  --border-color: #251e36;
+  --icon-filter: brightness(0) invert(0.6);
+  --icon-filter-hover: brightness(0) invert(1);
+}
+
+body.theme-light-orange {
+  --bg-base: #f9f5f1;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f0e8e2;
+  --bg-elevated: #e1d5cb;
+  --text-primary: #2a170f;
+  --text-secondary: #695547;
+  --border-color: #f0e8e2;
+  --icon-filter: brightness(0) invert(0.4);
+  --icon-filter-hover: brightness(0) invert(0);
+}
+
+body.theme-light-purple {
+  --bg-base: #f5f1f9;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #e8e2f0;
+  --bg-elevated: #d5cbe1;
+  --text-primary: #170f2a;
+  --text-secondary: #554769;
+  --border-color: #e8e2f0;
+  --icon-filter: brightness(0) invert(0.4);
+  --icon-filter-hover: brightness(0) invert(0);
+}
+
+.nav-item img:not(.logo-img),
+.file-name-cell img,
+.icon-btn img {
+  filter: var(--icon-filter);
+}
+.nav-item:hover img:not(.logo-img):not([style*="filter"]),
+.icon-btn:hover img {
+  filter: var(--icon-filter-hover);
+}
+.nav-item.active {
+  color: var(--accent-primary) !important;
+  border-bottom-color: var(--accent-primary) !important;
+}
+.nav-item.active img {
+  filter: var(--icon-filter-hover);
+}

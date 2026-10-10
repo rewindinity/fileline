@@ -46,7 +46,11 @@ type Config struct {
 	ChunkThresholdMB int     `json:"chunk_threshold_mb"`
 	ChunkSizeMB      int     `json:"chunk_size_mb"`
 	Domain           string  `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
-	EnvOnly          bool    `json:"-"`      // Not serialized
+	Theme            string  `json:"theme"`
+	Accent           string  `json:"accent"`
+	CustomAccentHex  string  `json:"custom_accent_hex"`
+	CustomLogo       string  `json:"custom_logo"`
+	EnvOnly          bool    `json:"-"` // Not serialized
 }
 
 // DefaultConfig returns a Config with default values
@@ -62,6 +66,10 @@ func DefaultConfig() Config {
 		MaxUploadSizeMB:  1024,
 		ChunkThresholdMB: 50,
 		ChunkSizeMB:      10,
+		Theme:            "dark-blue",
+		Accent:           "blue",
+		CustomAccentHex:  "#2563eb",
+		CustomLogo:       "/static/logo.svg",
 	}
 }
 
@@ -153,6 +161,18 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 		if size, err := strconv.Atoi(v); err == nil {
 			cfg.ChunkSizeMB = size
 		}
+	}
+	if v, ok := os.LookupEnv("FL_THEME"); ok {
+		cfg.Theme = v
+	}
+	if v, ok := os.LookupEnv("FL_ACCENT"); ok {
+		cfg.Accent = v
+	}
+	if v, ok := os.LookupEnv("FL_CUSTOM_ACCENT_HEX"); ok {
+		cfg.CustomAccentHex = v
+	}
+	if v, ok := os.LookupEnv("FL_CUSTOM_LOGO"); ok {
+		cfg.CustomLogo = v
 	}
 	return &cfg, nil
 }

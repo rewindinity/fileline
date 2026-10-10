@@ -137,6 +137,8 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	// Routes
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	mux.HandleFunc("/logo", s.logoHandler)
+	mux.HandleFunc("/favicon.ico", s.logoHandler)
 	mux.HandleFunc("/setup", s.setupHandler)
 	mux.HandleFunc("/login", s.loginHandler)
 	mux.HandleFunc("/login/2fa", s.login2FAHandler)
@@ -153,6 +155,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/settings/", s.requireAuth(s.settingsActionHandler))
 	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
 	mux.HandleFunc("/settings/users/delete", s.requireAuth(s.deleteUserHandler))
+	mux.HandleFunc("/settings/appearance/remove_logo", s.requireAuth(s.settingsRemoveLogoHandler))
 	mux.HandleFunc("/settings/2fa/generate", s.requireAuth(s.totpGenerateHandler))
 	mux.HandleFunc("/settings/2fa/verify", s.requireAuth(s.totpVerifyHandler))
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
@@ -977,6 +980,97 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if action == "appearance" {
+		theme := r.FormValue("theme")
+		var accent string
+		if r.FormValue("use_global_accent") == "on" {
+			accent = "global"
+		} else {
+			accent = r.FormValue("accent")
+		}
+		if theme == "" {
+			theme = "global"
+		}
+		if accent == "" {
+			accent = "global"
+		}
+
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+
+		user, err := db.GetUserByUsername(r.Context(), database, username)
+		if err != nil {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+
+		err = db.UpdateUserTheme(r.Context(), database, username, theme, accent)
+		if err != nil {
+			http.Redirect(w, r, "/settings?error=Failed+to+update+theme", http.StatusFound)
+			return
+		}
+
+		if user.Role == "admin" {
+			globalTheme := r.FormValue("global_theme")
+			customAccentHex := r.FormValue("custom_accent_hex")
+			s.mu.Lock()
+			if globalTheme != "" {
+				s.cfg.Theme = globalTheme
+			}
+			if customAccentHex != "" {
+				s.cfg.CustomAccentHex = customAccentHex
+			}
+			s.cfg.Save("config.json")
+			s.mu.Unlock()
+			err = r.ParseMultipartForm(32 << 20)
+			if err != nil {
+				fmt.Println("ParseMultipartForm error:", err)
+			} else {
+				fmt.Printf("MultipartForm files: %v\n", r.MultipartForm.File)
+			}
+
+			// Handle custom logo upload
+			file, header, err := r.FormFile("custom_logo_file")
+			if err == nil {
+				defer file.Close()
+				ext := strings.ToLower(filepath.Ext(header.Filename))
+				if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".svg" {
+					blob, ioErr := io.ReadAll(file)
+					if ioErr == nil && len(blob) > 0 {
+						filename := "custom-logo" + ext
+						writeErr := os.WriteFile(filepath.Join("data", filename), blob, 0644)
+						if writeErr == nil {
+							s.mu.Lock()
+							s.cfg.CustomLogo = filename
+							s.cfg.Save("config.json")
+							s.mu.Unlock()
+						} else {
+							fmt.Println("WriteFile error:", writeErr)
+							http.Redirect(w, r, "/settings?error=Failed+to+write+logo", http.StatusFound)
+							return
+						}
+					} else {
+						fmt.Println("ReadAll error:", ioErr)
+						http.Redirect(w, r, "/settings?error=Failed+to+read+logo+file", http.StatusFound)
+						return
+					}
+				} else {
+					fmt.Println("Invalid extension:", ext)
+					http.Redirect(w, r, "/settings?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
+					return
+				}
+			} else if err != http.ErrMissingFile {
+				fmt.Println("FormFile error:", err)
+				http.Redirect(w, r, "/settings?error=Failed+to+process+logo+upload", http.StatusFound)
+				return
+			}
+		}
+
+		http.Redirect(w, r, "/settings?success=Appearance+updated", http.StatusFound)
+		return
+	}
+
 	if action == "password" {
 		currentPassword := r.FormValue("current_password")
 		newPassword := r.FormValue("new_password")
@@ -1614,4 +1708,53 @@ func (s *Server) getProvider(driveID string) storage.Provider {
 	}
 	// Fallback to default
 	return s.storage
+}
+
+func (s *Server) logoHandler(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	customLogo := s.cfg.CustomLogo
+	s.mu.RUnlock()
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+	if customLogo == "" || customLogo == "/static/logo.svg" {
+		http.ServeFile(w, r, "web/static/logo.svg")
+		return
+	}
+	logoPath := filepath.Join("data", customLogo)
+	if _, err := os.Stat(logoPath); err == nil {
+		http.ServeFile(w, r, logoPath)
+	} else {
+		http.ServeFile(w, r, "web/static/logo.svg")
+	}
+}
+
+func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusFound)
+		return
+	}
+	username, ok := r.Context().Value("username").(string)
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.Role != "admin" {
+		http.Redirect(w, r, "/settings?error=Unauthorized", http.StatusFound)
+		return
+	}
+	s.mu.Lock()
+	oldLogo := s.cfg.CustomLogo
+	s.cfg.CustomLogo = "/static/logo.svg"
+	s.cfg.Save("config.json")
+	s.mu.Unlock()
+	// Optionally delete the file
+	if oldLogo != "" && oldLogo != "/static/logo.svg" {
+		os.Remove(filepath.Join("data", oldLogo))
+	}
+	http.Redirect(w, r, "/settings?success=Custom+logo+removed", http.StatusFound)
 }
