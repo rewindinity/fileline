@@ -1,0 +1,167 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">Settings</h1>
+        <p class="text-muted">Manage your account and server configuration</p>
+    </div>
+</div>
+
+{{if .SuccessMessage}}
+<div class="alert alert-success">
+    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    {{.SuccessMessage}}
+</div>
+{{end}}
+{{if .ErrorMessage}}
+<div class="alert alert-error">
+    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    {{.ErrorMessage}}
+</div>
+{{end}}
+
+<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Account Security Section -->
+    <!-- Appearance Section -->
+<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← Back to Settings</a></div>
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>Appearance</h2>
+        </div>
+        
+        <form method="POST" action="/settings/action/appearance" enctype="multipart/form-data">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="form-group">
+                    <label for="theme">Theme</label>
+                    <select id="theme" name="theme">
+                        <option value="global" {{if or (not .User.Theme) (eq .User.Theme "global")}}selected{{end}}>Global Default</option>
+                        <option value="dark-blue" {{if eq .User.Theme "dark-blue"}}selected{{end}}>Dark Blue</option>
+                        <option value="dark-green" {{if eq .User.Theme "dark-green"}}selected{{end}}>Dark Green</option>
+                        <option value="dark-red" {{if eq .User.Theme "dark-red"}}selected{{end}}>Dark Red</option>
+                        <option value="dark-orange" {{if eq .User.Theme "dark-orange"}}selected{{end}}>Dark Orange</option>
+                        <option value="dark-purple" {{if eq .User.Theme "dark-purple"}}selected{{end}}>Dark Purple</option>
+                        <option value="oled" {{if eq .User.Theme "oled"}}selected{{end}}>OLED Dark</option>
+                        <option value="light-blue" {{if eq .User.Theme "light-blue"}}selected{{end}}>Light Blue</option>
+                        <option value="light-green" {{if eq .User.Theme "light-green"}}selected{{end}}>Light Green</option>
+                        <option value="light-red" {{if eq .User.Theme "light-red"}}selected{{end}}>Light Red</option>
+                        <option value="light-orange" {{if eq .User.Theme "light-orange"}}selected{{end}}>Light Orange</option>
+                        <option value="light-purple" {{if eq .User.Theme "light-purple"}}selected{{end}}>Light Purple</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Personal Accent Color</label>
+                    <div style="display: flex; gap: 1rem; align-items: center; margin-top: 0.5rem;">
+                        <div class="checkbox-group" style="margin-bottom: 0;">
+                            <input type="checkbox" id="use_global_accent" name="use_global_accent" {{if or (not .User.Accent) (eq .User.Accent "global")}}checked{{end}} onchange="togglePersonalAccent()">
+                            <label for="use_global_accent">Use Global Default</label>
+                        </div>
+                        
+                        
+                        <div id="personal_accent_container" style="display: flex; gap: 0.5rem; align-items: center; {{if or (not .User.Accent) (eq .User.Accent "global")}}display: none;{{end}}">
+                            <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
+                                <input type="color" id="accent" name="accent" value="{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('personal_hex_display').innerText = this.value.toUpperCase()">
+                                <span id="personal_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Global admin-only fields -->
+            {{if eq .User.Role "admin"}}
+            <hr style="border-color: var(--border-color); margin: 2rem 0;">
+            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Global Default Appearance (Admin Only)</h3>
+            <p class="text-muted mb-2">These settings apply to users who have their theme/accent set to "Global Default".</p>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="form-group">
+                    <label for="global_theme">Global Theme</label>
+                    <select id="global_theme" name="global_theme">
+                        <option value="dark-blue" {{if eq .Config.Theme "dark-blue"}}selected{{end}}>Dark Blue</option>
+                        <option value="dark-green" {{if eq .Config.Theme "dark-green"}}selected{{end}}>Dark Green</option>
+                        <option value="dark-red" {{if eq .Config.Theme "dark-red"}}selected{{end}}>Dark Red</option>
+                        <option value="dark-orange" {{if eq .Config.Theme "dark-orange"}}selected{{end}}>Dark Orange</option>
+                        <option value="dark-purple" {{if eq .Config.Theme "dark-purple"}}selected{{end}}>Dark Purple</option>
+                        <option value="oled" {{if eq .Config.Theme "oled"}}selected{{end}}>OLED Dark</option>
+                        <option value="light-blue" {{if eq .Config.Theme "light-blue"}}selected{{end}}>Light Blue</option>
+                        <option value="light-green" {{if eq .Config.Theme "light-green"}}selected{{end}}>Light Green</option>
+                        <option value="light-red" {{if eq .Config.Theme "light-red"}}selected{{end}}>Light Red</option>
+                        <option value="light-orange" {{if eq .Config.Theme "light-orange"}}selected{{end}}>Light Orange</option>
+                        <option value="light-purple" {{if eq .Config.Theme "light-purple"}}selected{{end}}>Light Purple</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="custom_accent_hex">Global Accent Color (Web Palette)</label>
+                    <div style="display: flex; align-items: center; margin-top: 0.5rem;">
+                        <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
+                            <input type="color" id="custom_accent_hex" name="custom_accent_hex" value="{{.Config.CustomAccentHex}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('global_hex_display').innerText = this.value.toUpperCase()">
+                            <span id="global_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{.Config.CustomAccentHex}}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-group" style="margin-bottom: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
+                <div style="display: flex; align-items: center; gap: 1.5rem;">
+                    <img src="/logo?v={{.Config.CustomLogo}}" alt="Current Logo" id="logo_preview" style="width: 48px; height: 48px; object-fit: contain;" class="logo-img">
+                    <div style="flex-grow: 1;">
+                        <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">Custom Server Logo</label>
+                        <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">Recommended: SVG or PNG, transparent background. Applies to login and nav.</p>
+                        <input type="file" id="custom_logo_file" name="custom_logo_file" accept="image/*">
+                        {{if and (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
+                        <div style="margin-top: 0.75rem;">
+                            <button type="submit" form="removeLogoForm" class="btn" style="background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid var(--error); font-size: 0.85rem; padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; transition: all var(--transition);">
+                                Remove Custom Logo
+                            </button>
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            <button type="submit" class="btn btn-primary">Save Appearance</button>
+        </form>
+        
+        {{if and (eq .User.Role "admin") (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
+        <form id="removeLogoForm" method="POST" action="/settings/appearance/remove_logo" style="display: none;"></form>
+        {{end}}
+    </div>
+    
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        var p = document.getElementById('personal_hex_display');
+        var g = document.getElementById('global_hex_display');
+        if (p) p.innerText = p.innerText.toUpperCase();
+        if (g) g.innerText = g.innerText.toUpperCase();
+
+    var logoInput = document.getElementById('custom_logo_file');
+    if (logoInput) {
+        logoInput.addEventListener('change', function(e) {
+            if (e.target.files && e.target.files[0]) {
+                var reader = new FileReader();
+                reader.onload = function(e2) {
+                    var preview = document.getElementById('logo_preview');
+                    if (preview) {
+                        preview.src = e2.target.result;
+                    }
+                }
+                reader.readAsDataURL(e.target.files[0]);
+            }
+        });
+    }
+    });
+    function togglePersonalAccent() {
+        var cb = document.getElementById('use_global_accent');
+        var container = document.getElementById('personal_accent_container');
+        if (cb && container) {
+            container.style.display = cb.checked ? 'none' : 'flex';
+        }
+    }
+    </script>
+
+</div>
+{{end}}

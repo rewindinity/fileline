@@ -90,7 +90,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 		},
 	}
-	pages := []string{"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html"}
+	pages := []string{"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html", "settings_appearance.html", "settings_account.html", "settings_storage.html", "settings_subusers.html"}
 	for _, page := range pages {
 		t := template.New("base.html").Funcs(funcs)
 		t, err := t.ParseFiles("web/templates/base.html", "web/templates/"+page)
@@ -152,7 +152,11 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	mux.HandleFunc("/files", s.requireAuth(s.filesHandler))
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
 	mux.HandleFunc("/settings", s.requireAuth(s.settingsHandler))
-	mux.HandleFunc("/settings/", s.requireAuth(s.settingsActionHandler))
+	mux.HandleFunc("/settings/action/", s.requireAuth(s.settingsActionHandler))
+	mux.HandleFunc("/settings/appearance", s.requireAuth(s.settingsAppearanceHandler))
+	mux.HandleFunc("/settings/account", s.requireAuth(s.settingsAccountHandler))
+	mux.HandleFunc("/settings/storage", s.requireAuth(s.settingsStorageHandler))
+	mux.HandleFunc("/settings/subusers", s.requireAuth(s.settingsSubusersHandler))
 	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
 	mux.HandleFunc("/settings/users/delete", s.requireAuth(s.deleteUserHandler))
 	mux.HandleFunc("/settings/appearance/remove_logo", s.requireAuth(s.settingsRemoveLogoHandler))
@@ -256,7 +260,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, "setup.html", map[string]interface{}{
-			"Title":        "Setup",
+			"Title": "Setup", "Config": s.cfg,
 			"DBConfigured": dbConfigured,
 		})
 		return
@@ -369,7 +373,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, errorMsg string) {
 	s.renderTemplate(w, "setup.html", map[string]interface{}{
-		"Title":        "Setup",
+		"Title": "Setup", "Config": s.cfg,
 		"DBConfigured": dbConfigured,
 		"Error":        errorMsg,
 	})
@@ -382,7 +386,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, "login.html", map[string]interface{}{
-			"Title": "Login",
+			"Title": "Setup", "Config": s.cfg,
 		})
 		return
 	}
@@ -402,7 +406,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 			s.renderTemplate(w, "login.html", map[string]interface{}{
-				"Title": "Login",
+				"Title": "Setup", "Config": s.cfg,
 				"Error": "Invalid credentials",
 			})
 			return
@@ -649,7 +653,7 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user.Role != "admin" && f.UserID != user.ID {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	s.mu.RLock()
@@ -665,7 +669,7 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) render404(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNotFound)
-	s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found"})
+	s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg,})
 }
 
 func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
@@ -769,7 +773,7 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		user, _ := db.GetUserByUsername(r.Context(), database, username)
 		if user.Role != "admin" && f.UserID != user.ID {
-			http.Error(w, "Forbidden", http.StatusForbidden)
+			s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
 		s.renderTemplate(w, "edit_file.html", map[string]interface{}{
@@ -866,7 +870,7 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	newUsername := r.FormValue("new_username")
@@ -874,15 +878,15 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	var quotaMB int
 	fmt.Sscanf(r.FormValue("new_quota"), "%d", &quotaMB)
 	if newUsername == "" || newPassword == "" {
-		http.Redirect(w, r, "/settings?error=Invalid+user+data", http.StatusFound)
+		http.Redirect(w, r, "/settings/subusers?error=Invalid+user+data", http.StatusFound)
 		return
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err := db.CreateSubuser(r.Context(), database, newUsername, string(hash), quotaMB); err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+create+user", http.StatusFound)
+		http.Redirect(w, r, "/settings/subusers?error=Failed+to+create+user", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/settings?success=User+created+successfully", http.StatusFound)
+	http.Redirect(w, r, "/settings/subusers?success=User+created+successfully", http.StatusFound)
 }
 
 func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
@@ -898,19 +902,19 @@ func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	targetUser := r.FormValue("username")
 	if targetUser == username {
-		http.Redirect(w, r, "/settings?error=Cannot+delete+yourself", http.StatusFound)
+		http.Redirect(w, r, "/settings/subusers?error=Cannot+delete+yourself", http.StatusFound)
 		return
 	}
 	if err := db.DeleteUser(r.Context(), database, targetUser); err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+delete+user", http.StatusFound)
+		http.Redirect(w, r, "/settings/subusers?error=Failed+to+delete+user", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/settings?success=User+deleted+successfully", http.StatusFound)
+	http.Redirect(w, r, "/settings/subusers?success=User+deleted+successfully", http.StatusFound)
 }
 
 func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
@@ -920,13 +924,21 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := r.Context().Value("username").(string)
-	action := strings.TrimPrefix(r.URL.Path, "/settings/")
+	action := strings.TrimPrefix(r.URL.Path, "/settings/action/")
 
 	if action == "storage" {
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		user, _ := db.GetUserByUsername(r.Context(), database, username)
+		if user.Role != "admin" {
+			s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			return
+		}
 		s.mu.Lock()
 		if s.cfg.EnvOnly {
 			s.mu.Unlock()
-			http.Redirect(w, r, "/settings?error=Cannot+modify+storage+in+ENV-only+mode", http.StatusFound)
+			http.Redirect(w, r, "/settings/storage?error=Cannot+modify+storage+in+ENV-only+mode", http.StatusFound)
 			return
 		}
 		storageType := r.FormValue("storage_type")
@@ -976,7 +988,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		s.initDrives(r.Context())
 		s.mu.Unlock()
-		http.Redirect(w, r, "/settings?success=Storage+settings+saved", http.StatusFound)
+		http.Redirect(w, r, "/settings/storage?success=Storage+settings+saved", http.StatusFound)
 		return
 	}
 
@@ -1007,7 +1019,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 
 		err = db.UpdateUserTheme(r.Context(), database, username, theme, accent)
 		if err != nil {
-			http.Redirect(w, r, "/settings?error=Failed+to+update+theme", http.StatusFound)
+			http.Redirect(w, r, "/settings/appearance?error=Failed+to+update+theme", http.StatusFound)
 			return
 		}
 
@@ -1047,27 +1059,27 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 							s.mu.Unlock()
 						} else {
 							fmt.Println("WriteFile error:", writeErr)
-							http.Redirect(w, r, "/settings?error=Failed+to+write+logo", http.StatusFound)
+							http.Redirect(w, r, "/settings/appearance?error=Failed+to+write+logo", http.StatusFound)
 							return
 						}
 					} else {
 						fmt.Println("ReadAll error:", ioErr)
-						http.Redirect(w, r, "/settings?error=Failed+to+read+logo+file", http.StatusFound)
+						http.Redirect(w, r, "/settings/appearance?error=Failed+to+read+logo+file", http.StatusFound)
 						return
 					}
 				} else {
 					fmt.Println("Invalid extension:", ext)
-					http.Redirect(w, r, "/settings?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
+					http.Redirect(w, r, "/settings/appearance?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
 					return
 				}
 			} else if err != http.ErrMissingFile {
 				fmt.Println("FormFile error:", err)
-				http.Redirect(w, r, "/settings?error=Failed+to+process+logo+upload", http.StatusFound)
+				http.Redirect(w, r, "/settings/appearance?error=Failed+to+process+logo+upload", http.StatusFound)
 				return
 			}
 		}
 
-		http.Redirect(w, r, "/settings?success=Appearance+updated", http.StatusFound)
+		http.Redirect(w, r, "/settings/appearance?success=Appearance+updated", http.StatusFound)
 		return
 	}
 
@@ -1079,23 +1091,23 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil {
-			http.Redirect(w, r, "/settings?error=User+not+found", http.StatusFound)
+			http.Redirect(w, r, "/settings/account?error=User+not+found", http.StatusFound)
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)); err != nil {
-			http.Redirect(w, r, "/settings?error=Incorrect+current+password", http.StatusFound)
+			http.Redirect(w, r, "/settings/account?error=Incorrect+current+password", http.StatusFound)
 			return
 		}
 		newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		if err != nil {
-			http.Redirect(w, r, "/settings?error=Failed+to+secure+password", http.StatusFound)
+			http.Redirect(w, r, "/settings/account?error=Failed+to+secure+password", http.StatusFound)
 			return
 		}
 		if err := db.UpdatePassword(r.Context(), database, username, string(newHash)); err != nil {
-			http.Redirect(w, r, "/settings?error=Failed+to+update+password", http.StatusFound)
+			http.Redirect(w, r, "/settings/account?error=Failed+to+update+password", http.StatusFound)
 			return
 		}
-		http.Redirect(w, r, "/settings?success=Password+updated+successfully", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?success=Password+updated+successfully", http.StatusFound)
 		return
 	}
 
@@ -1116,7 +1128,7 @@ func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
 		AccountName: username,
 	})
 	if err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+generate+2FA", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Failed+to+generate+2FA", http.StatusFound)
 		return
 	}
 	// Save temporary
@@ -1125,7 +1137,7 @@ func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
 	var png []byte
 	png, err = qrcode.Encode(key.String(), qrcode.Medium, 256)
 	if err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+generate+QR", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Failed+to+generate+QR", http.StatusFound)
 		return
 	}
 	qrBase64 := base64.StdEncoding.EncodeToString(png)
@@ -1153,13 +1165,13 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	secretAny, ok := s.totpTempStore.Load(username)
 	if !ok {
-		http.Redirect(w, r, "/settings?error=2FA+session+expired", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=2FA+session+expired", http.StatusFound)
 		return
 	}
 	secret := secretAny.(string)
 
 	if !totp.Validate(code, secret) {
-		http.Redirect(w, r, "/settings?error=Invalid+code", http.StatusFound)
+		http.Redirect(w, r, "/setting/accounts?error=Invalid+code", http.StatusFound)
 		return
 	}
 
@@ -1173,7 +1185,7 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.totpTempStore.Delete(username)
-	http.Redirect(w, r, "/settings?success=2FA+Enabled+Successfully", http.StatusFound)
+	http.Redirect(w, r, "/settings/account?success=2FA+Enabled+Successfully", http.StatusFound)
 }
 
 func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
@@ -1392,18 +1404,18 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.TOTPSecret == "" {
-		http.Redirect(w, r, "/settings?error=2FA+is+not+enabled", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=2FA+is+not+enabled", http.StatusFound)
 		return
 	}
 	if !totp.Validate(code, user.TOTPSecret) {
-		http.Redirect(w, r, "/settings?error=Invalid+2FA+code", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Invalid+2FA+code", http.StatusFound)
 		return
 	}
 	if err := db.UpdateUserAuthData(r.Context(), database, username, "", user.WebAuthnData); err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+disable+2FA", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Failed+to+disable+2FA", http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, "/settings?success=2FA+Disabled+Successfully", http.StatusFound)
+	http.Redirect(w, r, "/settings/account?success=2FA+Disabled+Successfully", http.StatusFound)
 }
 
 func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -1420,13 +1432,13 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.WebAuthnData == "" {
-		http.Redirect(w, r, "/settings?error=User+or+passkeys+not+found", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
 		return
 	}
 
 	var passkeys []auth.Passkey
 	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+parse+passkeys", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Failed+to+parse+passkeys", http.StatusFound)
 		return
 	}
 
@@ -1442,7 +1454,7 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !deleted {
-		http.Redirect(w, r, "/settings?error=Passkey+not+found", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Passkey+not+found", http.StatusFound)
 		return
 	}
 	var updatedJSON []byte
@@ -1452,11 +1464,11 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		updatedJSON = []byte("[]")
 	}
 	if err := db.UpdateUserAuthData(r.Context(), database, username, user.TOTPSecret, string(updatedJSON)); err != nil {
-		http.Redirect(w, r, "/settings?error=Failed+to+delete+passkey", http.StatusFound)
+		http.Redirect(w, r, "/settings/account?error=Failed+to+delete+passkey", http.StatusFound)
 		return
 	}
 
-	http.Redirect(w, r, "/settings?success=Passkey+deleted+successfully", http.StatusFound)
+	http.Redirect(w, r, "/settings/account?success=Passkey+deleted+successfully", http.StatusFound)
 }
 
 func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) {
@@ -1744,7 +1756,7 @@ func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Reques
 	s.mu.RUnlock()
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		http.Redirect(w, r, "/settings?error=Unauthorized", http.StatusFound)
+		http.Redirect(w, r, "/settings/appearance?error=Unauthorized", http.StatusFound)
 		return
 	}
 	s.mu.Lock()
@@ -1756,5 +1768,134 @@ func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Reques
 	if oldLogo != "" && oldLogo != "/static/logo.svg" {
 		os.Remove(filepath.Join("data", oldLogo))
 	}
-	http.Redirect(w, r, "/settings?success=Custom+logo+removed", http.StatusFound)
+	http.Redirect(w, r, "/settings/appearance?success=Custom+logo+removed", http.StatusFound)
+}
+
+func (s *Server) settingsAppearanceHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	cfg := s.cfg
+	database := s.db
+	s.mu.RUnlock()
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTemplate(w, "settings_appearance.html", map[string]interface{}{
+		"Title": "Appearance Settings",
+		"Username": username,
+		"User": user,
+		"Config": cfg,
+		"SuccessMessage": successMsg,
+		"ErrorMessage": errorMsg,
+	})
+}
+
+func (s *Server) settingsAccountHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	cfg := s.cfg
+	database := s.db
+	s.mu.RUnlock()
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
+	var passkeys []auth.Passkey
+	if user.WebAuthnData != "" {
+		json.Unmarshal([]byte(user.WebAuthnData), &passkeys)
+	}
+	var passkeysDisplay []map[string]interface{}
+	for i, pk := range passkeys {
+		name := pk.Name
+		if name == "" {
+			name = fmt.Sprintf("Passkey %d", i+1)
+		}
+		passkeysDisplay = append(passkeysDisplay, map[string]interface{}{
+			"Index":  i + 1,
+			"Name":   name,
+			"ID":     base64.URLEncoding.EncodeToString(pk.Credential.ID),
+		})
+	}
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTemplate(w, "settings_account.html", map[string]interface{}{
+		"Title": "Account Settings",
+		"Username": username,
+		"User": user,
+		"Config": cfg,
+		"Passkeys": passkeysDisplay,
+		"SuccessMessage": successMsg,
+		"ErrorMessage": errorMsg,
+	})
+}
+
+func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	cfg := s.cfg
+	database := s.db
+	s.mu.RUnlock()
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
+	if user.Role != "admin" {
+		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		return
+	}
+	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
+	if string(drivesJSONBytes) == "null" {
+		drivesJSONBytes = []byte("[]")
+	}
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTemplate(w, "settings_storage.html", map[string]interface{}{
+		"Title": "Storage Settings",
+		"Username": username,
+		"User": user,
+		"Config": cfg,
+		"DrivesJSON": string(drivesJSONBytes),
+		"EnvOnly": cfg.EnvOnly,
+		"SuccessMessage": successMsg,
+		"ErrorMessage": errorMsg,
+	})
+}
+
+func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	cfg := s.cfg
+	database := s.db
+	s.mu.RUnlock()
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
+	if user.Role != "admin" {
+		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		return
+	}
+	allUsers, _ := db.GetAllUsers(r.Context(), database)
+	type userDisplay struct {
+		User               *db.User
+		FormattedTotalUsed string
+	}
+	var displayUsers []userDisplay
+	for _, u := range allUsers {
+		total, _ := db.GetUserTotalStorage(r.Context(), database, u.ID)
+		var formatted string
+		if total < 1024*1024 {
+			formatted = fmt.Sprintf("%.2f KB", float64(total)/1024)
+		} else if total < 1024*1024*1024 {
+			formatted = fmt.Sprintf("%.2f MB", float64(total)/(1024*1024))
+		} else {
+			formatted = fmt.Sprintf("%.2f GB", float64(total)/(1024*1024*1024))
+		}
+		displayUsers = append(displayUsers, userDisplay{
+			User:               u,
+			FormattedTotalUsed: formatted,
+		})
+	}
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTemplate(w, "settings_subusers.html", map[string]interface{}{
+		"Title": "Subusers Settings",
+		"Username": username,
+		"User": user,
+		"Config": cfg,
+		"AllUsers": displayUsers,
+		"SuccessMessage": successMsg,
+		"ErrorMessage": errorMsg,
+	})
 }

@@ -1,0 +1,263 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">Settings</h1>
+        <p class="text-muted">Manage your account and server configuration</p>
+    </div>
+</div>
+
+{{if .SuccessMessage}}
+<div class="alert alert-success">
+    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    {{.SuccessMessage}}
+</div>
+{{end}}
+{{if .ErrorMessage}}
+<div class="alert alert-error">
+    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    {{.ErrorMessage}}
+</div>
+{{end}}
+
+<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Account Security Section -->
+    <!-- Appearance Section -->
+<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← Back to Settings</a></div>
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>Storage Configuration</h2>
+        </div>
+        
+        <form id="storageForm" method="POST" action="/settings/action/storage">
+            <div class="form-group">
+                <label for="storage_type">Primary Storage Type</label>
+                <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
+                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
+                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
+                </select>
+            </div>
+
+            <div id="local_storage_fields" style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="local_path">Uploads Path</label>
+                    <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
+                </div>
+            </div>
+
+            <div id="s3_storage_fields" style="display: none; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="s3_endpoint">S3 Endpoint</label>
+                        <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
+                    </div>
+                    <div class="form-group">
+                        <label for="s3_region">S3 Region</label>
+                        <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="s3_bucket">S3 Bucket</label>
+                    <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="s3_access_key">Access Key</label>
+                        <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
+                    </div>
+                    <div class="form-group">
+                        <label for="s3_secret_key">Secret Key <span class="text-muted">(Leave blank to keep current)</span></label>
+                        <input type="password" id="s3_secret_key" name="s3_secret_key">
+                    </div>
+                </div>
+                <div class="checkbox-group" style="margin-bottom: 0;">
+                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}}>
+                    <label for="s3_use_ssl">Use SSL</label>
+                </div>
+            </div>
+
+            <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">Additional Storage Drives</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">+ Add Drive</button>
+            </div>
+            
+            <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem;">
+                <!-- Drives populated by JS -->
+            </div>
+            <input type="hidden" id="drives_json_input" name="drives_json">
+
+            <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+                <div class="form-group">
+                    <label for="max_upload_size_mb">Max Upload Size (MB)</label>
+                    <input type="number" id="max_upload_size_mb" name="max_upload_size_mb" value="{{.Config.MaxUploadSizeMB}}" required>
+                    <small class="text-muted">0 for unlimited</small>
+                </div>
+                <div class="form-group">
+                    <label for="chunk_threshold_mb">Chunk Threshold (MB)</label>
+                    <input type="number" id="chunk_threshold_mb" name="chunk_threshold_mb" value="{{.Config.ChunkThresholdMB}}" required>
+                    <small class="text-muted">Files larger than this will be chunked</small>
+                </div>
+                <div class="form-group">
+                    <label for="chunk_size_mb">Chunk Size (MB)</label>
+                    <input type="number" id="chunk_size_mb" name="chunk_size_mb" value="{{.Config.ChunkSizeMB}}" required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary" onclick="prepareDrivesJson()">Save Storage Config</button>
+        </form>
+    </div>
+
+    <!-- Users Management Section (Admin Only) --><script>
+    function toggleStorageFields() {
+        const type = document.getElementById('storage_type').value;
+        if (type === 'local') {
+            document.getElementById('local_storage_fields').style.display = 'block';
+            document.getElementById('s3_storage_fields').style.display = 'none';
+        } else {
+            document.getElementById('local_storage_fields').style.display = 'none';
+            document.getElementById('s3_storage_fields').style.display = 'block';
+        }
+    }
+    toggleStorageFields();
+    // Drives
+    let drivesStr = {{.DrivesJSON}};
+    let drives = [];
+    try {
+        if (typeof drivesStr === 'string') {
+            drives = JSON.parse(drivesStr);
+        } else {
+            drives = drivesStr;
+        }
+    } catch(e) {
+        console.error("Failed to parse drives", e);
+    }
+    if (!drives || !Array.isArray(drives)) drives = [];
+
+    function renderDrives() {
+        const container = document.getElementById('drives_container');
+        container.innerHTML = '';
+        
+        drives.forEach((drive, idx) => {
+            const html = `
+            <div style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h4 style="margin: 0; color: var(--accent-primary);">Drive #${idx + 1}</h4>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">Remove</button>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label>Drive ID</label>
+                        <input type="text" value="${escapeHtml(drive.id)}" onchange="updateDrive(${idx}, 'id', this.value)" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Display Name</label>
+                        <input type="text" value="${escapeHtml(drive.name)}" onchange="updateDrive(${idx}, 'name', this.value)" required>
+                    </div>
+                </div>
+
+                ${drive.type === 'local' ? `
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label>Storage Type</label>
+                            <select onchange="updateDrive(${idx}, 'type', this.value)">
+                                <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
+                                <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Local Path</label>
+                            <input type="text" value="${escapeHtml(drive.local_storage_path || '')}" onchange="updateDrive(${idx}, 'local_storage_path', this.value)" placeholder="./uploads">
+                        </div>
+                    </div>
+                ` : `
+                    <div class="form-group">
+                        <label>Storage Type</label>
+                        <select onchange="updateDrive(${idx}, 'type', this.value)">
+                            <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
+                            <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
+                        </select>
+                    </div>
+                
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label>S3 Endpoint</label>
+                            <input type="text" value="${escapeHtml(drive.s3_endpoint || '')}" onchange="updateDrive(${idx}, 's3_endpoint', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>S3 Region</label>
+                            <input type="text" value="${escapeHtml(drive.s3_region || '')}" onchange="updateDrive(${idx}, 's3_region', this.value)">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>S3 Bucket</label>
+                        <input type="text" value="${escapeHtml(drive.s3_bucket || '')}" onchange="updateDrive(${idx}, 's3_bucket', this.value)">
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                        <div class="form-group">
+                            <label>Access Key</label>
+                            <input type="text" value="${escapeHtml(drive.s3_access_key || '')}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
+                        </div>
+                        <div class="form-group">
+                            <label>Secret Key ${drive.s3_secret_key ? '<span class="text-muted">(Set)</span>' : ''}</label>
+                            <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
+                        </div>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="d_s3_use_ssl_${idx}" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${drive.s3_use_ssl ? 'checked' : ''}>
+                        <label for="d_s3_use_ssl_${idx}">Use SSL</label>
+                    </div>
+                `}
+            </div>
+            `;
+            container.insertAdjacentHTML('beforeend', html);
+        });
+    }
+
+    function addDrive() {
+        drives.push({
+            id: 'drive_' + Date.now(),
+            name: 'New Drive',
+            type: 'local',
+            local_storage_path: './uploads_new',
+            s3_use_ssl: true
+        });
+        renderDrives();
+    }
+
+    function removeDrive(idx) {
+        drives.splice(idx, 1);
+        renderDrives();
+    }
+
+    function updateDrive(idx, field, value) {
+        drives[idx][field] = value;
+        if (field === 'type') {
+            renderDrives(); // re-render to toggle fields
+        }
+    }
+
+    function prepareDrivesJson() {
+        document.getElementById('drives_json_input').value = JSON.stringify(drives);
+    }
+
+    function escapeHtml(unsafe) {
+        return (unsafe || '').toString()
+             .replace(/&/g, "&amp;")
+             .replace(/</g, "&lt;")
+             .replace(/>/g, "&gt;")
+             .replace(/"/g, "&quot;")
+             .replace(/'/g, "&#039;");
+    }
+
+
+    renderDrives();
+</script>
+</div>
+{{end}}

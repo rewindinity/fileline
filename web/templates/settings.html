@@ -1,612 +1,107 @@
-{{template "base.html" .}}
-
-{{define "content"}}
+{{template "base.html" .}} {{define "content"}}
 <div class="page-header">
-    <div>
-        <h1 style="margin-bottom: 0.25rem;">Settings</h1>
-        <p class="text-muted">Manage your account and server configuration</p>
-    </div>
+  <div>
+    <h1 style="margin-bottom: 0.25rem">Settings</h1>
+    <p class="text-muted">Manage your account and server configuration</p>
+  </div>
 </div>
 
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
-    {{.SuccessMessage}}
+  <img
+    src="/static/icons/bxs-check-circle.svg"
+    alt="Success"
+    style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%)"
+  />
+  {{.SuccessMessage}}
 </div>
-{{end}}
-{{if .ErrorMessage}}
+{{end}} {{if .ErrorMessage}}
 <div class="alert alert-error">
-    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
-    {{.ErrorMessage}}
+  <img
+    src="/static/icons/bxs-error-circle.svg"
+    alt="Error"
+    style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
+  />
+  {{.ErrorMessage}}
 </div>
 {{end}}
 
-<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
-    <!-- Appearance Section -->
-    <div class="card">
-        <div class="card-header" style="margin-bottom: 2rem;">
-            <h2>Appearance</h2>
-        </div>
-        
-        <form method="POST" action="/settings/appearance" enctype="multipart/form-data">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-                <div class="form-group">
-                    <label for="theme">Theme</label>
-                    <select id="theme" name="theme">
-                        <option value="global" {{if or (not .User.Theme) (eq .User.Theme "global")}}selected{{end}}>Global Default</option>
-                        <option value="dark-blue" {{if eq .User.Theme "dark-blue"}}selected{{end}}>Dark Blue</option>
-                        <option value="dark-green" {{if eq .User.Theme "dark-green"}}selected{{end}}>Dark Green</option>
-                        <option value="dark-red" {{if eq .User.Theme "dark-red"}}selected{{end}}>Dark Red</option>
-                        <option value="dark-orange" {{if eq .User.Theme "dark-orange"}}selected{{end}}>Dark Orange</option>
-                        <option value="dark-purple" {{if eq .User.Theme "dark-purple"}}selected{{end}}>Dark Purple</option>
-                        <option value="oled" {{if eq .User.Theme "oled"}}selected{{end}}>OLED Dark</option>
-                        <option value="light-blue" {{if eq .User.Theme "light-blue"}}selected{{end}}>Light Blue</option>
-                        <option value="light-green" {{if eq .User.Theme "light-green"}}selected{{end}}>Light Green</option>
-                        <option value="light-red" {{if eq .User.Theme "light-red"}}selected{{end}}>Light Red</option>
-                        <option value="light-orange" {{if eq .User.Theme "light-orange"}}selected{{end}}>Light Orange</option>
-                        <option value="light-purple" {{if eq .User.Theme "light-purple"}}selected{{end}}>Light Purple</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label>Personal Accent Color</label>
-                    <div style="display: flex; gap: 1rem; align-items: center; margin-top: 0.5rem;">
-                        <div class="checkbox-group" style="margin-bottom: 0;">
-                            <input type="checkbox" id="use_global_accent" name="use_global_accent" {{if or (not .User.Accent) (eq .User.Accent "global")}}checked{{end}} onchange="togglePersonalAccent()">
-                            <label for="use_global_accent">Use Global Default</label>
-                        </div>
-                        
-                        
-                        <div id="personal_accent_container" style="display: flex; gap: 0.5rem; align-items: center; {{if or (not .User.Accent) (eq .User.Accent "global")}}display: none;{{end}}">
-                            <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
-                                <input type="color" id="accent" name="accent" value="{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('personal_hex_display').innerText = this.value.toUpperCase()">
-                                <span id="personal_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+<div style="display: grid; grid-template-columns: 1fr; gap: 2rem">
+  <!-- Account Security Section -->
+  <!-- Appearance Section -->
 
-            <!-- Global admin-only fields -->
-            {{if eq .User.Role "admin"}}
-            <hr style="border-color: var(--border-color); margin: 2rem 0;">
-            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Global Default Appearance (Admin Only)</h3>
-            <p class="text-muted mb-2">These settings apply to users who have their theme/accent set to "Global Default".</p>
-            
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-                <div class="form-group">
-                    <label for="global_theme">Global Theme</label>
-                    <select id="global_theme" name="global_theme">
-                        <option value="dark-blue" {{if eq .Config.Theme "dark-blue"}}selected{{end}}>Dark Blue</option>
-                        <option value="dark-green" {{if eq .Config.Theme "dark-green"}}selected{{end}}>Dark Green</option>
-                        <option value="dark-red" {{if eq .Config.Theme "dark-red"}}selected{{end}}>Dark Red</option>
-                        <option value="dark-orange" {{if eq .Config.Theme "dark-orange"}}selected{{end}}>Dark Orange</option>
-                        <option value="dark-purple" {{if eq .Config.Theme "dark-purple"}}selected{{end}}>Dark Purple</option>
-                        <option value="oled" {{if eq .Config.Theme "oled"}}selected{{end}}>OLED Dark</option>
-                        <option value="light-blue" {{if eq .Config.Theme "light-blue"}}selected{{end}}>Light Blue</option>
-                        <option value="light-green" {{if eq .Config.Theme "light-green"}}selected{{end}}>Light Green</option>
-                        <option value="light-red" {{if eq .Config.Theme "light-red"}}selected{{end}}>Light Red</option>
-                        <option value="light-orange" {{if eq .Config.Theme "light-orange"}}selected{{end}}>Light Orange</option>
-                        <option value="light-purple" {{if eq .Config.Theme "light-purple"}}selected{{end}}>Light Purple</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="custom_accent_hex">Global Accent Color (Web Palette)</label>
-                    <div style="display: flex; align-items: center; margin-top: 0.5rem;">
-                        <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
-                            <input type="color" id="custom_accent_hex" name="custom_accent_hex" value="{{.Config.CustomAccentHex}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('global_hex_display').innerText = this.value.toUpperCase()">
-                            <span id="global_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{.Config.CustomAccentHex}}</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="form-group" style="margin-bottom: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
-                <div style="display: flex; align-items: center; gap: 1.5rem;">
-                    <img src="/logo?v={{.Config.CustomLogo}}" alt="Current Logo" id="logo_preview" style="width: 48px; height: 48px; object-fit: contain;" class="logo-img">
-                    <div style="flex-grow: 1;">
-                        <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">Custom Server Logo</label>
-                        <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">Recommended: SVG or PNG, transparent background. Applies to login and nav.</p>
-                        <input type="file" id="custom_logo_file" name="custom_logo_file" accept="image/*">
-                        {{if and (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
-                        <div style="margin-top: 0.75rem;">
-                            <button type="submit" form="removeLogoForm" class="btn" style="background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid var(--error); font-size: 0.85rem; padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; transition: all var(--transition);">
-                                Remove Custom Logo
-                            </button>
-                        </div>
-                        {{end}}
-                    </div>
-                </div>
-            </div>
-            {{end}}
-
-            <button type="submit" class="btn btn-primary">Save Appearance</button>
-        </form>
-        
-        {{if and (eq .User.Role "admin") (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
-        <form id="removeLogoForm" method="POST" action="/settings/appearance/remove_logo" style="display: none;"></form>
-        {{end}}
+  <div class="card">
+    <div class="card-header" style="margin-bottom: 2rem">
+      <h2>Settings Overview</h2>
     </div>
-    
-    <!-- Account Security Section -->
-    <div class="card">
-        <div class="card-header" style="margin-bottom: 2rem;">
-            <h2>Account Security</h2>
-        </div>
-        
-        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Change Password</h3>
-        <form method="POST" action="/settings/password">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                <div class="form-group">
-                    <label for="current_password">Current Password</label>
-                    <input type="password" id="current_password" name="current_password" required>
-                </div>
-                <div class="form-group">
-                    <label for="new_password">New Password</label>
-                    <input type="password" id="new_password" name="new_password" required>
-                </div>
-            </div>
-            <button type="submit" class="btn btn-primary">Update Password</button>
-        </form>
-
-        <hr style="border-color: var(--border-color); margin: 2rem 0;">
-
-        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Two-Factor Authentication (TOTP)</h3>
-        {{if .User.TOTPSecret}}
-            <div class="alert alert-success" style="margin-bottom: 1.5rem;">
-                <strong>2FA is currently ENABLED.</strong>
-            </div>
-            <form method="POST" action="/settings/2fa/disable">
-                <button type="submit" class="btn btn-danger" onclick="return confirm('Disable 2FA? This will reduce your account security.')">Disable 2FA</button>
-            </form>
-        {{else}}
-            <button id="generateTOTPBtn" class="btn btn-primary">Set up 2FA</button>
-            <div id="totpSetupArea" style="display: none; margin-top: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-                <div style="text-align: center; margin-bottom: 1.5rem;">
-                    <p class="text-muted mb-1">Scan this QR code with your authenticator app (Authy, Google Authenticator, etc.)</p>
-                    <div id="qrcode" style="display: inline-block; padding: 1rem; background: white; border-radius: var(--radius-sm);"></div>
-                    <p style="margin-top: 1rem; font-family: monospace; font-size: 1.1rem; color: var(--accent-primary);" id="totpSecretText"></p>
-                </div>
-                <form method="POST" action="/settings/2fa/verify" style="display: flex; gap: 1rem; align-items: flex-end;">
-                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
-                        <label for="code">Verification Code</label>
-                        <input type="text" id="code" name="code" placeholder="123456" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Verify & Enable</button>
-                </form>
-            </div>
-        {{end}}
-
-        <hr style="border-color: var(--border-color); margin: 2rem 0;">
-
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">Passkeys (WebAuthn)</h3>
-            <button type="button" class="btn btn-primary btn-sm" onclick="registerPasskey()">Register New Passkey</button>
-        </div>
-        
-        <p id="passkey_status" class="text-muted"></p>
-        
-        {{if .Passkeys}}
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Passkey Name</th>
-                            <th style="text-align: right;">Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {{range .Passkeys}}
-                        <tr>
-                            <td>{{.Name}}</td>
-                            <td style="text-align: right;">
-                                <form method="POST" action="/settings/webauthn/delete" style="margin: 0;">
-                                    <input type="hidden" name="id" value="{{.ID}}">
-                                    <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-                                </form>
-                            </td>
-                        </tr>
-                        {{end}}
-                    </tbody>
-                </table>
-            </div>
-        {{else}}
-            <p class="text-muted">No passkeys registered.</p>
-        {{end}}
+    <div style="display: flex; flex-direction: column; gap: 1rem">
+      <a
+        href="/settings/appearance"
+        class="btn"
+        style="
+          text-align: left;
+          display: block;
+          padding: 1rem;
+          border: 1px solid var(--border-color);
+          background: var(--bg-base);
+          text-decoration: none;
+          color: var(--text-primary);
+        "
+      >
+        <h3 style="margin-top: 0">Appearance</h3>
+        <p class="text-muted" style="margin-bottom: 0">Manage theme, accent colors, and custom logo</p>
+      </a>
+      <a
+        href="/settings/account"
+        class="btn"
+        style="
+          text-align: left;
+          display: block;
+          padding: 1rem;
+          border: 1px solid var(--border-color);
+          background: var(--bg-base);
+          text-decoration: none;
+          color: var(--text-primary);
+        "
+      >
+        <h3 style="margin-top: 0">Account Security</h3>
+        <p class="text-muted" style="margin-bottom: 0">Update password and manage two-factor authentication</p>
+      </a>
+      {{if eq .User.Role "admin"}}
+      <a
+        href="/settings/storage"
+        class="btn"
+        style="
+          text-align: left;
+          display: block;
+          padding: 1rem;
+          border: 1px solid var(--border-color);
+          background: var(--bg-base);
+          text-decoration: none;
+          color: var(--text-primary);
+        "
+      >
+        <h3 style="margin-top: 0">Storage Configuration</h3>
+        <p class="text-muted" style="margin-bottom: 0">Configure local or S3-compatible backend storage</p>
+      </a>
+      <a
+        href="/settings/subusers"
+        class="btn"
+        style="
+          text-align: left;
+          display: block;
+          padding: 1rem;
+          border: 1px solid var(--border-color);
+          background: var(--bg-base);
+          text-decoration: none;
+          color: var(--text-primary);
+        "
+      >
+        <h3 style="margin-top: 0">Users Management</h3>
+        <p class="text-muted" style="margin-bottom: 0">Add, manage, and remove subuser accounts</p>
+      </a>
+      {{end}}
     </div>
-
-    <!-- Storage Configuration Section -->
-    <div class="card">
-        <div class="card-header" style="margin-bottom: 2rem;">
-            <h2>Storage Configuration</h2>
-        </div>
-        
-        <form id="storageForm" method="POST" action="/settings/storage">
-            <div class="form-group">
-                <label for="storage_type">Primary Storage Type</label>
-                <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
-                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
-                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
-                </select>
-            </div>
-            <div id="local_storage_fields" style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label for="local_path">Uploads Path</label>
-                    <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
-                </div>
-            </div>
-            <div id="s3_storage_fields" style="display: none; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                    <div class="form-group">
-                        <label for="s3_endpoint">S3 Endpoint</label>
-                        <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
-                    </div>
-                    <div class="form-group">
-                        <label for="s3_region">S3 Region</label>
-                        <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label for="s3_bucket">S3 Bucket</label>
-                    <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                    <div class="form-group">
-                        <label for="s3_access_key">Access Key</label>
-                        <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
-                    </div>
-                    <div class="form-group">
-                        <label for="s3_secret_key">Secret Key <span class="text-muted">(Leave blank to keep current)</span></label>
-                        <input type="password" id="s3_secret_key" name="s3_secret_key">
-                    </div>
-                </div>
-                <div class="checkbox-group" style="margin-bottom: 0;">
-                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}}>
-                    <label for="s3_use_ssl">Use SSL</label>
-                </div>
-            </div>
-
-            <hr style="border-color: var(--border-color); margin: 2rem 0;">
-
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">Additional Storage Drives</h3>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">+ Add Drive</button>
-            </div>
-            
-            <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem;">
-                <!-- Drives handled by JS -->
-            </div>
-            <input type="hidden" id="drives_json_input" name="drives_json">
-
-            <hr style="border-color: var(--border-color); margin: 2rem 0;">
-
-            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-                <div class="form-group">
-                    <label for="max_upload_size_mb">Max Upload Size (MB)</label>
-                    <input type="number" id="max_upload_size_mb" name="max_upload_size_mb" value="{{.Config.MaxUploadSizeMB}}" required>
-                    <small class="text-muted">0 for unlimited</small>
-                </div>
-                <div class="form-group">
-                    <label for="chunk_threshold_mb">Chunk Threshold (MB)</label>
-                    <input type="number" id="chunk_threshold_mb" name="chunk_threshold_mb" value="{{.Config.ChunkThresholdMB}}" required>
-                    <small class="text-muted">Files larger than this will be chunked</small>
-                </div>
-                <div class="form-group">
-                    <label for="chunk_size_mb">Chunk Size (MB)</label>
-                    <input type="number" id="chunk_size_mb" name="chunk_size_mb" value="{{.Config.ChunkSizeMB}}" required>
-                </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary" onclick="prepareDrivesJson()">Save Storage Config</button>
-        </form>
-    </div>
-
-    <!-- Users Management Section (Admin Only) -->
-    {{if eq .Username "admin"}}
-    <div class="card">
-        <div class="card-header" style="margin-bottom: 2rem;">
-            <h2>Users Management</h2>
-        </div>
-        
-        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Existing Users</h3>
-        <div class="table-responsive" style="margin-bottom: 2rem;">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Username</th>
-                        <th>Quota (MB)</th>
-                        <th>Storage Used</th>
-                        <th style="text-align: right;">Action</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{range .AllUsers}}
-                    <tr>
-                        <td style="font-weight: 500;">
-                            {{.User.Username}}
-                            {{if eq .User.Username "admin"}}<span class="badge badge-private" style="margin-left: 0.5rem;">Admin</span>{{end}}
-                        </td>
-                        <td>{{if eq .User.StorageQuotaMB 0}}Unlimited{{else}}{{.User.StorageQuotaMB}}{{end}}</td>
-                        <td>{{.FormattedTotalUsed}}</td>
-                        <td style="text-align: right;">
-                            {{if ne .User.Username "admin"}}
-                            <form method="POST" action="/settings/users/delete" style="margin: 0;" onsubmit="return confirm('Delete user {{.User.Username}} and ALL their files? This cannot be undone.')">
-                                <input type="hidden" name="username" value="{{.User.Username}}">
-                                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-                            </form>
-                            {{end}}
-                        </td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
-        </div>
-
-        <hr style="border-color: var(--border-color); margin: 2rem 0;">
-
-        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Add Subuser</h3>
-        <form method="POST" action="/settings/users/add">
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: end;">
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label>Username</label>
-                    <input type="text" name="new_username" required>
-                </div>
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label>Password</label>
-                    <input type="password" name="new_password" required>
-                </div>
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label>Storage Quota (MB, 0 for unl)</label>
-                    <input type="number" name="new_quota" value="5120" required>
-                </div>
-            </div>
-            <button type="submit" class="btn btn-primary mt-1">Create User</button>
-        </form>
-    </div>
-    {{end}}
+  </div>
 </div>
-
-<script src="/static/qrcode.min.js"></script>
-<script>
-    function toggleStorageFields() {
-        const type = document.getElementById('storage_type').value;
-        if (type === 'local') {
-            document.getElementById('local_storage_fields').style.display = 'block';
-            document.getElementById('s3_storage_fields').style.display = 'none';
-        } else {
-            document.getElementById('local_storage_fields').style.display = 'none';
-            document.getElementById('s3_storage_fields').style.display = 'block';
-        }
-    }
-    
-    // Initial setup
-    toggleStorageFields();
-
-    // TOTP setup
-    const totpBtn = document.getElementById('generateTOTPBtn');
-    if (totpBtn) {
-        totpBtn.addEventListener('click', async () => {
-            const res = await fetch('/settings/2fa/generate', { method: 'POST' });
-            if (res.ok) {
-                const data = await res.json();
-                document.getElementById('totpSetupArea').style.display = 'block';
-                totpBtn.style.display = 'none';
-                
-                document.getElementById('qrcode').innerHTML = '';
-                new QRCode(document.getElementById('qrcode'), {
-                    text: data.url,
-                    width: 200,
-                    height: 200
-                });
-                document.getElementById('totpSecretText').innerText = data.secret;
-            } else {
-                alert('Failed to generate 2FA secret');
-            }
-        });
-    }
-
-    // WebAuthn
-    async function registerPasskey() {
-        const status = document.getElementById('passkey_status');
-        status.innerText = "Requesting passkey registration...";
-        try {
-            const resp = await fetch('/webauthn/register/begin');
-            if (!resp.ok) {
-                const errText = await resp.text();
-                throw new Error(errText || "Failed to start registration");
-            }
-            const options = await resp.json();
-            options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
-            options.publicKey.user.id = Uint8Array.from(atob(options.publicKey.user.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
-            if (options.publicKey.excludeCredentials) {
-                options.publicKey.excludeCredentials.forEach(cred => {
-                    cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
-                });
-            }
-            const cred = await navigator.credentials.create({
-                publicKey: options.publicKey
-            });
-            const credential = {
-                id: cred.id,
-                rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
-                type: cred.type,
-                response: {
-                    attestationObject: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.attestationObject))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
-                    clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-                }
-            };
-            const finishResp = await fetch('/webauthn/register/finish', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(credential)
-            });
-            if (!finishResp.ok) {
-                const errText = await finishResp.text();
-                throw new Error(errText || "Failed to finish registration");
-            }
-            status.innerText = "Passkey registered successfully! Reloading...";
-            status.style.color = "var(--success)";
-            setTimeout(() => window.location.reload(), 1000);
-        } catch (e) {
-            console.error(e);
-            status.innerText = "Error: " + e.message;
-            status.style.color = "var(--error)";
-        }
-    }
-    // Drives
-    let drivesStr = {{.DrivesJSON}};
-    let drives = [];
-    try {
-        if (typeof drivesStr === 'string') {
-            drives = JSON.parse(drivesStr);
-        } else {
-            drives = drivesStr;
-        }
-    } catch(e) {
-        console.error("Failed to parse drives", e);
-    }
-    if (!drives || !Array.isArray(drives)) drives = [];
-    function renderDrives() {
-        const container = document.getElementById('drives_container');
-        container.innerHTML = '';
-        drives.forEach((drive, idx) => {
-            const html = `
-            <div style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <h4 style="margin: 0; color: var(--accent-primary);">Drive #${idx + 1}</h4>
-                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">Remove</button>
-                </div>
-                
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                    <div class="form-group">
-                        <label>Drive ID</label>
-                        <input type="text" value="${escapeHtml(drive.id)}" onchange="updateDrive(${idx}, 'id', this.value)" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Display Name</label>
-                        <input type="text" value="${escapeHtml(drive.name)}" onchange="updateDrive(${idx}, 'name', this.value)" required>
-                    </div>
-                </div>
-
-                ${drive.type === 'local' ? `
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div class="form-group">
-                            <label>Storage Type</label>
-                            <select onchange="updateDrive(${idx}, 'type', this.value)">
-                                <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
-                                <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Local Path</label>
-                            <input type="text" value="${escapeHtml(drive.local_storage_path || '')}" onchange="updateDrive(${idx}, 'local_storage_path', this.value)" placeholder="./uploads">
-                        </div>
-                    </div>
-                ` : `
-                    <div class="form-group">
-                        <label>Storage Type</label>
-                        <select onchange="updateDrive(${idx}, 'type', this.value)">
-                            <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
-                            <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
-                        </select>
-                    </div>
-                
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div class="form-group">
-                            <label>S3 Endpoint</label>
-                            <input type="text" value="${escapeHtml(drive.s3_endpoint || '')}" onchange="updateDrive(${idx}, 's3_endpoint', this.value)">
-                        </div>
-                        <div class="form-group">
-                            <label>S3 Region</label>
-                            <input type="text" value="${escapeHtml(drive.s3_region || '')}" onchange="updateDrive(${idx}, 's3_region', this.value)">
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>S3 Bucket</label>
-                        <input type="text" value="${escapeHtml(drive.s3_bucket || '')}" onchange="updateDrive(${idx}, 's3_bucket', this.value)">
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-                        <div class="form-group">
-                            <label>Access Key</label>
-                            <input type="text" value="${escapeHtml(drive.s3_access_key || '')}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
-                        </div>
-                        <div class="form-group">
-                            <label>Secret Key ${drive.s3_secret_key ? '<span class="text-muted">(Set)</span>' : ''}</label>
-                            <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
-                        </div>
-                    </div>
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="d_s3_use_ssl_${idx}" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${drive.s3_use_ssl ? 'checked' : ''}>
-                        <label for="d_s3_use_ssl_${idx}">Use SSL</label>
-                    </div>
-                `}
-            </div>
-            `;
-            container.insertAdjacentHTML('beforeend', html);
-        });
-    }
-    function addDrive() {
-        drives.push({
-            id: 'drive_' + Date.now(),
-            name: 'New Drive',
-            type: 'local',
-            local_storage_path: './uploads_new',
-            s3_use_ssl: true
-        });
-        renderDrives();
-    }
-    function removeDrive(idx) {
-        drives.splice(idx, 1);
-        renderDrives();
-    }
-    function updateDrive(idx, field, value) {
-        drives[idx][field] = value;
-        if (field === 'type') {
-            renderDrives(); // re-render to toggle fields
-        }
-    }
-    function prepareDrivesJson() {
-        document.getElementById('drives_json_input').value = JSON.stringify(drives);
-    }
-    function escapeHtml(unsafe) {
-        return (unsafe || '').toString()
-             .replace(/&/g, "&amp;")
-             .replace(/</g, "&lt;")
-             .replace(/>/g, "&gt;")
-             .replace(/"/g, "&quot;")
-             .replace(/'/g, "&#039;");
-    }
-    renderDrives();
-    document.addEventListener("DOMContentLoaded", function() {
-        var p = document.getElementById('personal_hex_display');
-        var g = document.getElementById('global_hex_display');
-        if (p) p.innerText = p.innerText.toUpperCase();
-        if (g) g.innerText = g.innerText.toUpperCase();
-
-    var logoInput = document.getElementById('custom_logo_file');
-    if (logoInput) {
-        logoInput.addEventListener('change', function(e) {
-            if (e.target.files && e.target.files[0]) {
-                var reader = new FileReader();
-                reader.onload = function(e2) {
-                    var preview = document.getElementById('logo_preview');
-                    if (preview) {
-                        preview.src = e2.target.result;
-                    }
-                }
-                reader.readAsDataURL(e.target.files[0]);
-            }
-        });
-    }
-    });
-    function togglePersonalAccent() {
-        var cb = document.getElementById('use_global_accent');
-        var container = document.getElementById('personal_accent_container');
-        if (cb && container) {
-            container.style.display = cb.checked ? 'none' : 'flex';
-        }
-    }
-</script>
 {{end}}
