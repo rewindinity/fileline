@@ -64,6 +64,7 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent TEXT DEFAULT 'global'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language TEXT DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	} else if dbType == "postgres" {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) DEFAULT ''")
@@ -71,6 +72,7 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN storage_quota_mb INTEGER DEFAULT 0")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme VARCHAR(50) DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent VARCHAR(50) DEFAULT 'global'")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language VARCHAR(50) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 	}
 
@@ -103,15 +105,16 @@ type User struct {
 	StorageQuotaMB int
 	Theme          string
 	Accent         string
+	Language       string
 }
 
 // GetUserByUsername retrieves a user by username.
 func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User, error) {
 	u := &User{Username: username}
-	var totp, webauthn, theme, accent sql.NullString
+	var totp, webauthn, theme, accent, language sql.NullString
 	var quota sql.NullInt64
-	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent FROM users WHERE username = $1", username).
-		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent)
+	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent, language FROM users WHERE username = $1", username).
+		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent, &language)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +132,9 @@ func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User,
 	}
 	if accent.Valid {
 		u.Accent = accent.String
+	}
+	if language.Valid {
+		u.Language = language.String
 	}
 	return u, nil
 }
@@ -210,5 +216,11 @@ func DeleteUser(ctx context.Context, database *sql.DB, username string) error {
 // UpdateUserTheme updates a user's theme and accent preference
 func UpdateUserTheme(ctx context.Context, db *sql.DB, username, theme, accent string) error {
 	_, err := db.ExecContext(ctx, "UPDATE users SET theme = $1, accent = $2 WHERE username = $3", theme, accent, username)
+	return err
+}
+
+// UpdateUserLanguage updates a user's language preference
+func UpdateUserLanguage(ctx context.Context, db *sql.DB, username, language string) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET language = $1 WHERE username = $2", language, username)
 	return err
 }

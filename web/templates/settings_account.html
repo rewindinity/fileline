@@ -1,214 +1,198 @@
-{{template "base.html" .}} {{define "content"}}
+{{template "base.html" .}}
+
+{{define "content"}}
 <div class="page-header">
-  <div>
-    <h1 style="margin-bottom: 0.25rem">Settings</h1>
-    <p class="text-muted">Manage your account and server configuration</p>
-  </div>
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+    </div>
 </div>
 
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-  <img
-    src="/static/icons/bxs-check-circle.svg"
-    alt="Success"
-    style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%)"
-  />
-  {{.SuccessMessage}}
+    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    {{.SuccessMessage}}
 </div>
-{{end}} {{if .ErrorMessage}}
+{{end}}
+{{if .ErrorMessage}}
 <div class="alert alert-error">
-  <img
-    src="/static/icons/bxs-error-circle.svg"
-    alt="Error"
-    style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
-  />
-  {{.ErrorMessage}}
+    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    {{.ErrorMessage}}
 </div>
 {{end}}
 
-<div style="display: grid; grid-template-columns: 1fr; gap: 2rem">
-  <!-- Account Security Section -->
-  <!-- Appearance Section -->
-  <div style="margin-bottom: 1rem"><a href="/settings" class="btn btn-secondary">← Back to Settings</a></div>
-  <div class="card">
-    <div class="card-header" style="margin-bottom: 2rem">
-      <h2>Account Security</h2>
-    </div>
-
-    <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem">Change Password</h3>
-    <form method="POST" action="/settings/password">
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem">
-        <div class="form-group">
-          <label for="current_password">Current Password</label>
-          <input type="password" id="current_password" name="current_password" required />
+<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Account Security Section -->
+    <!-- Appearance Section -->
+<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← {{ T .Language "Back to Settings" }}</a></div>
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>{{ T .Language "Account Security" }}</h2>
         </div>
-        <div class="form-group">
-          <label for="new_password">New Password</label>
-          <input type="password" id="new_password" name="new_password" required />
+        
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Change Password" }}</h3>
+        <form method="POST" action="/settings/password">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="form-group">
+                    <label for="current_password">{{ T .Language "Current Password" }}</label>
+                    <input type="password" id="current_password" name="current_password" required>
+                </div>
+                <div class="form-group">
+                    <label for="new_password">{{ T .Language "New Password" }}</label>
+                    <input type="password" id="new_password" name="new_password" required>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">{{ T .Language "Update Password" }}</button>
+        </form>
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Two-Factor Authentication (TOTP)" }}</h3>
+        {{if .User.TOTPSecret}}
+            <div class="alert alert-success" style="margin-bottom: 1.5rem;">
+                <strong>{{ T .Language "2FA is currently ENABLED." }}</strong>
+            </div>
+            <form method="POST" action="/settings/2fa/disable">
+                <button type="submit" class="btn btn-danger" onclick="return confirm('{{ T .Language "Disable 2FA? This will reduce your account security." }}')">{{ T .Language "Disable 2FA" }}</button>
+            </form>
+        {{else}}
+            <button id="generateTOTPBtn" class="btn btn-primary">{{ T .Language "Set up 2FA" }}</button>
+            <div id="totpSetupArea" style="display: none; margin-top: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+                <div style="text-align: center; margin-bottom: 1.5rem;">
+                    <p class="text-muted mb-1">{{ T .Language "Scan this QR code with your authenticator app (Authy, Google Authenticator, etc.)" }}</p>
+                    <div id="qrcode" style="display: inline-block; padding: 1rem; background: white; border-radius: var(--radius-sm);"></div>
+                    <p style="margin-top: 1rem; font-family: monospace; font-size: 1.1rem; color: var(--accent-primary);" id="totpSecretText"></p>
+                </div>
+                <form method="POST" action="/settings/2fa/verify" style="display: flex; gap: 1rem; align-items: flex-end;">
+                    <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                        <label for="code">{{ T .Language "Verification Code" }}</label>
+                        <input type="text" id="code" name="code" placeholder="123456" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">{{ T .Language "Verify & Enable" }}</button>
+                </form>
+            </div>
+        {{end}}
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">{{ T .Language "Passkeys (WebAuthn)" }}</h3>
+            <button type="button" class="btn btn-primary btn-sm" onclick="registerPasskey()">{{ T .Language "Register New Passkey" }}</button>
         </div>
-      </div>
-      <button type="submit" class="btn btn-primary">Update Password</button>
-    </form>
-
-    <hr style="border-color: var(--border-color); margin: 2rem 0" />
-
-    <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem">Two-Factor Authentication (TOTP)</h3>
-    {{if .User.TOTPSecret}}
-    <div class="alert alert-success" style="margin-bottom: 1.5rem">
-      <strong>2FA is currently ENABLED.</strong>
-    </div>
-    <form method="POST" action="/settings/2fa/disable">
-      <button type="submit" class="btn btn-danger" onclick="return confirm('Disable 2FA? This will reduce your account security.');">Disable 2FA</button>
-    </form>
-    {{else}}
-    <button id="generateTOTPBtn" class="btn btn-primary">Set up 2FA</button>
-    <div
-      id="totpSetupArea"
-      style="display: none; margin-top: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color)"
-    >
-      <div style="text-align: center; margin-bottom: 1.5rem">
-        <p class="text-muted mb-1">Scan this QR code with your authenticator app (Authy, Google Authenticator, etc.)</p>
-        <div id="qrcode" style="display: inline-block; padding: 1rem; background: white; border-radius: var(--radius-sm)"></div>
-        <p style="margin-top: 1rem; font-family: monospace; font-size: 1.1rem; color: var(--accent-primary)" id="totpSecretText"></p>
-      </div>
-      <form method="POST" action="/settings/2fa/verify" style="display: flex; gap: 1rem; align-items: flex-end">
-        <div class="form-group" style="flex: 1; margin-bottom: 0">
-          <label for="code">Verification Code</label>
-          <input type="text" id="code" name="code" placeholder="123456" required />
-        </div>
-        <button type="submit" class="btn btn-primary">Verify & Enable</button>
-      </form>
-    </div>
-    {{end}}
-
-    <hr style="border-color: var(--border-color); margin: 2rem 0" />
-
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem">
-      <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0">Passkeys (WebAuthn)</h3>
-      <button type="button" class="btn btn-primary btn-sm" onclick="registerPasskey()">Register New Passkey</button>
+        
+        <p id="passkey_status" class="text-muted"></p>
+        
+        {{if .Passkeys}}
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>{{ T .Language "Passkey Name" }}</th>
+                            <th style="text-align: right;">{{ T .Language "Action" }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Passkeys}}
+                        <tr>
+                            <td>{{.Name}}</td>
+                            <td style="text-align: right;">
+                                <form method="POST" action="/settings/webauthn/delete" style="margin: 0;">
+                                    <input type="hidden" name="id" value="{{.ID}}">
+                                    <button type="submit" class="btn btn-danger btn-sm">{{ T $.Language "Delete" }}</button>
+                                </form>
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        {{else}}
+            <p class="text-muted">{{ T .Language "No passkeys registered." }}</p>
+        {{end}}
     </div>
 
-    <p id="passkey_status" class="text-muted"></p>
-
-    {{if .Passkeys}}
-    <div class="table-responsive">
-      <table>
-        <thead>
-          <tr>
-            <th>Passkey Name</th>
-            <th style="text-align: right">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{range .Passkeys}}
-          <tr>
-            <td>{{.Name}}</td>
-            <td style="text-align: right">
-              <form method="POST" action="/settings/webauthn/delete" style="margin: 0">
-                <input type="hidden" name="id" value="{{.ID}}" />
-                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-              </form>
-            </td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-    {{else}}
-    <p class="text-muted">No passkeys registered.</p>
-    {{end}}
-  </div>
-
-  <!-- Storage Configuration Section -->
-  <script src="/static/qrcode.min.js"></script>
-  <script>
+    <!-- Storage Configuration Section -->
+<script src="/static/qrcode.min.js"></script>
+<script>
     // TOTP setup
-    const totpBtn = document.getElementById("generateTOTPBtn");
+    const totpBtn = document.getElementById('generateTOTPBtn');
     if (totpBtn) {
-      totpBtn.addEventListener("click", async () => {
-        const res = await fetch("/settings/2fa/generate", { method: "POST" });
-        if (res.ok) {
-          const data = await res.json();
-          document.getElementById("totpSetupArea").style.display = "block";
-          totpBtn.style.display = "none";
-
-          document.getElementById("qrcode").innerHTML = "";
-          new QRCode(document.getElementById("qrcode"), {
-            text: data.url,
-            width: 200,
-            height: 200,
-          });
-          document.getElementById("totpSecretText").innerText = data.secret;
-        } else {
-          alert("Failed to generate 2FA secret");
-        }
-      });
+        totpBtn.addEventListener('click', async () => {
+            const res = await fetch('/settings/2fa/generate', { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('totpSetupArea').style.display = 'block';
+                totpBtn.style.display = 'none';
+                
+                document.getElementById('qrcode').innerHTML = '';
+                new QRCode(document.getElementById('qrcode'), {
+                    text: data.url,
+                    width: 200,
+                    height: 200
+                });
+                document.getElementById('totpSecretText').innerText = data.secret;
+            } else {
+                alert('{{ T .Language "Failed to generate 2FA secret" }}');
+            }
+        });
     }
 
     // WebAuthn
     async function registerPasskey() {
-      const status = document.getElementById("passkey_status");
-      status.innerText = "Requesting passkey registration...";
+        const status = document.getElementById('passkey_status');
+        status.innerText = "{{ T .Language "Requesting passkey registration..." }}";
+        
+        try {
+            const resp = await fetch('/webauthn/register/begin');
+            if (!resp.ok) {
+                const errText = await resp.text();
+                throw new Error(errText || "{{ T .Language "Failed to start registration" }}");
+            }
+            const options = await resp.json();
+            
+            options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+            options.publicKey.user.id = Uint8Array.from(atob(options.publicKey.user.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+            if (options.publicKey.excludeCredentials) {
+                options.publicKey.excludeCredentials.forEach(cred => {
+                    cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+                });
+            }
+            
+            const cred = await navigator.credentials.create({
+                publicKey: options.publicKey
+            });
+            
+            const credential = {
+                id: cred.id,
+                rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                type: cred.type,
+                response: {
+                    attestationObject: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.attestationObject))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                    clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+                }
+            };
 
-      try {
-        const resp = await fetch("/webauthn/register/begin");
-        if (!resp.ok) {
-          const errText = await resp.text();
-          throw new Error(errText || "Failed to start registration");
+            const finishResp = await fetch('/webauthn/register/finish', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(credential)
+            });
+
+            if (!finishResp.ok) {
+                const errText = await finishResp.text();
+                throw new Error(errText || "{{ T .Language "Failed to finish registration" }}");
+            }
+            
+            status.innerText = "{{ T .Language "Passkey registered successfully! Reloading..." }}";
+            status.style.color = "var(--success)";
+            setTimeout(() => window.location.reload(), 1000);
+        } catch (e) {
+            console.error(e);
+            status.innerText = "Error: " + e.message;
+            status.style.color = "var(--error)";
         }
-        const options = await resp.json();
-
-        options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
-        options.publicKey.user.id = Uint8Array.from(atob(options.publicKey.user.id.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
-        if (options.publicKey.excludeCredentials) {
-          options.publicKey.excludeCredentials.forEach((cred) => {
-            cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
-          });
-        }
-
-        const cred = await navigator.credentials.create({
-          publicKey: options.publicKey,
-        });
-
-        const credential = {
-          id: cred.id,
-          rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=/g, ""),
-          type: cred.type,
-          response: {
-            attestationObject: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.attestationObject)))
-              .replace(/\+/g, "-")
-              .replace(/\//g, "_")
-              .replace(/=/g, ""),
-            clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON)))
-              .replace(/\+/g, "-")
-              .replace(/\//g, "_")
-              .replace(/=/g, ""),
-          },
-        };
-
-        const finishResp = await fetch("/webauthn/register/finish", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(credential),
-        });
-
-        if (!finishResp.ok) {
-          const errText = await finishResp.text();
-          throw new Error(errText || "Failed to finish registration");
-        }
-
-        status.innerText = "Passkey registered successfully! Reloading...";
-        status.style.color = "var(--success)";
-        setTimeout(() => window.location.reload(), 1000);
-      } catch (e) {
-        console.error(e);
-        status.innerText = "Error: " + e.message;
-        status.style.color = "var(--error)";
-      }
     }
-  </script>
+
+</script>
 </div>
 {{end}}

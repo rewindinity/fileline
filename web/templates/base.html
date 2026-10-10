@@ -44,19 +44,19 @@
             <nav class="nav-links" id="navLinks">
                 <a href="/" class="nav-item {{if eq .Title "Dashboard"}}active{{end}}">
                     <img src="/static/icons/bxs-dashboard.svg" alt="Dashboard">
-                    Dashboard
+                    {{ T .Language "Dashboard" }}
                 </a>
                 <a href="/files" class="nav-item {{if eq .Title "My Files"}}active{{end}}">
                     <img src="/static/icons/bxs-folder.svg" alt="Files">
-                    My Files
+                    {{ T .Language "Files" }}
                 </a>
                 <a href="/settings" class="nav-item {{if eq .Title "Settings"}}active{{end}}">
                     <img src="/static/icons/bxs-cog.svg" alt="Settings">
-                    Settings
+                    {{ T .Language "Settings" }}
                 </a>
                 <a href="/logout" class="nav-item" style="color: var(--error);">
                     <img src="/static/icons/bx-log-out.svg" alt="Logout" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
-                    Logout ({{.Username}})
+                    {{ T .Language "Logout" }} ({{.Username}})
                 </a>
             </nav>
         </div>

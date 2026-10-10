@@ -50,6 +50,7 @@ type Config struct {
 	Accent           string  `json:"accent"`
 	CustomAccentHex  string  `json:"custom_accent_hex"`
 	CustomLogo       string  `json:"custom_logo"`
+	DefaultLanguage  string  `json:"default_language"`
 	EnvOnly          bool    `json:"-"` // Not serialized
 }
 
@@ -70,6 +71,7 @@ func DefaultConfig() Config {
 		Accent:           "blue",
 		CustomAccentHex:  "#2563eb",
 		CustomLogo:       "/static/logo.svg",
+		DefaultLanguage:  "en",
 	}
 }
 

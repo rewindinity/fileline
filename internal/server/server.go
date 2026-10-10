@@ -24,6 +24,7 @@ import (
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/storage"
+	"fileline/internal/translations"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -88,6 +89,9 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 				exp++
 			}
 			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+		},
+		"T": func(lang, key string) string {
+			return translations.GetString(lang, key)
 		},
 	}
 	pages := []string{"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html", "settings_appearance.html", "settings_account.html", "settings_storage.html", "settings_subusers.html"}
@@ -220,12 +224,33 @@ func (s *Server) isConfigured() bool {
 	return true
 }
 
-func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
 	t, ok := s.tmpls[name]
 	if !ok {
 		http.Error(w, "Template not found", http.StatusInternalServerError)
 		log.Printf("Template not found: %s", name)
 		return
+	}
+	// Inject language into data if it's a map
+	if m, ok := data.(map[string]interface{}); ok {
+		lang := s.cfg.DefaultLanguage
+		if lang == "" {
+			lang = "en"
+		}
+		if r != nil {
+			if cookie, err := r.Cookie("lang"); err == nil && cookie.Value != "" {
+				lang = cookie.Value
+			}
+			// If user is logged in, use user's preferred language
+			if username := r.Context().Value("username"); username != nil {
+				if user, err := db.GetUserByUsername(r.Context(), s.db, username.(string)); err == nil && user.Language != "" && user.Language != "global" {
+					lang = user.Language
+				}
+			}
+		}
+		m["Language"] = lang
+		m["Languages"] = translations.AvailableLanguages()
+		m["LanguageNames"] = translations.LanguageNames
 	}
 	if err := t.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("Error rendering template %s: %v", name, err)
@@ -259,7 +284,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "setup.html", map[string]interface{}{
+		s.renderTemplate(w, r, "setup.html", map[string]interface{}{
 			"Title": "Setup", "Config": s.cfg,
 			"DBConfigured": dbConfigured,
 		})
@@ -372,7 +397,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, errorMsg string) {
-	s.renderTemplate(w, "setup.html", map[string]interface{}{
+	s.renderTemplate(w, nil, "setup.html", map[string]interface{}{
 		"Title": "Setup", "Config": s.cfg,
 		"DBConfigured": dbConfigured,
 		"Error":        errorMsg,
@@ -385,7 +410,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "login.html", map[string]interface{}{
+		s.renderTemplate(w, r, "login.html", map[string]interface{}{
 			"Title": "Setup", "Config": s.cfg,
 		})
 		return
@@ -398,14 +423,14 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil {
-			s.renderTemplate(w, "login.html", map[string]interface{}{
+			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title": "Login",
 				"Error": "Invalid credentials",
 			})
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-			s.renderTemplate(w, "login.html", map[string]interface{}{
+			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title": "Setup", "Config": s.cfg,
 				"Error": "Invalid credentials",
 			})
@@ -474,7 +499,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.renderTemplate(w, "dashboard.html", map[string]interface{}{
+	s.renderTemplate(w, r, "dashboard.html", map[string]interface{}{
 		"Title":          "Dashboard",
 		"Username":       username,
 		"User":           user,
@@ -653,7 +678,7 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if user.Role != "admin" && f.UserID != user.ID {
-		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	s.mu.RLock()
@@ -669,7 +694,7 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) render404(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNotFound)
-	s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg,})
+	s.renderTemplate(w, nil, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 }
 
 func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
@@ -748,7 +773,7 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load files", http.StatusInternalServerError)
 		return
 	}
-	s.renderTemplate(w, "files.html", map[string]interface{}{
+	s.renderTemplate(w, r, "files.html", map[string]interface{}{
 		"Title":    "All Files",
 		"Username": username,
 		"User":     user,
@@ -773,10 +798,10 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		user, _ := db.GetUserByUsername(r.Context(), database, username)
 		if user.Role != "admin" && f.UserID != user.ID {
-			s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
-		s.renderTemplate(w, "edit_file.html", map[string]interface{}{
+		s.renderTemplate(w, r, "edit_file.html", map[string]interface{}{
 			"Title":    "Edit File",
 			"Username": username,
 			"User":     user,
@@ -795,7 +820,7 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		user, _ := db.GetUserByUsername(r.Context(), database, username)
 		if user.Role != "admin" && f.UserID != user.ID {
-			http.Error(w, "Forbidden", http.StatusForbidden)
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
 		customName := r.FormValue("custom_name")
@@ -845,7 +870,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	if string(drivesJSONBytes) == "null" {
 		drivesJSONBytes = []byte("[]")
 	}
-	s.renderTemplate(w, "settings.html", map[string]interface{}{
+	s.renderTemplate(w, r, "settings.html", map[string]interface{}{
 		"Title":          "Settings",
 		"Username":       username,
 		"User":           user,
@@ -870,7 +895,7 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	newUsername := r.FormValue("new_username")
@@ -902,7 +927,7 @@ func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	targetUser := r.FormValue("username")
@@ -932,7 +957,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, _ := db.GetUserByUsername(r.Context(), database, username)
 		if user.Role != "admin" {
-			s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
 		s.mu.Lock()
@@ -994,6 +1019,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 
 	if action == "appearance" {
 		theme := r.FormValue("theme")
+		language := r.FormValue("language")
 		var accent string
 		if r.FormValue("use_global_accent") == "on" {
 			accent = "global"
@@ -1005,6 +1031,9 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if accent == "" {
 			accent = "global"
+		}
+		if language == "" {
+			language = "global"
 		}
 
 		s.mu.RLock()
@@ -1022,16 +1051,24 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/settings/appearance?error=Failed+to+update+theme", http.StatusFound)
 			return
 		}
-
+		err = db.UpdateUserLanguage(r.Context(), database, username, language)
+		if err != nil {
+			http.Redirect(w, r, "/settings/appearance?error=Failed+to+update+language", http.StatusFound)
+			return
+		}
 		if user.Role == "admin" {
 			globalTheme := r.FormValue("global_theme")
 			customAccentHex := r.FormValue("custom_accent_hex")
+			globalLanguage := r.FormValue("global_language")
 			s.mu.Lock()
 			if globalTheme != "" {
 				s.cfg.Theme = globalTheme
 			}
 			if customAccentHex != "" {
 				s.cfg.CustomAccentHex = customAccentHex
+			}
+			if globalLanguage != "" {
+				s.cfg.DefaultLanguage = globalLanguage
 			}
 			s.cfg.Save("config.json")
 			s.mu.Unlock()
@@ -1780,13 +1817,13 @@ func (s *Server) settingsAppearanceHandler(w http.ResponseWriter, r *http.Reques
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
-	s.renderTemplate(w, "settings_appearance.html", map[string]interface{}{
-		"Title": "Appearance Settings",
-		"Username": username,
-		"User": user,
-		"Config": cfg,
+	s.renderTemplate(w, r, "settings_appearance.html", map[string]interface{}{
+		"Title":          "Appearance Settings",
+		"Username":       username,
+		"User":           user,
+		"Config":         cfg,
 		"SuccessMessage": successMsg,
-		"ErrorMessage": errorMsg,
+		"ErrorMessage":   errorMsg,
 	})
 }
 
@@ -1808,21 +1845,21 @@ func (s *Server) settingsAccountHandler(w http.ResponseWriter, r *http.Request) 
 			name = fmt.Sprintf("Passkey %d", i+1)
 		}
 		passkeysDisplay = append(passkeysDisplay, map[string]interface{}{
-			"Index":  i + 1,
-			"Name":   name,
-			"ID":     base64.URLEncoding.EncodeToString(pk.Credential.ID),
+			"Index": i + 1,
+			"Name":  name,
+			"ID":    base64.URLEncoding.EncodeToString(pk.Credential.ID),
 		})
 	}
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
-	s.renderTemplate(w, "settings_account.html", map[string]interface{}{
-		"Title": "Account Settings",
-		"Username": username,
-		"User": user,
-		"Config": cfg,
-		"Passkeys": passkeysDisplay,
+	s.renderTemplate(w, r, "settings_account.html", map[string]interface{}{
+		"Title":          "Account Settings",
+		"Username":       username,
+		"User":           user,
+		"Config":         cfg,
+		"Passkeys":       passkeysDisplay,
 		"SuccessMessage": successMsg,
-		"ErrorMessage": errorMsg,
+		"ErrorMessage":   errorMsg,
 	})
 }
 
@@ -1834,7 +1871,7 @@ func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) 
 	s.mu.RUnlock()
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	if user.Role != "admin" {
-		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
@@ -1843,15 +1880,15 @@ func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
-	s.renderTemplate(w, "settings_storage.html", map[string]interface{}{
-		"Title": "Storage Settings",
-		"Username": username,
-		"User": user,
-		"Config": cfg,
-		"DrivesJSON": string(drivesJSONBytes),
-		"EnvOnly": cfg.EnvOnly,
+	s.renderTemplate(w, r, "settings_storage.html", map[string]interface{}{
+		"Title":          "Storage Settings",
+		"Username":       username,
+		"User":           user,
+		"Config":         cfg,
+		"DrivesJSON":     string(drivesJSONBytes),
+		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
-		"ErrorMessage": errorMsg,
+		"ErrorMessage":   errorMsg,
 	})
 }
 
@@ -1863,7 +1900,7 @@ func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request)
 	s.mu.RUnlock()
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	if user.Role != "admin" {
-		s.renderTemplate(w, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 		return
 	}
 	allUsers, _ := db.GetAllUsers(r.Context(), database)
@@ -1889,13 +1926,13 @@ func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request)
 	}
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
-	s.renderTemplate(w, "settings_subusers.html", map[string]interface{}{
-		"Title": "Subusers Settings",
-		"Username": username,
-		"User": user,
-		"Config": cfg,
-		"AllUsers": displayUsers,
+	s.renderTemplate(w, r, "settings_subusers.html", map[string]interface{}{
+		"Title":          "Subusers Settings",
+		"Username":       username,
+		"User":           user,
+		"Config":         cfg,
+		"AllUsers":       displayUsers,
 		"SuccessMessage": successMsg,
-		"ErrorMessage": errorMsg,
+		"ErrorMessage":   errorMsg,
 	})
 }

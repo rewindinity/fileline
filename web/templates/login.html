@@ -1,115 +1,97 @@
-{{template "base.html" .}} {{define "content"}}
-<div>
-  {{if .Error}}
-  <div class="alert alert-error">
-    <img
-      src="/static/icons/bxs-error-circle.svg"
-      alt="Error"
-      style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
-    />
-    {{.Error}}
-  </div>
-  {{end}}
-  <form method="POST" action="/login">
-    <div class="form-group">
-      <label for="username">Username</label>
-      <input type="text" id="username" name="username" required autofocus />
-    </div>
-    <div class="form-group">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" required />
-    </div>
-    <button type="submit" class="btn btn-primary btn-block">Sign In</button>
-  </form>
+{{template "base.html" .}}
 
-  <div style="text-align: center; margin-top: 2rem">
-    <p class="text-muted" style="margin-bottom: 1rem">OR</p>
-    <button type="button" class="btn btn-secondary btn-block" onclick="loginPasskey()">
-      <img src="/static/icons/bxs-key.svg" alt="Passkey" style="width: 20px; filter: brightness(0) invert(0.8)" />
-      Login with Passkey
-    </button>
-    <p id="passkey_status" style="margin-top: 1rem" class="text-muted"></p>
-  </div>
+{{define "content"}}
+<div>
+    {{if .Error}}
+    <div class="alert alert-error">
+        <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+        {{.Error}}
+    </div>
+    {{end}}
+    <form method="POST" action="/login">
+        <div class="form-group">
+            <label for="username">{{ T .Language "Username" }}</label>
+            <input type="text" id="username" name="username" required autofocus>
+        </div>
+        <div class="form-group">
+            <label for="password">{{ T .Language "Password" }}</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">{{ T .Language "Sign In" }}</button>
+    </form>
+
+    <div style="text-align: center; margin-top: 2rem;">
+        <p class="text-muted" style="margin-bottom: 1rem;">{{ T .Language "OR" }}</p>
+        <button type="button" class="btn btn-secondary btn-block" onclick="loginPasskey()">
+            <img src="/static/icons/bxs-key.svg" alt="Passkey" style="width: 20px; filter: brightness(0) invert(0.8);">
+            {{ T .Language "Login with Passkey" }}
+        </button>
+        <p id="passkey_status" style="margin-top: 1rem;" class="text-muted"></p>
+    </div>
 </div>
 
+
 <script>
-  async function loginPasskey() {
-    const status = document.getElementById("passkey_status");
+async function loginPasskey() {
+    const status = document.getElementById('passkey_status');
 
-    status.innerText = "Requesting passkey login (select your account)...";
+    status.innerText = "{{ T .Language "Requesting passkey login (select your account)..." }}";
     status.style.color = "#888";
-
+    
     try {
-      const resp = await fetch("/webauthn/login/begin");
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(errText || "Failed to start login");
-      }
-
-      const options = await resp.json();
-
-      options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
-      if (options.publicKey.allowCredentials) {
-        options.publicKey.allowCredentials.forEach((cred) => {
-          cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, "/").replace(/-/g, "+")), (c) => c.charCodeAt(0));
+        const resp = await fetch('/webauthn/login/begin');
+        if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error(errText || "{{ T .Language "Failed to start login" }}");
+        }
+        
+        const options = await resp.json();
+        
+        options.publicKey.challenge = Uint8Array.from(atob(options.publicKey.challenge.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+        if (options.publicKey.allowCredentials) {
+            options.publicKey.allowCredentials.forEach(cred => {
+                cred.id = Uint8Array.from(atob(cred.id.replace(/_/g, '/').replace(/-/g, '+')), c => c.charCodeAt(0));
+            });
+        }
+        
+        const cred = await navigator.credentials.get({
+            publicKey: options.publicKey
         });
-      }
+        
+        const credential = {
+            id: cred.id,
+            rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+            type: cred.type,
+            response: {
+                authenticatorData: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.authenticatorData))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                signature: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.signature))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
+                userHandle: cred.response.userHandle ? btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.userHandle))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '') : null
+            }
+        };
 
-      const cred = await navigator.credentials.get({
-        publicKey: options.publicKey,
-      });
+        const finishResp = await fetch('/webauthn/login/finish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(credential)
+        });
 
-      const credential = {
-        id: cred.id,
-        rawId: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.rawId)))
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=/g, ""),
-        type: cred.type,
-        response: {
-          authenticatorData: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.authenticatorData)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=/g, ""),
-          clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=/g, ""),
-          signature: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.signature)))
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-            .replace(/=/g, ""),
-          userHandle: cred.response.userHandle
-            ? btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.userHandle)))
-                .replace(/\+/g, "-")
-                .replace(/\//g, "_")
-                .replace(/=/g, "")
-            : null,
-        },
-      };
-
-      const finishResp = await fetch("/webauthn/login/finish", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(credential),
-      });
-
-      if (!finishResp.ok) {
-        const errText = await finishResp.text();
-        throw new Error(errText || "Failed to finish login");
-      }
-
-      const result = await finishResp.json();
-      if (result.redirect) {
-        window.location.href = result.redirect;
-      } else {
-        window.location.href = "/";
-      }
+        if (!finishResp.ok) {
+            const errText = await finishResp.text();
+            throw new Error(errText || "{{ T .Language "Failed to finish login" }}");
+        }
+        
+        const result = await finishResp.json();
+        if (result.redirect) {
+            window.location.href = result.redirect;
+        } else {
+            window.location.href = "/";
+        }
     } catch (e) {
-      console.error(e);
-      status.innerText = "Error: " + e.message;
-      status.style.color = "#ff5252";
+        console.error(e);
+        status.innerText = "Error: " + e.message;
+        status.style.color = "#ff5252";
     }
-  }
+}
 </script>
 {{end}}

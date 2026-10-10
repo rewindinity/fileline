@@ -3,8 +3,8 @@
 {{define "content"}}
 <div class="page-header">
     <div>
-        <h1 style="margin-bottom: 0.25rem;">Settings</h1>
-        <p class="text-muted">Manage your account and server configuration</p>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
     </div>
 </div>
 
@@ -24,24 +24,24 @@
 <div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
     <!-- Account Security Section -->
     <!-- Appearance Section -->
-<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← Back to Settings</a></div>
+<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← {{ T .Language "Back to Settings" }}</a></div>
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
-            <h2>Storage Configuration</h2>
+            <h2>{{ T .Language "Storage Configuration" }}</h2>
         </div>
         
         <form id="storageForm" method="POST" action="/settings/action/storage">
             <div class="form-group">
-                <label for="storage_type">Primary Storage Type</label>
+                <label for="storage_type">{{ T .Language "Primary Storage Type" }}</label>
                 <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
-                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>Local Disk</option>
-                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>S3 / Object Storage</option>
+                    <option value="local" {{if eq .Config.StorageType "local"}}selected{{end}}>{{ T $.Language "Local Disk" }}</option>
+                    <option value="s3" {{if eq .Config.StorageType "s3"}}selected{{end}}>{{ T $.Language "S3 / Object Storage" }}</option>
                 </select>
             </div>
 
             <div id="local_storage_fields" style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                 <div class="form-group" style="margin-bottom: 0;">
-                    <label for="local_path">Uploads Path</label>
+                    <label for="local_path">{{ T .Language "Uploads Path" }}</label>
                     <input type="text" id="local_path" name="local_path" value="{{.Config.LocalStoragePath}}">
                 </div>
             </div>
@@ -49,39 +49,39 @@
             <div id="s3_storage_fields" style="display: none; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
-                        <label for="s3_endpoint">S3 Endpoint</label>
+                        <label for="s3_endpoint">{{ T .Language "S3 Endpoint" }}</label>
                         <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
                     </div>
                     <div class="form-group">
-                        <label for="s3_region">S3 Region</label>
+                        <label for="s3_region">{{ T .Language "S3 Region" }}</label>
                         <input type="text" id="s3_region" name="s3_region" value="{{.Config.S3Region}}">
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="s3_bucket">S3 Bucket</label>
+                    <label for="s3_bucket">{{ T .Language "S3 Bucket" }}</label>
                     <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
-                        <label for="s3_access_key">Access Key</label>
+                        <label for="s3_access_key">{{ T .Language "Access Key" }}</label>
                         <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
                     </div>
                     <div class="form-group">
-                        <label for="s3_secret_key">Secret Key <span class="text-muted">(Leave blank to keep current)</span></label>
+                        <label for="s3_secret_key">{{ T .Language "Secret Key" }} <span class="text-muted">({{ T .Language "Leave blank to keep current" }})</span></label>
                         <input type="password" id="s3_secret_key" name="s3_secret_key">
                     </div>
                 </div>
                 <div class="checkbox-group" style="margin-bottom: 0;">
                     <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}}>
-                    <label for="s3_use_ssl">Use SSL</label>
+                    <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
                 </div>
             </div>
 
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">Additional Storage Drives</h3>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">+ Add Drive</button>
+                <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">{{ T .Language "Additional Storage Drives" }}</h3>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">{{ T .Language "+ Add Drive" }}</button>
             </div>
             
             <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem;">
@@ -91,25 +91,25 @@
 
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
-            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">Upload Limits & Chunking</h3>
+            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Upload Limits & Chunking" }}</h3>
             <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
                 <div class="form-group">
-                    <label for="max_upload_size_mb">Max Upload Size (MB)</label>
+                    <label for="max_upload_size_mb">{{ T .Language "Max Upload Size (MB)" }}</label>
                     <input type="number" id="max_upload_size_mb" name="max_upload_size_mb" value="{{.Config.MaxUploadSizeMB}}" required>
-                    <small class="text-muted">0 for unlimited</small>
+                    <small class="text-muted">{{ T .Language "0 for unlimited" }}</small>
                 </div>
                 <div class="form-group">
-                    <label for="chunk_threshold_mb">Chunk Threshold (MB)</label>
+                    <label for="chunk_threshold_mb">{{ T .Language "Chunk Threshold (MB)" }}</label>
                     <input type="number" id="chunk_threshold_mb" name="chunk_threshold_mb" value="{{.Config.ChunkThresholdMB}}" required>
-                    <small class="text-muted">Files larger than this will be chunked</small>
+                    <small class="text-muted">{{ T .Language "Files larger than this will be chunked" }}</small>
                 </div>
                 <div class="form-group">
-                    <label for="chunk_size_mb">Chunk Size (MB)</label>
+                    <label for="chunk_size_mb">{{ T .Language "Chunk Size (MB)" }}</label>
                     <input type="number" id="chunk_size_mb" name="chunk_size_mb" value="{{.Config.ChunkSizeMB}}" required>
                 </div>
             </div>
 
-            <button type="submit" class="btn btn-primary" onclick="prepareDrivesJson()">Save Storage Config</button>
+            <button type="submit" class="btn btn-primary" onclick="prepareDrivesJson()">{{ T .Language "Save Storage Config" }}</button>
         </form>
     </div>
 
@@ -147,17 +147,17 @@
             const html = `
             <div style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <h4 style="margin: 0; color: var(--accent-primary);">Drive #${idx + 1}</h4>
-                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">Remove</button>
+                    <h4 style="margin: 0; color: var(--accent-primary);">{{ T $.Language "Drive #" }}${idx + 1}</h4>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">{{ T $.Language "Remove" }}</button>
                 </div>
                 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
-                        <label>Drive ID</label>
+                        <label>{{ T $.Language "Drive ID" }}</label>
                         <input type="text" value="${escapeHtml(drive.id)}" onchange="updateDrive(${idx}, 'id', this.value)" required>
                     </div>
                     <div class="form-group">
-                        <label>Display Name</label>
+                        <label>{{ T $.Language "Display Name" }}</label>
                         <input type="text" value="${escapeHtml(drive.name)}" onchange="updateDrive(${idx}, 'name', this.value)" required>
                     </div>
                 </div>
@@ -165,53 +165,53 @@
                 ${drive.type === 'local' ? `
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                         <div class="form-group">
-                            <label>Storage Type</label>
+                            <label>{{ T $.Language "Storage Type" }}</label>
                             <select onchange="updateDrive(${idx}, 'type', this.value)">
-                                <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
-                                <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
+                                <option value="local" ${drive.type === 'local' ? 'selected' : ''}>{{ T $.Language "Local Disk" }}</option>
+                                <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>{{ T $.Language "S3 / Object Storage" }}</option>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Local Path</label>
+                            <label>{{ T $.Language "Uploads Path" }}</label>
                             <input type="text" value="${escapeHtml(drive.local_storage_path || '')}" onchange="updateDrive(${idx}, 'local_storage_path', this.value)" placeholder="./uploads">
                         </div>
                     </div>
                 ` : `
                     <div class="form-group">
-                        <label>Storage Type</label>
+                        <label>{{ T $.Language "Storage Type" }}</label>
                         <select onchange="updateDrive(${idx}, 'type', this.value)">
-                            <option value="local" ${drive.type === 'local' ? 'selected' : ''}>Local Disk</option>
-                            <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>S3 / Object Storage</option>
+                            <option value="local" ${drive.type === 'local' ? 'selected' : ''}>{{ T $.Language "Local Disk" }}</option>
+                            <option value="s3" ${drive.type === 's3' ? 'selected' : ''}>{{ T $.Language "S3 / Object Storage" }}</option>
                         </select>
                     </div>
                 
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                         <div class="form-group">
-                            <label>S3 Endpoint</label>
+                            <label>{{ T $.Language "S3 Endpoint" }}</label>
                             <input type="text" value="${escapeHtml(drive.s3_endpoint || '')}" onchange="updateDrive(${idx}, 's3_endpoint', this.value)">
                         </div>
                         <div class="form-group">
-                            <label>S3 Region</label>
+                            <label>{{ T $.Language "S3 Region" }}</label>
                             <input type="text" value="${escapeHtml(drive.s3_region || '')}" onchange="updateDrive(${idx}, 's3_region', this.value)">
                         </div>
                     </div>
                     <div class="form-group">
-                        <label>S3 Bucket</label>
+                        <label>{{ T $.Language "S3 Bucket" }}</label>
                         <input type="text" value="${escapeHtml(drive.s3_bucket || '')}" onchange="updateDrive(${idx}, 's3_bucket', this.value)">
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                         <div class="form-group">
-                            <label>Access Key</label>
+                            <label>{{ T $.Language "Access Key" }}</label>
                             <input type="text" value="${escapeHtml(drive.s3_access_key || '')}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
                         </div>
                         <div class="form-group">
-                            <label>Secret Key ${drive.s3_secret_key ? '<span class="text-muted">(Set)</span>' : ''}</label>
+                            <label>{{ T $.Language "Secret Key" }} ${drive.s3_secret_key ? '<span class="text-muted">({{ T $.Language "(Set)" }})</span>' : ''}</label>
                             <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
                         </div>
                     </div>
                     <div class="checkbox-group">
                         <input type="checkbox" id="d_s3_use_ssl_${idx}" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${drive.s3_use_ssl ? 'checked' : ''}>
-                        <label for="d_s3_use_ssl_${idx}">Use SSL</label>
+                        <label for="d_s3_use_ssl_${idx}">{{ T $.Language "Use SSL" }}</label>
                     </div>
                 `}
             </div>
@@ -223,7 +223,7 @@
     function addDrive() {
         drives.push({
             id: 'drive_' + Date.now(),
-            name: 'New Drive',
+            name: '{{ T .Language "New Drive" }}',
             type: 'local',
             local_storage_path: './uploads_new',
             s3_use_ssl: true

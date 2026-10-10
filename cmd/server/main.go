@@ -14,12 +14,16 @@ import (
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/server"
+	"fileline/internal/translations"
 )
 
 func main() {
 	envOnly := flag.Bool("env-only", false, "Use only environment variables for configuration")
 	flag.Parse()
-
+	// Load translations
+	if err := translations.Load(); err != nil {
+		log.Printf("Warning: failed to load translations: %v", err)
+	}
 	// Initialize configuration
 	cfg, err := config.Load("config.json", *envOnly)
 	if err != nil {

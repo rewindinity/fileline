@@ -1,96 +1,89 @@
-{{template "base.html" .}} {{define "content"}}
+{{template "base.html" .}}
+
+{{define "content"}}
 <div class="page-header">
-  <div>
-    <h1 style="margin-bottom: 0.25rem">Settings</h1>
-    <p class="text-muted">Manage your account and server configuration</p>
-  </div>
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+    </div>
 </div>
 
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-  <img
-    src="/static/icons/bxs-check-circle.svg"
-    alt="Success"
-    style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%)"
-  />
-  {{.SuccessMessage}}
+    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    {{.SuccessMessage}}
 </div>
-{{end}} {{if .ErrorMessage}}
+{{end}}
+{{if .ErrorMessage}}
 <div class="alert alert-error">
-  <img
-    src="/static/icons/bxs-error-circle.svg"
-    alt="Error"
-    style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%)"
-  />
-  {{.ErrorMessage}}
+    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    {{.ErrorMessage}}
 </div>
 {{end}}
 
-<div style="display: grid; grid-template-columns: 1fr; gap: 2rem">
-  <!-- Account Security Section -->
-  <!-- Appearance Section -->
-  <div style="margin-bottom: 1rem"><a href="/settings" class="btn btn-secondary">← Back to Settings</a></div>
-  <div class="card">
-    <div class="card-header" style="margin-bottom: 2rem">
-      <h2>Users Management</h2>
+<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Account Security Section -->
+    <!-- Appearance Section -->
+<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← {{ T .Language "Back to Settings" }}</a></div>
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>{{ T .Language "Users Management" }}</h2>
+        </div>
+        
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Existing Users" }}</h3>
+        <div class="table-responsive" style="margin-bottom: 2rem;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>{{ T .Language "Username" }}</th>
+                        <th>{{ T .Language "Quota (MB)" }}</th>
+                        <th>{{ T .Language "Storage Used" }}</th>
+                        <th style="text-align: right;">{{ T .Language "Action" }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .AllUsers}}
+                    <tr>
+                        <td style="font-weight: 500;">
+                            {{.User.Username}}
+                            {{if eq .User.Username "admin"}}<span class="badge badge-private" style="margin-left: 0.5rem;">{{ T $.Language "Admin" }}</span>{{end}}
+                        </td>
+                        <td>{{if eq .User.StorageQuotaMB 0}}{{ T $.Language "Unlimited" }}{{else}}{{.User.StorageQuotaMB}}{{end}}</td>
+                        <td>{{.FormattedTotalUsed}}</td>
+                        <td style="text-align: right;">
+                            {{if ne .User.Username "admin"}}
+                            <form method="POST" action="/settings/users/delete" style="margin: 0;" onsubmit="return confirm('{{ T $.Language "Delete user" }} {{.User.Username}} {{ T $.Language "and ALL their files? This cannot be undone." }}')">
+                                <input type="hidden" name="username" value="{{.User.Username}}">
+                                <button type="submit" class="btn btn-danger btn-sm">{{ T $.Language "Delete" }}</button>
+                            </form>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Add Subuser" }}</h3>
+        <form method="POST" action="/settings/users/add">
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: end;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Username" }}</label>
+                    <input type="text" name="new_username" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Password" }}</label>
+                    <input type="password" name="new_password" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Storage Quota (MB, 0 for unl)" }}</label>
+                    <input type="number" name="new_quota" value="5120" required>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary mt-1">{{ T .Language "Create User" }}</button>
+        </form>
     </div>
-
-    <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem">Existing Users</h3>
-    <div class="table-responsive" style="margin-bottom: 2rem">
-      <table>
-        <thead>
-          <tr>
-            <th>Username</th>
-            <th>Quota (MB)</th>
-            <th>Storage Used</th>
-            <th style="text-align: right">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{range .AllUsers}}
-          <tr>
-            <td style="font-weight: 500">{{.User.Username}} {{if eq .User.Username "admin"}}<span class="badge badge-private" style="margin-left: 0.5rem">Admin</span>{{end}}</td>
-            <td>{{if eq .User.StorageQuotaMB 0}}Unlimited{{else}}{{.User.StorageQuotaMB}}{{end}}</td>
-            <td>{{.FormattedTotalUsed}}</td>
-            <td style="text-align: right">
-              {{if ne .User.Username "admin"}}
-              <form
-                method="POST"
-                action="/settings/users/delete"
-                style="margin: 0"
-                onsubmit="return confirm('Delete user {{.User.Username}} and ALL their files? This cannot be undone.')"
-              >
-                <input type="hidden" name="username" value="{{.User.Username}}" />
-                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
-              </form>
-              {{end}}
-            </td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-
-    <hr style="border-color: var(--border-color); margin: 2rem 0" />
-
-    <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem">Add Subuser</h3>
-    <form method="POST" action="/settings/users/add">
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; align-items: end">
-        <div class="form-group" style="margin-bottom: 0">
-          <label>Username</label>
-          <input type="text" name="new_username" required />
-        </div>
-        <div class="form-group" style="margin-bottom: 0">
-          <label>Password</label>
-          <input type="password" name="new_password" required />
-        </div>
-        <div class="form-group" style="margin-bottom: 0">
-          <label>Storage Quota (MB, 0 for unl)</label>
-          <input type="number" name="new_quota" value="5120" required />
-        </div>
-      </div>
-      <button type="submit" class="btn btn-primary mt-1">Create User</button>
-    </form>
-  </div>
 </div>
 {{end}}

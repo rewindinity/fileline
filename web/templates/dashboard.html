@@ -1,277 +1,286 @@
-{{template "base.html" .}} {{define "content"}}
+{{template "base.html" .}}
+
+{{define "content"}}
 <div class="page-header">
-  <div>
-    <h1 style="margin-bottom: 0.25rem">Dashboard</h1>
-    <p class="text-muted">Welcome back, {{.Username}}</p>
-  </div>
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Dashboard" }}</h1>
+        <p class="text-muted">{{ T .Language "Welcome back" }}, {{.Username}}</p>
+    </div>
 </div>
 
 <div class="stats-grid">
-  <div class="stat-card">
-    <div class="stat-label">Total Files (Recent)</div>
-    <div class="stat-value">{{len .Files}}</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-label">Total Storage Used</div>
-    <div class="stat-value">{{FormatSize .TotalUsedBytes}}</div>
-  </div>
+    <div class="stat-card">
+        <div class="stat-label">{{ T .Language "Total Files (Recent)" }}</div>
+        <div class="stat-value">{{len .Files}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">{{ T .Language "Total Storage Used" }}</div>
+        <div class="stat-value">{{FormatSize .TotalUsedBytes}}</div>
+    </div>
 </div>
 
 <div class="card">
-  <div class="card-header">
-    <h2>Upload File</h2>
-  </div>
+    <div class="card-header">
+        <h2>{{ T .Language "Upload File" }}</h2>
+    </div>
+    
+    <form id="uploadForm" enctype="multipart/form-data">
+        <div class="upload-area" id="dropZone">
+            <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" class="upload-icon">
+            <h3>{{ T .Language "Drag & Drop to Upload" }}</h3>
+            <p class="text-muted mb-2">{{ T .Language "or click to browse files" }}</p>
+            <input type="file" id="file" name="file" required style="display: none;">
+            <button type="button" class="btn btn-primary" onclick="document.getElementById('file').click()">{{ T .Language "Select File" }}</button>
+            <p id="fileNameDisplay" style="margin-top: 1rem; font-weight: 500;"></p>
+        </div>
 
-  <form id="uploadForm" enctype="multipart/form-data">
-    <div class="upload-area" id="dropZone">
-      <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" class="upload-icon" />
-      <h3>Drag & Drop to Upload</h3>
-      <p class="text-muted mb-2">or click to browse files</p>
-      <input type="file" id="file" name="file" required style="display: none" />
-      <button type="button" class="btn btn-primary" onclick="document.getElementById('file').click()">Select File</button>
-      <p id="fileNameDisplay" style="margin-top: 1rem; font-weight: 500"></p>
-    </div>
-    <div class="progress-container" id="progressContainer">
-      <div class="progress-bar" id="progressBar"></div>
-    </div>
-    <p id="progressStatus" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--accent-primary); font-weight: 500"></p>
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem">
-      <div class="form-group">
-        <label for="custom_name">Custom Name <span class="text-muted" style="font-weight: 400">(optional)</span></label>
-        <input type="text" id="custom_name" name="custom_name" placeholder="Leave blank to use original name" />
-      </div>
-      <div class="form-group">
-        <label for="url_path">Custom URL Path <span class="text-muted" style="font-weight: 400">(optional)</span></label>
-        <input type="text" id="url_path" name="url_path" placeholder="e.g. 'cat44' for /f/cat44" />
-      </div>
-    </div>
-    <div style="display: flex; gap: 1.5rem; align-items: flex-end">
-      {{if gt (len .EnabledDrives) 0}}
-      <div class="form-group" style="flex: 1; margin-bottom: 0">
-        <label for="drive_id">Storage Drive</label>
-        <select id="drive_id" name="drive_id">
-          <option value="">Default ({{.Config.StorageType}})</option>
-          {{range .EnabledDrives}}
-          <option value="{{.ID}}">{{.Name}}</option>
-          {{end}}
-        </select>
-      </div>
-      {{end}}
-      <div class="checkbox-group" style="flex: 1; margin-bottom: 0">
-        <input type="checkbox" id="is_private" name="is_private" />
-        <label for="is_private">Private File (Requires login to download)</label>
-      </div>
-      <button type="submit" id="uploadBtn" class="btn btn-primary" style="padding: 0.75rem 2rem">Upload</button>
-    </div>
-  </form>
-</div>
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <p id="progressStatus" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--accent-primary); font-weight: 500;"></p>
 
-<div class="card">
-  <div class="card-header">
-    <h2>Recent Files</h2>
-    <a href="/files" class="btn btn-secondary btn-sm">View All</a>
-  </div>
-  <div class="table-responsive">
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>URL</th>
-          <th>Size</th>
-          <th>Privacy</th>
-          <th>Date</th>
-          <th style="text-align: right">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Files}}
-        <tr>
-          <td>
-            <div class="file-name-cell">
-              <img src="/static/icons/bxs-file.svg" alt="File" />
-              {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;">
+            <div class="form-group">
+                <label for="custom_name">{{ T .Language "Custom Name" }} <span class="text-muted" style="font-weight: 400;">({{ T .Language "optional" }})</span></label>
+                <input type="text" id="custom_name" name="custom_name" placeholder="{{ T .Language "Leave blank to use original name" }}">
             </div>
-          </td>
-          <td><a href="/f/{{.URLPath}}" target="_blank">/f/{{.URLPath}}</a></td>
-          <td>{{FormatSize .Size}}</td>
-          <td>
-            {{if .IsPrivate}}
-            <span class="badge badge-private">Private</span>
-            {{else}}
-            <span class="badge badge-public">Public</span>
+            <div class="form-group">
+                <label for="url_path">{{ T .Language "Custom URL Path" }} <span class="text-muted" style="font-weight: 400;">({{ T .Language "optional" }})</span></label>
+                <input type="text" id="url_path" name="url_path" placeholder="{{ T .Language "e.g. 'cat44' for /f/cat44" }}">
+            </div>
+        </div>
+        
+        <div style="display: flex; gap: 1.5rem; align-items: flex-end;">
+            {{if gt (len .EnabledDrives) 0}}
+            <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                <label for="drive_id">{{ T .Language "Storage Drive" }}</label>
+                <select id="drive_id" name="drive_id">
+                    <option value="">{{ T $.Language "Default" }} ({{.Config.StorageType}})</option>
+                    {{range .EnabledDrives}}
+                    <option value="{{.ID}}">{{.Name}}</option>
+                    {{end}}
+                </select>
+            </div>
             {{end}}
-          </td>
-          <td>{{.UploadedAt.Format "Jan 02, 2006"}}</td>
-          <td style="text-align: right">
-            <div class="actions" style="justify-content: flex-end">
-              <a href="/edit?id={{.ID}}" class="icon-btn" title="Edit">
-                <img src="/static/icons/bxs-edit.svg" alt="Edit" />
-              </a>
-              <form method="POST" action="/delete" style="margin: 0; display: inline-block" onsubmit="return confirm('Are you sure you want to delete this file?');">
-                <input type="hidden" name="id" value="{{.ID}}" />
-                <button type="submit" class="icon-btn" title="Delete">
-                  <img src="/static/icons/bxs-trash.svg" alt="Delete" />
-                </button>
-              </form>
+            
+            <div class="checkbox-group" style="flex: 1; margin-bottom: 0;">
+                <input type="checkbox" id="is_private" name="is_private">
+                <label for="is_private">{{ T .Language "Private File (Requires login to download)" }}</label>
             </div>
-          </td>
-        </tr>
-        {{else}}
-        <tr>
-          <td colspan="6" class="text-center text-muted" style="padding: 2rem">No files uploaded yet.</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-  </div>
+            
+            <button type="submit" id="uploadBtn" class="btn btn-primary" style="padding: 0.75rem 2rem;">{{ T .Language "Upload" }}</button>
+        </div>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>{{ T .Language "Recent Files" }}</h2>
+        <a href="/files" class="btn btn-secondary btn-sm">{{ T .Language "View All" }}</a>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>{{ T .Language "Name" }}</th>
+                    <th>{{ T .Language "URL" }}</th>
+                    <th>{{ T .Language "Size" }}</th>
+                    <th>{{ T .Language "Privacy" }}</th>
+                    <th>{{ T .Language "Date" }}</th>
+                    <th style="text-align: right;">{{ T .Language "Actions" }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Files}}
+                <tr>
+                    <td>
+                        <div class="file-name-cell">
+                            <img src="/static/icons/bxs-file.svg" alt="File">
+                            {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
+                        </div>
+                    </td>
+                    <td><a href="/f/{{.URLPath}}" target="_blank">/f/{{.URLPath}}</a></td>
+                    <td>{{FormatSize .Size}}</td>
+                    <td>
+                        {{if .IsPrivate}}
+                        <span class="badge badge-private">{{ T $.Language "Private" }}</span>
+                        {{else}}
+                        <span class="badge badge-public">{{ T $.Language "Public" }}</span>
+                        {{end}}
+                    </td>
+                    <td>{{.UploadedAt.Format "Jan 02, 2006"}}</td>
+                    <td style="text-align: right;">
+                        <div class="actions" style="justify-content: flex-end;">
+                            <a href="/edit?id={{.ID}}" class="icon-btn" title="Edit">
+                                <img src="/static/icons/bxs-edit.svg" alt="Edit">
+                            </a>
+                            <form method="POST" action="/delete" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?')">
+                                <input type="hidden" name="id" value="{{.ID}}">
+                                <button type="submit" class="icon-btn" title="Delete">
+                                    <img src="/static/icons/bxs-trash.svg" alt="Delete">
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6" class="text-center text-muted" style="padding: 2rem;">{{ T .Language "No files uploaded yet." }}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <script>
-  const uploadForm = document.getElementById('uploadForm');
-  const uploadBtn = document.getElementById('uploadBtn');
-  const progressStatus = document.getElementById('progressStatus');
-  const fileInput = document.getElementById('file');
-  const fileNameDisplay = document.getElementById('fileNameDisplay');
-  const dropZone = document.getElementById('dropZone');
-  const progressContainer = document.getElementById('progressContainer');
-  const progressBar = document.getElementById('progressBar');
-  fileInput.addEventListener('change', (e) => {
-      if (e.target.files.length) {
-          fileNameDisplay.textContent = `Selected: ${e.target.files[0].name} (${Math.round(e.target.files[0].size/1024)} KB)`;
-      } else {
-          fileNameDisplay.textContent = '';
-      }
-  });
-  dropZone.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      dropZone.classList.add('dragover');
-  });
-  dropZone.addEventListener('dragleave', (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-  });
-  dropZone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-      if (e.dataTransfer.files.length) {
-          fileInput.files = e.dataTransfer.files;
-          fileInput.dispatchEvent(new Event('change'));
-      }
-  });
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressStatus = document.getElementById('progressStatus');
+    const fileInput = document.getElementById('file');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const dropZone = document.getElementById('dropZone');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar');
 
-  uploadForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      if (!fileInput.files.length) return;
-      const file = fileInput.files[0];
-      const customName = document.getElementById('custom_name').value;
-      const urlPath = document.getElementById('url_path').value;
-      const isPrivate = document.getElementById('is_private').checked;
-      const driveSelect = document.getElementById('drive_id');
-      const driveId = driveSelect ? driveSelect.value : '';
-      const maxUploadSize = {{.Config.MaxUploadSizeMB}} * 1024 * 1024;
-      const chunkThreshold = {{.Config.ChunkThresholdMB}} * 1024 * 1024;
-      const chunkSize = {{.Config.ChunkSizeMB}} * 1024 * 1024;
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) {
+            fileNameDisplay.textContent = `Selected: ${e.target.files[0].name} (${Math.round(e.target.files[0].size/1024)} KB)`;
+        } else {
+            fileNameDisplay.textContent = '';
+        }
+    });
 
-      if (maxUploadSize > 0 && file.size > maxUploadSize) {
-          alert('File is too large. Maximum size is ' + {{.Config.MaxUploadSizeMB}} + ' MB');
-          return;
-      }
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            fileInput.dispatchEvent(new Event('change'));
+        }
+    });
 
-      uploadBtn.disabled = true;
-      uploadBtn.innerHTML = '<img src="/static/icons/bx-loader-alt.svg" class="spin" style="width:16px;"> Uploading...';
-      progressContainer.style.display = 'block';
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!fileInput.files.length) return;
 
-      if (file.size > chunkThreshold) {
-          // Chunked upload
-          progressStatus.innerText = 'Initializing...';
-          progressBar.style.width = '5%';
+        const file = fileInput.files[0];
+        const customName = document.getElementById('custom_name').value;
+        const urlPath = document.getElementById('url_path').value;
+        const isPrivate = document.getElementById('is_private').checked;
+        const driveSelect = document.getElementById('drive_id');
+        const driveId = driveSelect ? driveSelect.value : '';
 
-          try {
-              const totalChunks = Math.ceil(file.size / chunkSize);
-              const initRes = await fetch('/api/upload/init', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                      file_name: file.name,
-                      total_size: file.size,
-                      total_chunks: totalChunks,
-                      is_private: isPrivate,
-                      custom_name: customName,
-                      url_path: urlPath,
-                      drive_id: driveId
-                  })
-              });
+        const maxUploadSize = {{.Config.MaxUploadSizeMB}} * 1024 * 1024;
+        const chunkThreshold = {{.Config.ChunkThresholdMB}} * 1024 * 1024;
+        const chunkSize = {{.Config.ChunkSizeMB}} * 1024 * 1024;
 
-              if (!initRes.ok) throw new Error(await initRes.text());
-              const { upload_id } = await initRes.json();
+        if (maxUploadSize > 0 && file.size > maxUploadSize) {
+            alert('File is too large. Maximum size is ' + {{.Config.MaxUploadSizeMB}} + ' MB');
+            return;
+        }
 
-              for (let i = 0; i < totalChunks; i++) {
-                  progressStatus.innerText = `Uploading chunk ${i + 1} of ${totalChunks}...`;
-                  progressBar.style.width = `${5 + (90 * (i / totalChunks))}%`;
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = '<img src="/static/icons/bx-loader-alt.svg" class="spin" style="width:16px;"> Uploading...';
+        progressContainer.style.display = 'block';
 
-                  const start = i * chunkSize;
-                  const end = Math.min(start + chunkSize, file.size);
-                  const chunk = file.slice(start, end);
-
-                  const formData = new FormData();
-                  formData.append('upload_id', upload_id);
-                  formData.append('chunk_index', i);
-                  formData.append('chunk', chunk);
-
-                  const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
-                  if (!chunkRes.ok) throw new Error('Failed to upload chunk ' + i);
-              }
-
-              progressStatus.innerText = 'Finalizing upload...';
-              progressBar.style.width = '98%';
-
-              const completeRes = await fetch('/api/upload/complete', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ upload_id })
-              });
-              if (!completeRes.ok) throw new Error(await completeRes.text());
-              progressBar.style.width = '100%';
-              window.location.reload();
-          } catch (err) {
-              progressStatus.innerText = 'Error: ' + err.message;
-              progressStatus.style.color = 'var(--error)';
-              uploadBtn.disabled = false;
-              uploadBtn.innerHTML = 'Upload';
-          }
-      } else {
-          // Regular upload
-          progressStatus.innerText = 'Uploading...';
-          progressBar.style.width = '50%';
-          const formData = new FormData();
-          formData.append('file', file);
-          formData.append('custom_name', customName);
-          formData.append('url_path', urlPath);
-          if (driveId) formData.append('drive_id', driveId);
-          if (isPrivate) formData.append('is_private', 'on');
-          try {
-              const res = await fetch('/upload', { method: 'POST', body: formData });
-              if (!res.ok) throw new Error(await res.text());
-              progressBar.style.width = '100%';
-              window.location.reload();
-          } catch (err) {
-              progressStatus.innerText = 'Error: ' + err.message;
-              progressStatus.style.color = 'var(--error)';
-              uploadBtn.disabled = false;
-              uploadBtn.innerHTML = 'Upload';
-          }
-      }
-  });
+        if (file.size > chunkThreshold) {
+            // Chunked upload
+            progressStatus.innerText = 'Initializing...';
+            progressBar.style.width = '5%';
+            
+            try {
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                
+                const initRes = await fetch('/api/upload/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_name: file.name,
+                        total_size: file.size,
+                        total_chunks: totalChunks,
+                        is_private: isPrivate,
+                        custom_name: customName,
+                        url_path: urlPath,
+                        drive_id: driveId
+                    })
+                });
+                
+                if (!initRes.ok) throw new Error(await initRes.text());
+                const { upload_id } = await initRes.json();
+                
+                for (let i = 0; i < totalChunks; i++) {
+                    progressStatus.innerText = `Uploading chunk ${i + 1} of ${totalChunks}...`;
+                    progressBar.style.width = `${5 + (90 * (i / totalChunks))}%`;
+                    
+                    const start = i * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+                    
+                    const formData = new FormData();
+                    formData.append('upload_id', upload_id);
+                    formData.append('chunk_index', i);
+                    formData.append('chunk', chunk);
+                    
+                    const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+                    if (!chunkRes.ok) throw new Error('Failed to upload chunk ' + i);
+                }
+                
+                progressStatus.innerText = 'Finalizing upload...';
+                progressBar.style.width = '98%';
+                
+                const completeRes = await fetch('/api/upload/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ upload_id })
+                });
+                
+                if (!completeRes.ok) throw new Error(await completeRes.text());
+                
+                progressBar.style.width = '100%';
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = 'Error: ' + err.message;
+                progressStatus.style.color = 'var(--error)';
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = 'Upload';
+            }
+        } else {
+            // Regular upload
+            progressStatus.innerText = 'Uploading...';
+            progressBar.style.width = '50%';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('custom_name', customName);
+            formData.append('url_path', urlPath);
+            if (driveId) formData.append('drive_id', driveId);
+            if (isPrivate) formData.append('is_private', 'on');
+            
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error(await res.text());
+                progressBar.style.width = '100%';
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = 'Error: ' + err.message;
+                progressStatus.style.color = 'var(--error)';
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = 'Upload';
+            }
+        }
+    });
 </script>
 <style>
-  @keyframes spin {
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-  .spin {
-    animation: spin 1s linear infinite;
-    filter: brightness(0) invert(1);
-  }
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; filter: brightness(0) invert(1); }
 </style>
 {{end}}

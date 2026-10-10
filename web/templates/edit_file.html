@@ -1,45 +1,47 @@
-{{template "base.html" .}} {{define "content"}}
+{{template "base.html" .}}
+
+{{define "content"}}
 <div class="page-header">
-  <div>
-    <h1 style="margin-bottom: 0.25rem">Edit File</h1>
-    <p class="text-muted">Update file details</p>
-  </div>
-  <div class="header-actions">
-    <a href="/files" class="btn btn-secondary">
-      <img src="/static/icons/bx-arrow-back.svg" alt="Back" style="width: 18px; filter: brightness(0) invert(0.6)" />
-      Back to Files
-    </a>
-  </div>
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Edit File" }}</h1>
+        <p class="text-muted">{{ T .Language "Update file details" }}</p>
+    </div>
+    <div class="header-actions">
+        <a href="/files" class="btn btn-secondary">
+            <img src="/static/icons/bx-arrow-back.svg" alt="Back" style="width: 18px; filter: brightness(0) invert(0.6);">
+            {{ T .Language "Back to Files" }}
+        </a>
+    </div>
 </div>
 
-<div class="card" style="max-width: 600px; margin: 0 auto">
-  <form method="POST" action="/edit">
-    <input type="hidden" name="id" value="{{.File.ID}}" />
-
-    <div class="form-group">
-      <label>Original Name <span class="text-muted">(Read-only)</span></label>
-      <input type="text" value="{{.File.OriginalName}}" readonly style="background-color: var(--bg-base); opacity: 0.7; cursor: not-allowed" />
-    </div>
-
-    <div class="form-group">
-      <label for="custom_name">Custom Name</label>
-      <input type="text" id="custom_name" name="custom_name" value="{{.File.CustomName}}" />
-    </div>
-
-    <div class="form-group">
-      <label for="url_path">URL Path</label>
-      <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}" />
-    </div>
-
-    <div class="checkbox-group mt-1 mb-2">
-      <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}} />
-      <label for="is_private">Private File (requires login)</label>
-    </div>
-
-    <div style="display: flex; gap: 1rem">
-      <a href="/files" class="btn btn-secondary" style="flex: 1">Cancel</a>
-      <button type="submit" class="btn btn-primary" style="flex: 1">Save Changes</button>
-    </div>
-  </form>
+<div class="card" style="max-width: 600px; margin: 0 auto;">
+    <form method="POST" action="/edit">
+        <input type="hidden" name="id" value="{{.File.ID}}">
+        
+        <div class="form-group">
+            <label>{{ T .Language "Original Name" }} <span class="text-muted">({{ T .Language "Read-only" }})</span></label>
+            <input type="text" value="{{.File.OriginalName}}" readonly style="background-color: var(--bg-base); opacity: 0.7; cursor: not-allowed;">
+        </div>
+        
+        <div class="form-group">
+            <label for="custom_name">{{ T .Language "Custom Name" }}</label>
+            <input type="text" id="custom_name" name="custom_name" value="{{.File.CustomName}}">
+        </div>
+        
+        <div class="form-group">
+            <label for="url_path">{{ T .Language "URL Path" }}</label>
+            <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}">
+        </div>
+        
+        <div class="checkbox-group mt-1 mb-2">
+            <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}}>
+            <label for="is_private">{{ T .Language "Private File (requires login)" }}</label>
+        </div>
+        
+        <div style="display: flex; gap: 1rem;">
+            <a href="/files" class="btn btn-secondary" style="flex: 1;">{{ T .Language "Cancel" }}</a>
+            <button type="submit" class="btn btn-primary" style="flex: 1;">{{ T .Language "Save Changes" }}</button>
+        </div>
+    </form>
 </div>
 {{end}}
