@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -61,12 +63,20 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		},
 	}
 	pages := []string{
-		"setup.html", "login.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
+		"setup.html", "login.html", "login_2fa.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
 		"settings_appearance.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
 	}
+	templateDir := "web/templates"
+	if _, err := os.Stat(filepath.Join(templateDir, "base.html")); err != nil {
+		if _, err2 := os.Stat(filepath.Join("../../web/templates", "base.html")); err2 == nil {
+			templateDir = "../../web/templates"
+		}
+	}
 	for _, page := range pages {
+		basePath := filepath.Join(templateDir, "base.html")
+		pagePath := filepath.Join(templateDir, page)
 		t := template.New("base.html").Funcs(funcs)
-		t, err := t.ParseFiles("web/templates/base.html", "web/templates/"+page)
+		t, err := t.ParseFiles(basePath, pagePath)
 		if err != nil {
 			logger.Error("Failed to parse template %s: %v", page, err)
 		} else {
@@ -156,6 +166,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
 	mux.HandleFunc("/webauthn/register/begin", s.requireAuth(s.webAuthnRegisterBegin))
 	mux.HandleFunc("/webauthn/register/finish", s.requireAuth(s.webAuthnRegisterFinish))
+	mux.HandleFunc("/settings/webauthn/rename", s.requireAuth(s.webAuthnRenameHandler))
 	mux.HandleFunc("/settings/webauthn/delete", s.requireAuth(s.webAuthnDeleteHandler))
 	// Main Dashboard route (render.go)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
@@ -343,7 +354,7 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, msg strin
 		logger.Error("%s", msg)
 	}
 
-	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webauthn/") || strings.HasPrefix(r.URL.Path, "/settings/2fa/generate") {
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webauthn/") || strings.HasPrefix(r.URL.Path, "/settings/2fa/generate") || strings.HasPrefix(r.URL.Path, "/settings/webauthn/") {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error": "Internal Server Error"}`))

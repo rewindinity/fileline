@@ -3,18 +3,22 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"fileline/internal/auth"
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/logger"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/pquerna/otp/totp"
 )
 
@@ -247,5 +251,206 @@ func TestRecoveryMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(stderrBuf.String(), "[ERROR] PANIC in HTTP handler: nil pointer dereference") {
 		t.Fatalf("expected panic in stderr log, got: %s", stderrBuf.String())
+	}
+}
+
+func TestPasskeyRenameAndDelete(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate db: %v", err)
+	}
+
+	err = db.CreateAdmin(context.Background(), database, "passkeyuser", "hashedpw")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	// Insert initial passkey
+	credID := []byte("credential-123456")
+	encodedID := base64.URLEncoding.EncodeToString(credID)
+	initialPasskeys := []auth.Passkey{
+		{
+			Credential: webauthn.Credential{
+				ID: credID,
+			},
+			Name: "Initial Key",
+		},
+	}
+	pkJSON, _ := json.Marshal(initialPasskeys)
+	db.UpdateUserAuthData(context.Background(), database, "passkeyuser", "", string(pkJSON))
+
+	srv := New(cfg, database)
+	ctx := context.WithValue(context.Background(), "username", "passkeyuser")
+
+	// 1. Rename passkey to custom name
+	renameBody := fmt.Sprintf(`{"id": "%s", "name": "My YubiKey"}`, encodedID)
+	renameReq := httptest.NewRequest("POST", "/settings/webauthn/rename", strings.NewReader(renameBody)).WithContext(ctx)
+	renameReq.Header.Set("Content-Type", "application/json")
+	renameReq.Header.Set("Accept", "application/json")
+	renameRR := httptest.NewRecorder()
+	srv.webAuthnRenameHandler(renameRR, renameReq)
+
+	if renameRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", renameRR.Code, renameRR.Body.String())
+	}
+	var res map[string]string
+	if err := json.Unmarshal(renameRR.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+	if res["name"] != "My YubiKey" {
+		t.Fatalf("expected renamed 'My YubiKey', got %s", res["name"])
+	}
+
+	// Verify in DB
+	u, _ := db.GetUserByUsername(context.Background(), database, "passkeyuser")
+	var savedPK []auth.Passkey
+	json.Unmarshal([]byte(u.WebAuthnData), &savedPK)
+	if len(savedPK) != 1 || savedPK[0].Name != "My YubiKey" {
+		t.Fatalf("expected 'My YubiKey' in DB, got: %v", savedPK)
+	}
+
+	// 2. Rename with empty name -> fallback to timestamp format
+	emptyRenameBody := fmt.Sprintf(`{"id": "%s", "name": "   "}`, encodedID)
+	emptyReq := httptest.NewRequest("POST", "/settings/webauthn/rename", strings.NewReader(emptyRenameBody)).WithContext(ctx)
+	emptyReq.Header.Set("Content-Type", "application/json")
+	emptyReq.Header.Set("Accept", "application/json")
+	emptyRR := httptest.NewRecorder()
+	srv.webAuthnRenameHandler(emptyRR, emptyReq)
+
+	if emptyRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", emptyRR.Code, emptyRR.Body.String())
+	}
+	res = nil
+	json.Unmarshal(emptyRR.Body.Bytes(), &res)
+	if !strings.HasPrefix(res["name"], "Passkey 20") {
+		t.Fatalf("expected timestamp passkey name, got %s", res["name"])
+	}
+
+	// 3. Rename non-existent ID -> 404
+	badReq := httptest.NewRequest("POST", "/settings/webauthn/rename", strings.NewReader(`{"id":"non-existent","name":"Test"}`)).WithContext(ctx)
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("Accept", "application/json")
+	badRR := httptest.NewRecorder()
+	srv.webAuthnRenameHandler(badRR, badReq)
+	if badRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for non-existent passkey, got %d", badRR.Code)
+	}
+
+	// 4. Delete passkey
+	delBody := fmt.Sprintf(`{"id": "%s"}`, encodedID)
+	delReq := httptest.NewRequest("POST", "/settings/webauthn/delete", strings.NewReader(delBody)).WithContext(ctx)
+	delReq.Header.Set("Content-Type", "application/json")
+	delReq.Header.Set("Accept", "application/json")
+	delRR := httptest.NewRecorder()
+	srv.webAuthnDeleteHandler(delRR, delReq)
+
+	if delRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", delRR.Code)
+	}
+	u, _ = db.GetUserByUsername(context.Background(), database, "passkeyuser")
+	if u.WebAuthnData != "[]" {
+		t.Fatalf("expected empty passkeys '[]', got: %s", u.WebAuthnData)
+	}
+}
+
+func TestLogin2FAHandler(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		JWTKey:    "test-jwt-secret-key-12345",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate db: %v", err)
+	}
+
+	totpSecret, _ := totp.Generate(totp.GenerateOpts{
+		Issuer:      "FileLine",
+		AccountName: "totpuser",
+	})
+	err = db.CreateAdmin(context.Background(), database, "totpuser", "hashedpw")
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+	db.UpdateUserAuthData(context.Background(), database, "totpuser", totpSecret.Secret(), "[]")
+
+	srv := New(cfg, database)
+
+	// Session setup
+	sessionID := "test-2fa-session-xyz"
+	srv.login2FAStore.Store(sessionID, "totpuser")
+
+	// 1. GET /login/2fa with 2fa_session cookie
+	getReq := httptest.NewRequest("GET", "/login/2fa", nil)
+	getReq.AddCookie(&http.Cookie{Name: "2fa_session", Value: sessionID})
+	getRR := httptest.NewRecorder()
+	srv.login2FAHandler(getRR, getReq)
+
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", getRR.Code)
+	}
+	body := getRR.Body.String()
+	if !strings.Contains(body, "two-factor-input") || !strings.Contains(body, "name=\"code\"") {
+		t.Fatalf("expected 2FA form in body, got: %s", body)
+	}
+	if !strings.Contains(body, "totpuser") {
+		t.Fatalf("expected target username in body, got: %s", body)
+	}
+
+	// 2. POST with invalid 2FA code
+	invalidForm := strings.NewReader("code=000000")
+	invalidReq := httptest.NewRequest("POST", "/login/2fa", invalidForm)
+	invalidReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	invalidReq.AddCookie(&http.Cookie{Name: "2fa_session", Value: sessionID})
+	invalidRR := httptest.NewRecorder()
+	srv.login2FAHandler(invalidRR, invalidReq)
+
+	if invalidRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK re-rendered on error, got %d", invalidRR.Code)
+	}
+	invalidBody := invalidRR.Body.String()
+	if !strings.Contains(invalidBody, "alert alert-error") {
+		t.Fatalf("expected error alert on invalid code, got: %s", invalidBody)
+	}
+
+	// 3. POST with valid 2FA code
+	validCode, _ := totp.GenerateCode(totpSecret.Secret(), time.Now())
+	validForm := strings.NewReader("code=" + validCode)
+	validReq := httptest.NewRequest("POST", "/login/2fa", validForm)
+	validReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validReq.AddCookie(&http.Cookie{Name: "2fa_session", Value: sessionID})
+	validRR := httptest.NewRecorder()
+	srv.login2FAHandler(validRR, validReq)
+
+	if validRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 Found redirect to dashboard, got %d", validRR.Code)
+	}
+	if loc := validRR.Header().Get("Location"); loc != "/" {
+		t.Fatalf("expected redirect to '/', got %s", loc)
+	}
+	// Check JWT session cookie set
+	cookies := validRR.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "session" {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatalf("expected JWT session cookie to be set")
 	}
 }

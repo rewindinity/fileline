@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"fileline/internal/auth"
@@ -203,7 +204,7 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	passkeyName := r.URL.Query().Get("name")
+	passkeyName := strings.TrimSpace(r.URL.Query().Get("name"))
 	if passkeyName == "" {
 		passkeyName = "Passkey " + time.Now().Format("2006-01-02 15:04")
 	}
@@ -227,13 +228,44 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) webAuthnRenameHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
 		return
 	}
 	username := r.Context().Value("username").(string)
-	idToDelete := r.FormValue("id")
+
+	var idToRename, newName string
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var reqData struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err == nil {
+			idToRename = reqData.ID
+			newName = strings.TrimSpace(reqData.Name)
+		}
+	} else {
+		idToRename = r.FormValue("id")
+		newName = strings.TrimSpace(r.FormValue("name"))
+	}
+
+	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+
+	if idToRename == "" {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error": "Missing passkey id"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=Missing+passkey+id", http.StatusFound)
+		return
+	}
+
+	if newName == "" {
+		newName = "Passkey " + time.Now().Format("2006-01-02 15:04")
+	}
 
 	s.mu.RLock()
 	database := s.db
@@ -241,11 +273,118 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.WebAuthnData == "" {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "User or passkeys not found"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
+		return
+	}
+
+	var passkeys []auth.Passkey
+	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "Failed to parse passkeys"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=Failed+to+parse+passkeys", http.StatusFound)
+		return
+	}
+
+	renamed := false
+	for i := range passkeys {
+		encodedID := base64.URLEncoding.EncodeToString(passkeys[i].Credential.ID)
+		if encodedID == idToRename {
+			passkeys[i].Name = newName
+			renamed = true
+			break
+		}
+	}
+
+	if !renamed {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "Passkey not found"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=Passkey+not+found", http.StatusFound)
+		return
+	}
+
+	updatedJSON, err := json.Marshal(passkeys)
+	if err != nil {
+		s.internalError(w, r, "Failed to encode updated passkeys", err)
+		return
+	}
+
+	if err := db.UpdateUserAuthData(r.Context(), database, username, user.TOTPSecret, string(updatedJSON)); err != nil {
+		s.internalError(w, r, "Failed to update passkey name in database", err)
+		return
+	}
+
+	logger.Action("User '%s' renamed passkey id '%s' to '%s'", username, idToRename, newName)
+
+	if isJSON {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status": "ok",
+			"name":   newName,
+		})
+		return
+	}
+	http.Redirect(w, r, "/settings/account?success=Passkey+renamed+successfully", http.StatusFound)
+}
+
+func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+
+	var idToDelete string
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var reqData struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err == nil {
+			idToDelete = reqData.ID
+		}
+	} else {
+		idToDelete = r.FormValue("id")
+	}
+
+	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.WebAuthnData == "" {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "User or passkeys not found"}`))
+			return
+		}
 		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
 		return
 	}
 	var passkeys []auth.Passkey
 	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "Failed to parse passkeys"}`))
+			return
+		}
 		http.Redirect(w, r, "/settings/account?error=Failed+to+parse+passkeys", http.StatusFound)
 		return
 	}
@@ -260,6 +399,12 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		updatedPasskeys = append(updatedPasskeys, pk)
 	}
 	if !deleted {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "Passkey not found"}`))
+			return
+		}
 		http.Redirect(w, r, "/settings/account?error=Passkey+not+found", http.StatusFound)
 		return
 	}
@@ -274,5 +419,12 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	logger.Action("User '%s' deleted passkey id '%s'", username, idToDelete)
+
+	if isJSON {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+		return
+	}
 	http.Redirect(w, r, "/settings/account?success=Passkey+deleted+successfully", http.StatusFound)
 }

@@ -169,5 +169,20 @@
   "Complete Setup": "Installatie voltooien",
   "File Not Found": "Bestand niet gevonden",
   "The requested file does not exist or you don't have permission to view it.": "Het gevraagde bestand bestaat niet of u heeft geen toestemming om het te bekijken.",
-  "Return to Dashboard": "Terug naar het dashboard"
+  "Return to Dashboard": "Terug naar het dashboard",
+  "Edit": "Bewerken",
+  "Edit Passkey": "Passkey bewerken",
+  "Edit Passkey Name": "Passkey-naam bewerken",
+  "Continue": "Doorgaan",
+  "Close": "Sluiten",
+  "Leave empty for default timestamp name": "Laat leeg voor standaardnaam met tijdstempel",
+  "Waiting for device passkey prompt...": "Wachten op passkey-prompt op het apparaat...",
+  "Passkey renamed successfully!": "Passkey succesvol hernoemd!",
+  "Delete Passkey": "Passkey verwijderen",
+  "Are you sure you want to delete this passkey?": "Weet u zeker dat u deze passkey wilt verwijderen?",
+  "Two-Factor Authentication": "Tweeledige verificatie",
+  "Enter the 6-digit code from your authenticator app": "Voer de 6-cijferige code in van uw authenticator-app",
+  "Verify & Continue": "Verifiëren & Doorgaan",
+  "Invalid verification code": "Ongeldige verificatiecode",
+  "Back to Login": "Terug naar inloggen"
 }

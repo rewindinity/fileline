@@ -52,8 +52,8 @@
             <div class="alert alert-success" style="margin-bottom: 1.5rem;">
                 <strong>{{ T .Language "2FA is currently ENABLED." }}</strong>
             </div>
-            <form method="POST" action="/settings/2fa/disable">
-                <button type="submit" class="btn btn-danger" onclick="return confirm('{{ T .Language "Disable 2FA? This will reduce your account security." }}')">{{ T .Language "Disable 2FA" }}</button>
+            <form method="POST" action="/settings/2fa/disable" id="disable2faForm">
+                <button type="button" class="btn btn-danger" onclick="confirmDisable2FA()">{{ T .Language "Disable 2FA" }}</button>
             </form>
         {{else}}
             <button id="generateTOTPBtn" class="btn btn-primary">{{ T .Language "Set up 2FA" }}</button>
@@ -77,7 +77,7 @@
 
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
             <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">{{ T .Language "Passkeys (WebAuthn)" }}</h3>
-            <button type="button" class="btn btn-primary btn-sm" onclick="registerPasskey()">{{ T .Language "Register New Passkey" }}</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openRegisterPasskeyModal()">{{ T .Language "Register New Passkey" }}</button>
         </div>
         
         <p id="passkey_status" class="text-muted"></p>
@@ -91,15 +91,22 @@
                             <th style="text-align: right;">{{ T .Language "Action" }}</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="passkeysTableBody">
                         {{range .Passkeys}}
-                        <tr>
-                            <td>{{.Name}}</td>
+                        <tr id="passkey-row-{{.ID}}">
+                            <td>
+                                <span id="passkey-name-{{.ID}}" style="font-weight: 500;">{{.Name}}</span>
+                            </td>
                             <td style="text-align: right;">
-                                <form method="POST" action="/settings/webauthn/delete" style="margin: 0;">
-                                    <input type="hidden" name="id" value="{{.ID}}">
-                                    <button type="submit" class="btn btn-danger btn-sm">{{ T $.Language "Delete" }}</button>
-                                </form>
+                                <div style="display: inline-flex; gap: 0.5rem; align-items: center; justify-content: flex-end;">
+                                    <button type="button" class="btn btn-secondary btn-sm" onclick="openEditPasskeyModal('{{.ID}}', document.getElementById('passkey-name-{{.ID}}').textContent)">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 3px;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                        {{ T $.Language "Edit" }}
+                                    </button>
+                                    <button type="button" class="btn btn-danger btn-sm" onclick="confirmDeletePasskey('{{.ID}}', document.getElementById('passkey-name-{{.ID}}').textContent)">
+                                        {{ T $.Language "Delete" }}
+                                    </button>
+                                </div>
                             </td>
                         </tr>
                         {{end}}
@@ -107,13 +114,167 @@
                 </table>
             </div>
         {{else}}
-            <p class="text-muted">{{ T .Language "No passkeys registered." }}</p>
+            <p class="text-muted" id="noPasskeysMsg">{{ T .Language "No passkeys registered." }}</p>
         {{end}}
     </div>
 
-    <!-- Storage Configuration Section -->
+    <!-- Register Passkey Modal -->
+    <div id="registerPasskeyModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'registerPasskeyModal')">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="registerModalTitle">
+            <div class="modal-header">
+                <h3 id="registerModalTitle">{{ T .Language "Register New Passkey" }}</h3>
+                <button type="button" class="modal-close" onclick="closeModal('registerPasskeyModal')" aria-label="{{ T .Language "Close" }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <form id="registerPasskeyForm" onsubmit="handleRegisterPasskeySubmit(event)">
+                <div class="modal-body">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label for="regPasskeyName">{{ T .Language "Passkey Name" }}</label>
+                        <input type="text" id="regPasskeyName" placeholder="" autocomplete="off">
+                        <span class="form-hint">{{ T .Language "Leave empty for default timestamp name" }}</span>
+                    </div>
+                    <div id="regPasskeyStatus" class="modal-status"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('registerPasskeyModal')" id="regPasskeyCancelBtn">{{ T .Language "Cancel" }}</button>
+                    <button type="submit" class="btn btn-primary" id="regPasskeySubmitBtn">{{ T .Language "Continue" }}</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Passkey Modal -->
+    <div id="editPasskeyModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'editPasskeyModal')">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
+            <div class="modal-header">
+                <h3 id="editModalTitle">{{ T .Language "Edit Passkey Name" }}</h3>
+                <button type="button" class="modal-close" onclick="closeModal('editPasskeyModal')" aria-label="{{ T .Language "Close" }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <form id="editPasskeyForm" onsubmit="handleEditPasskeySubmit(event)">
+                <div class="modal-body">
+                    <input type="hidden" id="editPasskeyId">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label for="editPasskeyName">{{ T .Language "Passkey Name" }}</label>
+                        <input type="text" id="editPasskeyName" autocomplete="off">
+                        <span class="form-hint">{{ T .Language "Leave empty for default timestamp name" }}</span>
+                    </div>
+                    <div id="editPasskeyStatus" class="modal-status"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('editPasskeyModal')" id="editPasskeyCancelBtn">{{ T .Language "Cancel" }}</button>
+                    <button type="submit" class="btn btn-primary" id="editPasskeySubmitBtn">{{ T .Language "Save" }}</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Confirm Modal -->
+    <div id="confirmModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'confirmModal')">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+            <div class="modal-header">
+                <h3 id="confirmModalTitle"></h3>
+                <button type="button" class="modal-close" onclick="closeModal('confirmModal')" aria-label="{{ T .Language "Close" }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmModalMessage" style="margin-bottom: 0;"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('confirmModal')">{{ T .Language "Cancel" }}</button>
+                <button type="button" class="btn btn-danger" id="confirmModalActionBtn">{{ T .Language "Delete" }}</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Modal -->
+    <div id="alertModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'alertModal')">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="alertModalTitle">
+            <div class="modal-header">
+                <h3 id="alertModalTitle"></h3>
+                <button type="button" class="modal-close" onclick="closeModal('alertModal')" aria-label="{{ T .Language "Close" }}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="alertModalMessage" style="margin-bottom: 0;"></p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="closeModal('alertModal')">{{ T .Language "Close" }}</button>
+            </div>
+        </div>
+    </div>
+
 <script src="/static/qrcode.min.js"></script>
 <script>
+    // Modal Management
+    function openModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.classList.remove('active');
+        if (!document.querySelector('.modal-overlay.active')) {
+            document.body.style.overflow = '';
+        }
+    }
+
+    function handleModalBackdropClick(event, modalId) {
+        if (event.target.id === modalId) {
+            closeModal(modalId);
+        }
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const activeModal = document.querySelector('.modal-overlay.active');
+            if (activeModal) {
+                closeModal(activeModal.id);
+            }
+        }
+    });
+
+    let confirmCallback = null;
+    function showConfirmModal(title, message, onConfirm, actionBtnText = '{{ T .Language "Delete" }}', btnClass = 'btn-danger') {
+        document.getElementById('confirmModalTitle').textContent = title;
+        document.getElementById('confirmModalMessage').textContent = message;
+        const actionBtn = document.getElementById('confirmModalActionBtn');
+        actionBtn.textContent = actionBtnText;
+        actionBtn.className = 'btn ' + btnClass;
+        confirmCallback = onConfirm;
+        openModal('confirmModal');
+    }
+
+    document.getElementById('confirmModalActionBtn')?.addEventListener('click', async () => {
+        if (confirmCallback) {
+            const cb = confirmCallback;
+            confirmCallback = null;
+            closeModal('confirmModal');
+            await cb();
+        }
+    });
+
+    function showAlertModal(title, message) {
+        document.getElementById('alertModalTitle').textContent = title;
+        document.getElementById('alertModalMessage').textContent = message;
+        openModal('alertModal');
+    }
+
+    function getDefaultPasskeyName() {
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `Passkey ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+    }
+
+    // QR Code renderer for 2FA
     function renderQRCode(element, text) {
         const qr = qrcode(0, 'M');
         qr.addData(text);
@@ -152,19 +313,58 @@
                     renderQRCode(qrEl, data.url);
                     document.getElementById('totpSecretText').innerText = data.secret;
                 } else {
-                    alert('{{ T .Language "Failed to generate 2FA secret" }}');
+                    showAlertModal('Error', '{{ T .Language "Failed to generate 2FA secret" }}');
                 }
             } catch (err) {
                 console.error('Failed to generate 2FA:', err);
-                alert('{{ T .Language "Failed to generate 2FA secret" }}');
+                showAlertModal('Error', '{{ T .Language "Failed to generate 2FA secret" }}');
             }
         });
     }
 
-    // WebAuthn
-    async function registerPasskey() {
-        const status = document.getElementById('passkey_status');
-        status.innerText = "{{ T .Language "Requesting passkey registration..." }}";
+    function confirmDisable2FA() {
+        showConfirmModal(
+            '{{ T .Language "Disable 2FA" }}',
+            '{{ T .Language "Disable 2FA? This will reduce your account security." }}',
+            () => {
+                document.getElementById('disable2faForm').submit();
+            },
+            '{{ T .Language "Disable 2FA" }}',
+            'btn-danger'
+        );
+    }
+
+    // Passkey Registration with pre-naming
+    function openRegisterPasskeyModal() {
+        const input = document.getElementById('regPasskeyName');
+        const statusEl = document.getElementById('regPasskeyStatus');
+        const submitBtn = document.getElementById('regPasskeySubmitBtn');
+        const cancelBtn = document.getElementById('regPasskeyCancelBtn');
+        
+        input.value = '';
+        input.placeholder = getDefaultPasskeyName();
+        statusEl.className = 'modal-status';
+        statusEl.innerHTML = '';
+        submitBtn.disabled = false;
+        cancelBtn.disabled = false;
+        
+        openModal('registerPasskeyModal');
+        setTimeout(() => input.focus(), 60);
+    }
+
+    async function handleRegisterPasskeySubmit(e) {
+        e.preventDefault();
+        const input = document.getElementById('regPasskeyName');
+        const statusEl = document.getElementById('regPasskeyStatus');
+        const submitBtn = document.getElementById('regPasskeySubmitBtn');
+        const cancelBtn = document.getElementById('regPasskeyCancelBtn');
+        
+        let passkeyName = input.value.trim();
+        
+        submitBtn.disabled = true;
+        cancelBtn.disabled = true;
+        statusEl.className = 'modal-status active info';
+        statusEl.innerHTML = '<span class="spinner"></span> {{ T .Language "Waiting for device passkey prompt..." }}';
         
         try {
             const resp = await fetch('/webauthn/register/begin');
@@ -196,7 +396,7 @@
                 }
             };
 
-            const finishResp = await fetch('/webauthn/register/finish', {
+            const finishResp = await fetch('/webauthn/register/finish?name=' + encodeURIComponent(passkeyName), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(credential)
@@ -207,16 +407,143 @@
                 throw new Error(errText || "{{ T .Language "Failed to finish registration" }}");
             }
             
-            status.innerText = "{{ T .Language "Passkey registered successfully! Reloading..." }}";
-            status.style.color = "var(--success)";
-            setTimeout(() => window.location.reload(), 1000);
-        } catch (e) {
-            console.error(e);
-            status.innerText = "Error: " + e.message;
-            status.style.color = "var(--error)";
+            statusEl.className = 'modal-status active success';
+            statusEl.innerHTML = '✓ {{ T .Language "Passkey registered successfully! Reloading..." }}';
+            setTimeout(() => window.location.reload(), 800);
+        } catch (err) {
+            console.error(err);
+            submitBtn.disabled = false;
+            cancelBtn.disabled = false;
+            statusEl.className = 'modal-status active error';
+            statusEl.innerText = err.message || 'Registration failed';
         }
     }
 
+    // Passkey Editing / Renaming
+    function openEditPasskeyModal(id, currentName) {
+        const idInput = document.getElementById('editPasskeyId');
+        const nameInput = document.getElementById('editPasskeyName');
+        const statusEl = document.getElementById('editPasskeyStatus');
+        const submitBtn = document.getElementById('editPasskeySubmitBtn');
+        const cancelBtn = document.getElementById('editPasskeyCancelBtn');
+        
+        idInput.value = id;
+        nameInput.value = currentName ? currentName.trim() : '';
+        nameInput.placeholder = getDefaultPasskeyName();
+        statusEl.className = 'modal-status';
+        statusEl.innerHTML = '';
+        submitBtn.disabled = false;
+        cancelBtn.disabled = false;
+        
+        openModal('editPasskeyModal');
+        setTimeout(() => {
+            nameInput.focus();
+            nameInput.select();
+        }, 60);
+    }
+
+    async function handleEditPasskeySubmit(e) {
+        e.preventDefault();
+        const id = document.getElementById('editPasskeyId').value;
+        const nameInput = document.getElementById('editPasskeyName');
+        const statusEl = document.getElementById('editPasskeyStatus');
+        const submitBtn = document.getElementById('editPasskeySubmitBtn');
+        const cancelBtn = document.getElementById('editPasskeyCancelBtn');
+        
+        const newName = nameInput.value.trim();
+        submitBtn.disabled = true;
+        cancelBtn.disabled = true;
+        statusEl.className = 'modal-status active info';
+        statusEl.innerHTML = '<span class="spinner"></span> {{ T .Language "Save Changes" }}...';
+        
+        try {
+            const resp = await fetch('/settings/webauthn/rename', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({ id: id, name: newName })
+            });
+            
+            if (!resp.ok) {
+                let errorMsg = 'Failed to rename passkey';
+                try {
+                    const errData = await resp.json();
+                    if (errData && errData.error) errorMsg = errData.error;
+                } catch (_) {
+                    const text = await resp.text();
+                    if (text) errorMsg = text;
+                }
+                throw new Error(errorMsg);
+            }
+            
+            const data = await resp.json();
+            const finalName = data.name || (newName || getDefaultPasskeyName());
+            
+            // Update row in DOM
+            const nameEl = document.getElementById('passkey-name-' + id);
+            if (nameEl) {
+                nameEl.textContent = finalName;
+            }
+            
+            statusEl.className = 'modal-status active success';
+            statusEl.innerHTML = '✓ {{ T .Language "Passkey renamed successfully!" }}';
+            setTimeout(() => {
+                closeModal('editPasskeyModal');
+            }, 600);
+        } catch (err) {
+            console.error(err);
+            submitBtn.disabled = false;
+            cancelBtn.disabled = false;
+            statusEl.className = 'modal-status active error';
+            statusEl.innerText = err.message || 'Failed to rename passkey';
+        }
+    }
+
+    // Passkey Deletion
+    function confirmDeletePasskey(id, name) {
+        const displayName = name ? name.trim() : '';
+        const msg = '{{ T .Language "Are you sure you want to delete this passkey?" }}' + (displayName ? ` ("${displayName}")` : '');
+        showConfirmModal('{{ T .Language "Delete Passkey" }}', msg, async () => {
+            try {
+                const resp = await fetch('/settings/webauthn/delete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ id: id })
+                });
+                if (!resp.ok) {
+                    let errorMsg = 'Failed to delete passkey';
+                    try {
+                        const errData = await resp.json();
+                        if (errData && errData.error) errorMsg = errData.error;
+                    } catch (_) {
+                        const text = await resp.text();
+                        if (text) errorMsg = text;
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                const row = document.getElementById('passkey-row-' + id);
+                if (row) {
+                    row.remove();
+                }
+                const tbody = document.getElementById('passkeysTableBody');
+                if (tbody && tbody.children.length === 0) {
+                    const tableContainer = tbody.closest('.table-responsive');
+                    if (tableContainer) {
+                        tableContainer.outerHTML = '<p class="text-muted" id="noPasskeysMsg">{{ T .Language "No passkeys registered." }}</p>';
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+                showAlertModal('Error', err.message || 'Failed to delete passkey');
+            }
+        });
+    }
 </script>
 </div>
 {{end}}

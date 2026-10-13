@@ -169,5 +169,20 @@
   "Complete Setup": "Einrichtung abschließen",
   "File Not Found": "Datei nicht gefunden",
   "The requested file does not exist or you don't have permission to view it.": "Die angeforderte Datei existiert nicht oder Sie haben keine Berechtigung, sie anzuzeigen.",
-  "Return to Dashboard": "Zurück zum Dashboard"
+  "Return to Dashboard": "Zurück zum Dashboard",
+  "Edit": "Bearbeiten",
+  "Edit Passkey": "Passkey bearbeiten",
+  "Edit Passkey Name": "Passkey-Name bearbeiten",
+  "Continue": "Weiter",
+  "Close": "Schließen",
+  "Leave empty for default timestamp name": "Leer lassen für Standardnamen mit Zeitstempel",
+  "Waiting for device passkey prompt...": "Warten auf Passkey-Bestätigung auf dem Gerät...",
+  "Passkey renamed successfully!": "Passkey erfolgreich umbenannt!",
+  "Delete Passkey": "Passkey löschen",
+  "Are you sure you want to delete this passkey?": "Möchten Sie diesen Passkey wirklich löschen?",
+  "Two-Factor Authentication": "Zwei-Faktor-Authentifizierung",
+  "Enter the 6-digit code from your authenticator app": "Geben Sie den 6-stelligen Code aus Ihrer Authentifikator-App ein",
+  "Verify & Continue": "Bestätigen & Fortfahren",
+  "Invalid verification code": "Ungültiger Bestätigungscode",
+  "Back to Login": "Zurück zur Anmeldung"
 }

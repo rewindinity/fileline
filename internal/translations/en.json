@@ -169,5 +169,20 @@
   "Complete Setup": "Complete Setup",
   "File Not Found": "File Not Found",
   "The requested file does not exist or you don't have permission to view it.": "The requested file does not exist or you don't have permission to view it.",
-  "Return to Dashboard": "Return to Dashboard"
+  "Return to Dashboard": "Return to Dashboard",
+  "Edit": "Edit",
+  "Edit Passkey": "Edit Passkey",
+  "Edit Passkey Name": "Edit Passkey Name",
+  "Continue": "Continue",
+  "Close": "Close",
+  "Leave empty for default timestamp name": "Leave empty for default timestamp name",
+  "Waiting for device passkey prompt...": "Waiting for device passkey prompt...",
+  "Passkey renamed successfully!": "Passkey renamed successfully!",
+  "Delete Passkey": "Delete Passkey",
+  "Are you sure you want to delete this passkey?": "Are you sure you want to delete this passkey?",
+  "Two-Factor Authentication": "Two-Factor Authentication",
+  "Enter the 6-digit code from your authenticator app": "Enter the 6-digit code from your authenticator app",
+  "Verify & Continue": "Verify & Continue",
+  "Invalid verification code": "Invalid verification code",
+  "Back to Login": "Back to Login"
 }

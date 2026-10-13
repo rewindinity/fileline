@@ -169,5 +169,20 @@
   "Complete Setup": "Dokončit nastavení",
   "File Not Found": "Soubor nenalezen",
   "The requested file does not exist or you don't have permission to view it.": "Požadovaný soubor neexistuje nebo nemáte oprávnění k jeho zobrazení.",
-  "Return to Dashboard": "Zpět na panel"
+  "Return to Dashboard": "Zpět na panel",
+  "Edit": "Upravit",
+  "Edit Passkey": "Upravit přístupový klíč",
+  "Edit Passkey Name": "Upravit název přístupového klíče",
+  "Continue": "Pokračovat",
+  "Close": "Zavřít",
+  "Leave empty for default timestamp name": "Ponechte prázdné pro výchozí název s časovým razítkem",
+  "Waiting for device passkey prompt...": "Čekání na výzvu přístupového klíče na zařízení...",
+  "Passkey renamed successfully!": "Přístupový klíč byl úspěšně přejmenován!",
+  "Delete Passkey": "Smazat přístupový klíč",
+  "Are you sure you want to delete this passkey?": "Opravdu chcete smazat tento přístupový klíč?",
+  "Two-Factor Authentication": "Dvoufázové ověření",
+  "Enter the 6-digit code from your authenticator app": "Zadejte 6místný kód z autentizační aplikace",
+  "Verify & Continue": "Ověřit a pokračovat",
+  "Invalid verification code": "Neplatný ověřovací kód",
+  "Back to Login": "Zpět k přihlášení"
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"fileline/internal/auth"
@@ -262,36 +263,47 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	username := usernameAny.(string)
 
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user.TOTPSecret == "" {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
 	if r.Method == http.MethodGet {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`
-			<h2>Enter 2FA Code</h2>
-			<form method="POST" action="/login/2fa">
-				<input type="text" name="code" required autofocus />
-				<button type="submit">Verify</button>
-			</form>
-		`))
+		s.renderTemplate(w, r, "login_2fa.html", map[string]interface{}{
+			"Title":      "Two-Factor Authentication",
+			"Config":     s.cfg,
+			"User":       user,
+			"TargetUser": username,
+		})
 		return
 	}
 
 	if r.Method == http.MethodPost {
-		code := r.FormValue("code")
-		s.mu.RLock()
-		database := s.db
-		s.mu.RUnlock()
-		user, err := db.GetUserByUsername(r.Context(), database, username)
-		if err != nil || user.TOTPSecret == "" {
-			http.Redirect(w, r, "/login", http.StatusFound)
-			return
-		}
+		code := strings.TrimSpace(r.FormValue("code"))
 		if !totp.Validate(code, user.TOTPSecret) {
 			logger.Action("User '%s' failed 2FA verification from %s", username, s.clientIP(r))
-			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<h2>Invalid Code</h2><a href="/login/2fa">Try again</a>`))
+			s.renderTemplate(w, r, "login_2fa.html", map[string]interface{}{
+				"Title":      "Two-Factor Authentication",
+				"Config":     s.cfg,
+				"User":       user,
+				"TargetUser": username,
+				"Error":      "Invalid verification code",
+			})
 			return
 		}
 		// Success
 		s.login2FAStore.Delete(sessionID)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "2fa_session",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+		})
 		s.setJWTCookie(w, username)
 		logger.Action("User '%s' logged in successfully via 2FA TOTP from %s", username, s.clientIP(r))
 		http.Redirect(w, r, "/", http.StatusFound)
