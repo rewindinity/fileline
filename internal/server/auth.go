@@ -11,6 +11,7 @@ import (
 
 	"fileline/internal/auth"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 	"fileline/internal/storage"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -185,6 +186,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.renderSetupError(w, dbConfigured, fmt.Sprintf("Failed to create admin: %v", err))
 			return
 		}
+		logger.Action("Initial system setup completed (admin user: '%s')", username)
 		// Login user automatically
 		s.setJWTCookie(w, username)
 		http.Redirect(w, r, "/", http.StatusFound)
@@ -210,6 +212,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil {
+			logger.Action("Failed login attempt for username '%s' from %s (user not found)", username, s.clientIP(r))
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title": "Login",
 				"Error": "Invalid credentials",
@@ -217,8 +220,9 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+			logger.Action("Failed login attempt for username '%s' from %s (invalid password)", username, s.clientIP(r))
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
-				"Title": "Setup", "Config": s.cfg,
+				"Title": "Login",
 				"Error": "Invalid credentials",
 			})
 			return
@@ -234,10 +238,12 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 				HttpOnly: true,
 				MaxAge:   300, // 5 minutes to complete
 			})
+			logger.Action("User '%s' authenticated with password, 2FA challenge required from %s", username, s.clientIP(r))
 			http.Redirect(w, r, "/login/2fa", http.StatusFound)
 			return
 		}
 		s.setJWTCookie(w, username)
+		logger.Action("User '%s' logged in successfully via password from %s", username, s.clientIP(r))
 		http.Redirect(w, r, "/", http.StatusFound)
 	}
 }
@@ -279,6 +285,7 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !totp.Validate(code, user.TOTPSecret) {
+			logger.Action("User '%s' failed 2FA verification from %s", username, s.clientIP(r))
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte(`<h2>Invalid Code</h2><a href="/login/2fa">Try again</a>`))
 			return
@@ -286,11 +293,28 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 		// Success
 		s.login2FAStore.Delete(sessionID)
 		s.setJWTCookie(w, username)
+		logger.Action("User '%s' logged in successfully via 2FA TOTP from %s", username, s.clientIP(r))
 		http.Redirect(w, r, "/", http.StatusFound)
 	}
 }
 
 func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	username := ""
+	if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
+		token, _ := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
+			s.mu.RLock()
+			key := []byte(s.cfg.JWTKey)
+			s.mu.RUnlock()
+			return key, nil
+		})
+		if token != nil && token.Valid {
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				if u, ok := claims["username"].(string); ok {
+					username = u
+				}
+			}
+		}
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    "",
@@ -298,13 +322,18 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 	})
+	if username != "" {
+		logger.Action("User '%s' logged out", username)
+	} else {
+		logger.Action("User logged out (session cleared)")
+	}
 	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
 func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
 	options, sessionData, err := s.webAuthn.BeginDiscoverableLogin()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "WebAuthn BeginDiscoverableLogin failed", err)
 		return
 	}
 
@@ -353,11 +382,13 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.webAuthn.FinishDiscoverableLogin(handler, sessionData, r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		logger.Action("Failed Passkey login attempt from %s: %v", s.clientIP(r), err)
+		http.Error(w, "Invalid passkey authentication", http.StatusBadRequest)
 		return
 	}
 	s.webAuthnTempStore.Delete(sessionID)
 	s.setJWTCookie(w, loggedInUsername)
+	logger.Action("User '%s' logged in successfully via Passkey (WebAuthn) from %s", loggedInUsername, s.clientIP(r))
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok", "redirect":"/"}`))
 }

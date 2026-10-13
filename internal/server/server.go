@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"html/template"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,10 +13,12 @@ import (
 
 	"fileline/internal/config"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 	"fileline/internal/storage"
 	"fileline/internal/translations"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Server represents the HTTP server for the application.
@@ -41,6 +42,9 @@ type Server struct {
 
 // New creates a new Server instance and configures its dependencies and routes.
 func New(cfg *config.Config, database *sql.DB) *Server {
+	if cfg != nil {
+		logger.SetDebug(cfg.Debug)
+	}
 	s := &Server{
 		db:           database,
 		cfg:          cfg,
@@ -50,16 +54,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	s.tmpls = make(map[string]*template.Template)
 	funcs := template.FuncMap{
 		"FormatSize": func(b int64) string {
-			const unit = 1024
-			if b < unit {
-				return fmt.Sprintf("%d B", b)
-			}
-			div, exp := int64(unit), 0
-			for n := b / unit; n >= unit; n /= unit {
-				div *= unit
-				exp++
-			}
-			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+			return logger.FormatBytes(b)
 		},
 		"T": func(lang, key string) string {
 			return translations.GetString(lang, key)
@@ -73,7 +68,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		t := template.New("base.html").Funcs(funcs)
 		t, err := t.ParseFiles("web/templates/base.html", "web/templates/"+page)
 		if err != nil {
-			log.Printf("Warning: failed to parse template %s: %v", page, err)
+			logger.Error("Failed to parse template %s: %v", page, err)
 		} else {
 			s.tmpls[page] = t
 		}
@@ -106,7 +101,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	wa, err := webauthn.New(wConfig)
 	if err != nil {
-		log.Printf("Warning: failed to initialize WebAuthn: %v", err)
+		logger.Error("Failed to initialize WebAuthn: %v", err)
 	}
 	s.webAuthn = wa
 
@@ -165,7 +160,7 @@ func (s *Server) routes() http.Handler {
 	// Main Dashboard route (render.go)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
-	return mux
+	return s.recoveryMiddleware(s.loggingMiddleware(mux))
 }
 
 // Start begins listening for HTTP requests.
@@ -182,10 +177,10 @@ func (s *Server) Start() error {
 				tls.X25519,
 			},
 		}
-		fmt.Printf("Server listening on https://localhost:%d\n", s.cfg.Port)
+		logger.Info("Server listening on https://localhost:%d", s.cfg.Port)
 		return s.httpServer.ListenAndServeTLS(s.cfg.SSLCertPath, s.cfg.SSLKeyPath)
 	}
-	fmt.Printf("Server listening on http://localhost:%d\n", s.cfg.Port)
+	logger.Info("Server listening on http://localhost:%d", s.cfg.Port)
 	return s.httpServer.ListenAndServe()
 }
 
@@ -215,7 +210,7 @@ func (s *Server) initDrives(ctx context.Context) {
 		if err == nil {
 			s.storageDrives[drive.ID] = p
 		} else {
-			log.Printf("Warning: failed to initialize drive %s: %v", drive.Name, err)
+			logger.Error("Failed to initialize drive %s: %v", drive.Name, err)
 		}
 	}
 }
@@ -236,11 +231,123 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	if database != nil {
 		if err := database.PingContext(r.Context()); err != nil {
-			http.Error(w, `{"status": "error", "message": "database unreachable"}`, http.StatusInternalServerError)
+			s.internalError(w, r, "Database health check ping failed", err)
 			return
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status": "ok"}`))
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int64
+	wroteHeader  bool
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	if !rw.wroteHeader {
+		rw.statusCode = code
+		rw.wroteHeader = true
+		rw.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (rw *responseWriter) Write(b []byte) (int, error) {
+	if !rw.wroteHeader {
+		rw.WriteHeader(http.StatusOK)
+	}
+	n, err := rw.ResponseWriter.Write(b)
+	rw.bytesWritten += int64(n)
+	return n, err
+}
+
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
+func (s *Server) clientIP(r *http.Request) string {
+	if s.cfg.ReverseProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[0])
+		}
+		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
+			return strings.TrimSpace(xrip)
+		}
+	}
+	return r.RemoteAddr
+}
+
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+		defer func() {
+			duration := time.Since(start)
+			username := ""
+			if u := r.Context().Value("username"); u != nil {
+				if uname, ok := u.(string); ok {
+					username = uname
+				}
+			}
+			if username == "" {
+				if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
+					token, _ := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
+						s.mu.RLock()
+						key := []byte(s.cfg.JWTKey)
+						s.mu.RUnlock()
+						return key, nil
+					})
+					if token != nil && token.Valid {
+						if claims, ok := token.Claims.(jwt.MapClaims); ok {
+							if u, ok := claims["username"].(string); ok {
+								username = u
+							}
+						}
+					}
+				}
+			}
+			logger.HTTP(r.Method, r.URL.RequestURI(), rw.statusCode, duration, s.clientIP(r), username)
+		}()
+
+		next.ServeHTTP(rw, r)
+	})
+}
+
+func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.internalError(w, r, "PANIC in HTTP handler", fmt.Errorf("%v", rec))
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// internalError logs the error to the backend console ONLY and returns a generic "Internal Server Error" to the client.
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, msg string, err error) {
+	if err != nil {
+		logger.Error("%s: %v", msg, err)
+	} else {
+		logger.Error("%s", msg)
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webauthn/") || strings.HasPrefix(r.URL.Path, "/settings/2fa/generate") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "Internal Server Error"}`))
+		return
+	}
+	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 }

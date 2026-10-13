@@ -550,6 +550,8 @@ tr:hover td {
   width: 48px;
   height: 48px;
   margin-bottom: 1rem;
+  filter: var(--icon-filter);
+  transition: filter var(--transition);
 }
 
 /* Progress Bar */

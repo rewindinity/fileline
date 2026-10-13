@@ -60,7 +60,7 @@
             <div id="totpSetupArea" style="display: none; margin-top: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
                 <div style="text-align: center; margin-bottom: 1.5rem;">
                     <p class="text-muted mb-1">{{ T .Language "Scan this QR code with your authenticator app (Authy, Google Authenticator, etc.)" }}</p>
-                    <div id="qrcode" style="display: inline-block; padding: 1rem; background: white; border-radius: var(--radius-sm);"></div>
+                    <div id="qrcode" style="display: inline-block; padding: 1rem; background: white; border-radius: var(--radius-sm); line-height: 0;"></div>
                     <p style="margin-top: 1rem; font-family: monospace; font-size: 1.1rem; color: var(--accent-primary);" id="totpSecretText"></p>
                 </div>
                 <form method="POST" action="/settings/2fa/verify" style="display: flex; gap: 1rem; align-items: flex-end;">
@@ -114,24 +114,48 @@
     <!-- Storage Configuration Section -->
 <script src="/static/qrcode.min.js"></script>
 <script>
+    function renderQRCode(element, text) {
+        const qr = qrcode(0, 'M');
+        qr.addData(text);
+        qr.make();
+        element.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 0 });
+        const svg = element.querySelector('svg');
+        if (svg) {
+            svg.style.display = 'block';
+            svg.style.maxWidth = '100%';
+            svg.style.height = 'auto';
+        }
+    }
+
+    if (typeof QRCode === 'undefined' && typeof qrcode !== 'undefined') {
+        window.QRCode = function(target, options) {
+            const text = typeof options === 'string' ? options : (options && options.text ? options.text : '');
+            const el = typeof target === 'string' ? document.getElementById(target) : target;
+            if (el) {
+                renderQRCode(el, text);
+            }
+        };
+    }
+
     // TOTP setup
     const totpBtn = document.getElementById('generateTOTPBtn');
     if (totpBtn) {
         totpBtn.addEventListener('click', async () => {
-            const res = await fetch('/settings/2fa/generate', { method: 'POST' });
-            if (res.ok) {
-                const data = await res.json();
-                document.getElementById('totpSetupArea').style.display = 'block';
-                totpBtn.style.display = 'none';
-                
-                document.getElementById('qrcode').innerHTML = '';
-                new QRCode(document.getElementById('qrcode'), {
-                    text: data.url,
-                    width: 200,
-                    height: 200
-                });
-                document.getElementById('totpSecretText').innerText = data.secret;
-            } else {
+            try {
+                const res = await fetch('/settings/2fa/generate', { method: 'POST' });
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('totpSetupArea').style.display = 'block';
+                    totpBtn.style.display = 'none';
+                    const qrEl = document.getElementById('qrcode');
+                    qrEl.innerHTML = '';
+                    renderQRCode(qrEl, data.url);
+                    document.getElementById('totpSecretText').innerText = data.secret;
+                } else {
+                    alert('{{ T .Language "Failed to generate 2FA secret" }}');
+                }
+            } catch (err) {
+                console.error('Failed to generate 2FA:', err);
                 alert('{{ T .Language "Failed to generate 2FA secret" }}');
             }
         });

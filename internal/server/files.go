@@ -3,11 +3,11 @@ package server
 import (
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
 	"fileline/internal/db"
+	"fileline/internal/logger"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -61,6 +61,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	if f.CustomName != "" {
 		downloadName = f.CustomName
 	}
+	logger.Debug("Serving file: '/f/%s' (id=%d, original_name='%s', size=%s)", urlPath, f.ID, downloadName, logger.FormatBytes(f.Size))
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, downloadName))
 	io.Copy(w, reader)
 }
@@ -83,7 +84,7 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := db.GetAllFiles(r.Context(), database, filterID)
 	if err != nil {
-		http.Error(w, "Failed to load files", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to load files from database", err)
 		return
 	}
 	s.renderTemplate(w, r, "files.html", map[string]interface{}{
@@ -140,9 +141,10 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		urlPath := r.FormValue("url_path")
 		isPrivate := r.FormValue("is_private") == "on"
 		if err := db.UpdateFile(r.Context(), database, id, customName, urlPath, isPrivate); err != nil {
-			http.Error(w, "Failed to update file", http.StatusInternalServerError)
+			s.internalError(w, r, "Failed to update file in database", err)
 			return
 		}
+		logger.Action("User '%s' updated file id=%d (custom_name='%s', url_path='%s', private=%t)", username, id, customName, urlPath, isPrivate)
 		http.Redirect(w, r, "/files", http.StatusFound)
 	}
 }
@@ -179,8 +181,12 @@ func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	st := s.getProvider(f.StorageType)
 	s.mu.RUnlock()
 	if err := st.Delete(r.Context(), f.StoragePath); err != nil {
-		log.Printf("Warning: failed to delete file from storage: %v", err)
+		logger.Error("Failed to delete file from storage: %v", err)
 	}
-	db.DeleteFile(r.Context(), database, id)
+	if err := db.DeleteFile(r.Context(), database, id); err != nil {
+		s.internalError(w, r, "Failed to delete file from database", err)
+		return
+	}
+	logger.Action("User '%s' deleted file id=%d ('%s')", username, id, f.OriginalName)
 	http.Redirect(w, r, "/", http.StatusFound)
 }

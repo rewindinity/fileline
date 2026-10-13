@@ -51,6 +51,7 @@ type Config struct {
 	CustomAccentHex  string  `json:"custom_accent_hex"`
 	CustomLogo       string  `json:"custom_logo"`
 	DefaultLanguage  string  `json:"default_language"`
+	Debug            bool    `json:"debug"`
 	EnvOnly          bool    `json:"-"` // Not serialized
 }
 
@@ -175,6 +176,11 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	}
 	if v, ok := os.LookupEnv("FL_CUSTOM_LOGO"); ok {
 		cfg.CustomLogo = v
+	}
+	if v, ok := os.LookupEnv("FL_DEBUG"); ok {
+		if d, err := strconv.ParseBool(v); err == nil {
+			cfg.Debug = d
+		}
 	}
 	return &cfg, nil
 }

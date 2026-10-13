@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 
 	"fileline/internal/config"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 	"fileline/internal/storage"
 
 	"golang.org/x/crypto/bcrypt"
@@ -206,7 +206,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal([]byte(drivesJSON), &newDrives); err == nil {
 				s.cfg.Drives = newDrives
 			} else {
-				log.Printf("Warning: failed to parse drives_json: %v", err)
+				logger.Error("Failed to parse drives_json: %v", err)
 			}
 		}
 		s.cfg.Save("config.json")
@@ -215,10 +215,11 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			s.storage = st
 		} else {
-			log.Printf("Failed to reinitialize storage: %v", err)
+			logger.Error("Failed to reinitialize storage: %v", err)
 		}
 		s.initDrives(r.Context())
 		s.mu.Unlock()
+		logger.Action("User '%s' updated storage settings (type=%s, max_upload_size=%dMB, chunk_size=%dMB, chunk_threshold=%dMB)", username, storageType, s.cfg.MaxUploadSizeMB, s.cfg.ChunkSizeMB, s.cfg.ChunkThresholdMB)
 		http.Redirect(w, r, "/settings/storage?success=Storage+settings+saved", http.StatusFound)
 		return
 	}
@@ -277,12 +278,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			s.cfg.Save("config.json")
 			s.mu.Unlock()
-			err = r.ParseMultipartForm(32 << 20)
-			if err != nil {
-				fmt.Println("ParseMultipartForm error:", err)
-			} else {
-				fmt.Printf("MultipartForm files: %v\n", r.MultipartForm.File)
-			}
+			_ = r.ParseMultipartForm(32 << 20)
 
 			// Handle custom logo upload
 			file, header, err := r.FormFile("custom_logo_file")
@@ -299,28 +295,30 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 							s.cfg.CustomLogo = filename
 							s.cfg.Save("config.json")
 							s.mu.Unlock()
+							logger.Action("User '%s' uploaded custom logo '%s'", username, filename)
 						} else {
-							fmt.Println("WriteFile error:", writeErr)
+							logger.Error("WriteFile error for logo: %v", writeErr)
 							http.Redirect(w, r, "/settings/appearance?error=Failed+to+write+logo", http.StatusFound)
 							return
 						}
 					} else {
-						fmt.Println("ReadAll error:", ioErr)
+						logger.Error("ReadAll error for logo: %v", ioErr)
 						http.Redirect(w, r, "/settings/appearance?error=Failed+to+read+logo+file", http.StatusFound)
 						return
 					}
 				} else {
-					fmt.Println("Invalid extension:", ext)
+					logger.Debug("Invalid logo extension: %s", ext)
 					http.Redirect(w, r, "/settings/appearance?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
 					return
 				}
 			} else if err != http.ErrMissingFile {
-				fmt.Println("FormFile error:", err)
+				logger.Debug("FormFile error for logo: %v", err)
 				http.Redirect(w, r, "/settings/appearance?error=Failed+to+process+logo+upload", http.StatusFound)
 				return
 			}
 		}
 
+		logger.Action("User '%s' updated appearance settings (theme=%s, accent=%s, language=%s)", username, theme, accent, language)
 		http.Redirect(w, r, "/settings/appearance?success=Appearance+updated", http.StatusFound)
 		return
 	}
@@ -337,18 +335,20 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)); err != nil {
+			logger.Action("User '%s' failed password change attempt (incorrect current password)", username)
 			http.Redirect(w, r, "/settings/account?error=Incorrect+current+password", http.StatusFound)
 			return
 		}
 		newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 		if err != nil {
-			http.Redirect(w, r, "/settings/account?error=Failed+to+secure+password", http.StatusFound)
+			s.internalError(w, r, "Failed to hash new password", err)
 			return
 		}
 		if err := db.UpdatePassword(r.Context(), database, username, string(newHash)); err != nil {
-			http.Redirect(w, r, "/settings/account?error=Failed+to+update+password", http.StatusFound)
+			s.internalError(w, r, "Failed to update password in database", err)
 			return
 		}
+		logger.Action("User '%s' successfully changed their account password", username)
 		http.Redirect(w, r, "/settings/account?success=Password+updated+successfully", http.StatusFound)
 		return
 	}
@@ -383,6 +383,7 @@ func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Reques
 	if oldLogo != "" && oldLogo != "/static/logo.svg" {
 		os.Remove(filepath.Join("data", oldLogo))
 	}
+	logger.Action("User '%s' removed custom logo, restored default logo", username)
 	http.Redirect(w, r, "/settings/appearance?success=Custom+logo+removed", http.StatusFound)
 }
 
@@ -410,9 +411,10 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err := db.CreateSubuser(r.Context(), database, newUsername, string(hash), quotaMB); err != nil {
-		http.Redirect(w, r, "/settings/subusers?error=Failed+to+create+user", http.StatusFound)
+		s.internalError(w, r, "Failed to create subuser in database", err)
 		return
 	}
+	logger.Action("User '%s' created subuser '%s' (quota=%dMB)", username, newUsername, quotaMB)
 	http.Redirect(w, r, "/settings/subusers?success=User+created+successfully", http.StatusFound)
 }
 
@@ -438,8 +440,9 @@ func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := db.DeleteUser(r.Context(), database, targetUser); err != nil {
-		http.Redirect(w, r, "/settings/subusers?error=Failed+to+delete+user", http.StatusFound)
+		s.internalError(w, r, "Failed to delete subuser from database", err)
 		return
 	}
+	logger.Action("User '%s' deleted subuser '%s'", username, targetUser)
 	http.Redirect(w, r, "/settings/subusers?success=User+deleted+successfully", http.StatusFound)
 }

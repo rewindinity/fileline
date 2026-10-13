@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fileline/internal/db"
+	"fileline/internal/logger"
 )
 
 // ChunkUpload holds metadata and progress of a chunked file upload
@@ -46,7 +47,10 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	maxSize := s.cfg.MaxUploadSizeMB * 1024 * 1024
 	s.mu.RUnlock()
+	username := r.Context().Value("username").(string)
+
 	if maxSize > 0 && header.Size > int64(maxSize) {
+		logger.Action("User '%s' upload rejected: file '%s' (%s) exceeds maximum allowed size (%d MB)", username, header.Filename, logger.FormatBytes(header.Size), s.cfg.MaxUploadSizeMB)
 		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
 		return
 	}
@@ -74,7 +78,6 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	database := s.db
 	s.mu.RUnlock()
 
-	username := r.Context().Value("username").(string)
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -83,6 +86,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	if user.StorageQuotaMB > 0 {
 		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
 		if total+header.Size > int64(user.StorageQuotaMB)*1024*1024 {
+			logger.Action("User '%s' upload rejected: quota exceeded for file '%s' (%s)", username, originalName, logger.FormatBytes(header.Size))
 			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
 			return
 		}
@@ -92,7 +96,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	storageKey := fmt.Sprintf("%d-%s", time.Now().UnixNano(), originalName)
 
 	if err := st.Save(r.Context(), storageKey, file); err != nil {
-		http.Error(w, "Failed to save file to storage: "+err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save file to storage", err)
 		return
 	}
 
@@ -109,10 +113,11 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
 		st.Delete(r.Context(), storageKey) // Rollback
-		http.Error(w, "Failed to save file metadata: "+err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save file metadata to database", err)
 		return
 	}
 
+	logger.Action("User '%s' uploaded file '%s' (size: %s, storage: %s, path: %s, private: %t)", username, originalName, logger.FormatBytes(header.Size), storageType, storageKey, isPrivate)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -142,6 +147,11 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	username := r.Context().Value("username").(string)
+	if maxSize > 0 && req.TotalSize > int64(maxSize) {
+		logger.Action("User '%s' chunked upload init rejected: file '%s' exceeds maximum allowed size (%d MB)", username, req.FileName, s.cfg.MaxUploadSizeMB)
+		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
+		return
+	}
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
@@ -153,6 +163,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 	if user.StorageQuotaMB > 0 {
 		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
 		if total+req.TotalSize > int64(user.StorageQuotaMB)*1024*1024 {
+			logger.Action("User '%s' chunked upload init rejected: quota exceeded for file '%s' (%s)", username, req.FileName, logger.FormatBytes(req.TotalSize))
 			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
 			return
 		}
@@ -160,7 +171,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 	uploadID := fmt.Sprintf("%d-%s", time.Now().UnixNano(), req.FileName)
 	tempDir := filepath.Join(os.TempDir(), "fileline_chunks", uploadID)
 	if err := os.MkdirAll(tempDir, 0755); err != nil {
-		http.Error(w, "Failed to create temp directory", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to create temp directory", err)
 		return
 	}
 
@@ -181,6 +192,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 	s.chunkMu.Lock()
 	s.chunkUploads[uploadID] = upload
 	s.chunkMu.Unlock()
+	logger.Action("User '%s' initiated chunked upload for '%s' (size: %s, chunks: %d, upload_id: %s)", username, req.FileName, logger.FormatBytes(req.TotalSize), req.TotalChunks, uploadID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"upload_id": uploadID,
@@ -219,7 +231,7 @@ func (s *Server) chunkUploadHandler(w http.ResponseWriter, r *http.Request) {
 	chunkPath := filepath.Join(upload.TempDir, fmt.Sprintf("%d", chunkIndex))
 	dst, err := os.Create(chunkPath)
 	if err != nil {
-		http.Error(w, "Failed to save chunk to disk", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save chunk to disk", err)
 		return
 	}
 	io.Copy(dst, file)
@@ -227,6 +239,7 @@ func (s *Server) chunkUploadHandler(w http.ResponseWriter, r *http.Request) {
 	s.chunkMu.Lock()
 	upload.Received[chunkIndex] = true
 	s.chunkMu.Unlock()
+	logger.Debug("Received chunk %d/%d for upload_id %s", chunkIndex+1, upload.TotalChunks, uploadID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
@@ -260,7 +273,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	assembledPath := filepath.Join(upload.TempDir, "assembled")
 	finalFile, err := os.Create(assembledPath)
 	if err != nil {
-		http.Error(w, "Failed to create assembled file", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to create assembled file", err)
 		return
 	}
 	var actualSize int64
@@ -269,13 +282,13 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		chunkData, err := os.ReadFile(chunkPath)
 		if err != nil {
 			finalFile.Close()
-			http.Error(w, "Failed to read chunk from disk", http.StatusInternalServerError)
+			s.internalError(w, r, "Failed to read chunk from disk", err)
 			return
 		}
 		n, err := finalFile.Write(chunkData)
 		if err != nil {
 			finalFile.Close()
-			http.Error(w, "Failed to write assembled file", http.StatusInternalServerError)
+			s.internalError(w, r, "Failed to write assembled file", err)
 			return
 		}
 		actualSize += int64(n)
@@ -291,7 +304,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	// Re-open for storage provider
 	assembledFile, err := os.Open(assembledPath)
 	if err != nil {
-		http.Error(w, "Failed to open assembled file", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to open assembled file", err)
 		return
 	}
 	defer assembledFile.Close()
@@ -313,7 +326,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	s.mu.RUnlock()
 	storageKey := fmt.Sprintf("%d-%s", time.Now().UnixNano(), upload.OriginalName)
 	if err := st.Save(r.Context(), storageKey, assembledFile); err != nil {
-		http.Error(w, "Failed to save file to storage: "+err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save file to storage", err)
 		return
 	}
 	f := &db.File{
@@ -328,9 +341,11 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	}
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
 		st.Delete(r.Context(), storageKey) // Rollback
-		http.Error(w, "Failed to save file metadata: "+err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save file metadata to database", err)
 		return
 	}
+	username := r.Context().Value("username").(string)
+	logger.Action("User '%s' completed chunked upload for '%s' (size: %s, storage: %s, path: %s, upload_id: %s)", username, upload.OriginalName, logger.FormatBytes(actualSize), storageType, storageKey, req.UploadID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }

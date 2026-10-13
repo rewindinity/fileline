@@ -1,21 +1,20 @@
 package server
 
 import (
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	"fileline/internal/config"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 	"fileline/internal/translations"
 )
 
 func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
 	t, ok := s.tmpls[name]
 	if !ok {
-		http.Error(w, "Template not found", http.StatusInternalServerError)
-		log.Printf("Template not found: %s", name)
+		s.internalError(w, r, "Template not found: "+name, nil)
 		return
 	}
 	// Inject language into data if it's a map
@@ -40,7 +39,7 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 		m["LanguageNames"] = translations.LanguageNames
 	}
 	if err := t.ExecuteTemplate(w, name, data); err != nil {
-		log.Printf("Error rendering template %s: %v", name, err)
+		logger.Error("Error rendering template %s: %v", name, err)
 	}
 }
 
@@ -78,7 +77,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err := db.GetRecentFiles(r.Context(), database, 10, filterID)
 	if err != nil {
-		http.Error(w, "Failed to load files", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to load recent files for dashboard", err)
 		return
 	}
 

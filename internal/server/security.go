@@ -9,11 +9,11 @@ import (
 
 	"fileline/internal/auth"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/pquerna/otp/totp"
-	"github.com/skip2/go-qrcode"
 )
 
 // formatPasskeysDisplay transforms stored JSON passkeys into a display-friendly slice
@@ -65,31 +65,18 @@ func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
 		AccountName: username,
 	})
 	if err != nil {
-		http.Redirect(w, r, "/settings/account?error=Failed+to+generate+2FA", http.StatusFound)
+		s.internalError(w, r, "Failed to generate 2FA TOTP secret", err)
 		return
 	}
 	// Save temporary
 	s.totpTempStore.Store(username, key.Secret())
-	// Generate QR Code
-	var png []byte
-	png, err = qrcode.Encode(key.String(), qrcode.Medium, 256)
-	if err != nil {
-		http.Redirect(w, r, "/settings/account?error=Failed+to+generate+QR", http.StatusFound)
-		return
-	}
-	qrBase64 := base64.StdEncoding.EncodeToString(png)
+	logger.Action("User '%s' requested new 2FA TOTP secret generation", username)
 
-	w.Header().Set("Content-Type", "text/html")
-	w.Write(fmt.Appendf(nil, `
-		<h2>Scan this QR Code</h2>
-		<img src="data:image/png;base64,%s" />
-		<p>Secret: %s</p>
-		<form method="POST" action="/settings/2fa/verify">
-			<input type="text" name="code" placeholder="6-digit code" required />
-			<button type="submit">Verify & Enable</button>
-		</form>
-		<a href="/settings">Cancel</a>
-	`, qrBase64, key.Secret()))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"secret": key.Secret(),
+		"url":    key.URL(),
+	})
 }
 
 func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +93,8 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	secret := secretAny.(string)
 	if !totp.Validate(code, secret) {
-		http.Redirect(w, r, "/setting/accounts?error=Invalid+code", http.StatusFound)
+		logger.Action("User '%s' entered invalid 2FA code during setup", username)
+		http.Redirect(w, r, "/settings/account?error=Invalid+code", http.StatusFound)
 		return
 	}
 
@@ -119,6 +107,7 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		db.UpdateUserAuthData(r.Context(), database, username, secret, user.WebAuthnData)
 	}
 	s.totpTempStore.Delete(username)
+	logger.Action("User '%s' successfully enabled 2FA TOTP", username)
 	http.Redirect(w, r, "/settings/account?success=2FA+Enabled+Successfully", http.StatusFound)
 }
 
@@ -140,13 +129,15 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !totp.Validate(code, user.TOTPSecret) {
+		logger.Action("User '%s' entered invalid 2FA code when attempting to disable 2FA", username)
 		http.Redirect(w, r, "/settings/account?error=Invalid+2FA+code", http.StatusFound)
 		return
 	}
 	if err := db.UpdateUserAuthData(r.Context(), database, username, "", user.WebAuthnData); err != nil {
-		http.Redirect(w, r, "/settings/account?error=Failed+to+disable+2FA", http.StatusFound)
+		s.internalError(w, r, "Failed to disable 2FA in database", err)
 		return
 	}
+	logger.Action("User '%s' disabled 2FA TOTP", username)
 	http.Redirect(w, r, "/settings/account?success=2FA+Disabled+Successfully", http.StatusFound)
 }
 
@@ -168,7 +159,7 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		webauthn.WithResidentKeyRequirement(protocol.ResidentKeyRequirementRequired),
 	)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.internalError(w, r, "WebAuthn BeginRegistration failed", err)
 		return
 	}
 	sessionID := generateRandomSessionID()
@@ -227,10 +218,11 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	passkeys = append(passkeys, newPasskey)
 	credsJSON, _ := json.Marshal(passkeys)
 	if err := db.UpdateUserAuthData(r.Context(), database, username, dbUser.TOTPSecret, string(credsJSON)); err != nil {
-		http.Error(w, "Failed to save credential", http.StatusInternalServerError)
+		s.internalError(w, r, "Failed to save credential to database", err)
 		return
 	}
 	s.webAuthnTempStore.Delete(cookie.Value)
+	logger.Action("User '%s' registered new passkey credential '%s'", username, passkeyName)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
@@ -278,8 +270,9 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		updatedJSON = []byte("[]")
 	}
 	if err := db.UpdateUserAuthData(r.Context(), database, username, user.TOTPSecret, string(updatedJSON)); err != nil {
-		http.Redirect(w, r, "/settings/account?error=Failed+to+delete+passkey", http.StatusFound)
+		s.internalError(w, r, "Failed to delete passkey in database", err)
 		return
 	}
+	logger.Action("User '%s' deleted passkey id '%s'", username, idToDelete)
 	http.Redirect(w, r, "/settings/account?success=Passkey+deleted+successfully", http.StatusFound)
 }

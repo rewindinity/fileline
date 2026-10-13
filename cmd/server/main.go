@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,24 +12,37 @@ import (
 
 	"fileline/internal/config"
 	"fileline/internal/db"
+	"fileline/internal/logger"
 	"fileline/internal/server"
 	"fileline/internal/translations"
 )
 
 func main() {
 	envOnly := flag.Bool("env-only", false, "Use only environment variables for configuration")
+	debug := flag.Bool("debug", false, "Enable debug mode with detailed HTTP and audit logs")
+	flag.BoolVar(debug, "d", false, "Enable debug mode (shorthand)")
 	flag.Parse()
-	// Load translations
-	if err := translations.Load(); err != nil {
-		log.Printf("Warning: failed to load translations: %v", err)
-	}
+
 	// Initialize configuration
 	cfg, err := config.Load("config.json", *envOnly)
 	if err != nil {
-		log.Printf("No config.json found or invalid, using default unconfigured state: %v", err)
 		defaultCfg := config.DefaultConfig()
 		defaultCfg.EnvOnly = *envOnly
 		cfg = &defaultCfg
+	}
+
+	if *debug {
+		cfg.Debug = true
+	}
+	logger.SetDebug(cfg.Debug)
+
+	if cfg.Debug {
+		logger.Debug("Debug mode enabled")
+	}
+
+	// Load translations
+	if err := translations.Load(); err != nil {
+		logger.Error("Failed to load translations: %v", err)
 	}
 
 	os.MkdirAll("data", 0755)
@@ -46,27 +58,26 @@ func main() {
 	if cfg.DBType != "" {
 		database, err := db.InitDB(ctx, cfg)
 		if err != nil {
-			log.Printf("Warning: configured database failed to initialize: %v", err)
+			logger.Error("Configured database failed to initialize: %v", err)
 		} else {
 			// Run migrations automatically
 			if err := db.Migrate(ctx, database, cfg.DBType); err != nil {
-				log.Fatalf("Database migration failed: %v", err)
+				logger.Error("Database migration failed: %v", err)
+				os.Exit(1)
 			}
-			log.Printf("Successfully connected to %s database and migrated", cfg.DBType)
-
+			logger.Debug("Successfully connected to %s database and migrated", cfg.DBType)
 			// Inject database into server
-			srv = server.New(cfg, database) // Recreate to inject DB, or we can use a SetDB method.
-			// Wait, recreating is fine since we haven't started it yet.
+			srv = server.New(cfg, database)
 		}
 	} else {
-		log.Println("Database not configured. Starting in Setup mode.")
+		logger.Info("Database not configured. Starting in Setup mode.")
 	}
 
 	serverErrors := make(chan error, 1)
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("Starting server on port %d...", cfg.Port)
+		logger.Info("Starting server on port %d...", cfg.Port)
 		serverErrors <- srv.Start()
 	}()
 
@@ -77,20 +88,22 @@ func main() {
 	select {
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Error starting server: %v", err)
+			logger.Error("Error starting server: %v", err)
+			os.Exit(1)
 		}
 
 	case sig := <-shutdown:
-		log.Printf("Received shutdown signal: %v. Starting graceful shutdown...", sig)
+		logger.Info("Received shutdown signal: %v. Starting graceful shutdown...", sig)
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Graceful shutdown failed: %v", err)
+			logger.Error("Graceful shutdown failed: %v", err)
 			// If shutdown fails, attempt a force exit
 			if err := srv.Shutdown(context.Background()); err != nil {
-				log.Fatalf("Forced shutdown failed: %v", err)
+				logger.Error("Forced shutdown failed: %v", err)
+				os.Exit(1)
 			}
 		}
 	}
-	log.Println("Server stopped successfully")
+	logger.Info("Server stopped successfully")
 }
