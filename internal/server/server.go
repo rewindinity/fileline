@@ -58,6 +58,18 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		"FormatSize": func(b int64) string {
 			return logger.FormatBytes(b)
 		},
+		"FormatPercent": func(p float64) string {
+			return fmt.Sprintf("%.1f%%", p)
+		},
+		"FormatPercentRaw": func(p float64) string {
+			return fmt.Sprintf("%.1f", p)
+		},
+		"FormatTime": func(t *time.Time) string {
+			if t == nil {
+				return ""
+			}
+			return t.Format("Jan 02, 2006 15:04")
+		},
 		"T": func(lang, key string) string {
 			return translations.GetString(lang, key)
 		},
@@ -145,6 +157,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/files", s.requireAuth(s.filesHandler))
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
 	mux.HandleFunc("/delete", s.requireAuth(s.deleteHandler))
+	mux.HandleFunc("/api/files/stats", s.requireAuth(s.fileStatsAPIHandler))
 	// File Upload routes (upload.go)
 	mux.HandleFunc("/upload", s.requireAuth(s.uploadHandler))
 	mux.HandleFunc("/api/upload/init", s.requireAuth(s.chunkUploadInitHandler))

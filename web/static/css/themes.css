@@ -155,13 +155,15 @@ body.theme-light-purple {
 .nav-item img:not(.logo-img),
 .file-name-cell img,
 .icon-btn img,
-.upload-icon {
+.upload-icon,
+.btn-secondary img {
   filter: var(--icon-filter);
 }
 .nav-item:hover img:not(.logo-img):not([style*="filter"]),
 .icon-btn:hover img,
 .upload-area:hover .upload-icon,
-.upload-area.dragover .upload-icon {
+.upload-area.dragover .upload-icon,
+.btn-secondary:hover img {
   filter: var(--icon-filter-hover);
 }
 .nav-item.active {

@@ -8,13 +8,13 @@
     </div>
     <div class="header-actions">
         <a href="/files" class="btn btn-secondary">
-            <img src="/static/icons/bx-arrow-back.svg" alt="Back" style="width: 18px; filter: brightness(0) invert(0.6);">
+            <i class="bx bx-arrow-back"></i>
             {{ T .Language "Back to Files" }}
         </a>
     </div>
 </div>
 
-<div class="card" style="max-width: 600px; margin: 0 auto;">
+<div class="card" style="max-width: 650px; margin: 0 auto;">
     <form method="POST" action="/edit">
         <input type="hidden" name="id" value="{{.File.ID}}">
         
@@ -33,10 +33,38 @@
             <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}">
         </div>
         
-        <div class="checkbox-group mt-1 mb-2">
-            <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}}>
-            <label for="is_private">{{ T .Language "Private File (requires login)" }}</label>
+        <div class="options-grid">
+            <div class="option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}}>
+                    <label for="is_private">{{ T .Language "Private File (requires login)" }}</label>
+                </div>
+            </div>
+
+            <div class="option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="stats_enabled" name="stats_enabled" {{if .File.StatsEnabled}}checked{{end}}>
+                    <label for="stats_enabled">{{ T .Language "Enable statistics" }} <span class="text-muted" style="font-size: 0.85rem; font-weight: 400;">({{ T .Language "tracks reads & user agents" }})</span></label>
+                </div>
+            </div>
         </div>
+        <p class="text-muted" style="font-size: 0.825rem; margin-top: -0.75rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.35rem;">
+            <i class="bx bx-info-circle" style="opacity: 0.75;"></i>
+            {{ T .Language "Activating or deactivating statistics resets recorded stats in database." }}
+        </p>
+
+        {{if .File.StatsEnabled}}
+        <div class="file-reset-stats-box">
+            <div>
+                <strong style="font-size: 0.925rem; display: block; color: var(--text-primary);">{{ T .Language "Reset Statistics" }}</strong>
+                <span class="text-muted" style="font-size: 0.825rem;">{{ T .Language "Clear all recorded reads and device data for this file in database." }}</span>
+            </div>
+            <button type="submit" name="reset_stats" value="1" class="btn btn-danger btn-sm" onclick="return confirm('{{ T $.Language "Are you sure you want to reset all reading statistics for this file?" }}')">
+                <i class="bx bx-trash-alt"></i>
+                {{ T $.Language "Reset Statistics" }}
+            </button>
+        </div>
+        {{end}}
         
         <div style="display: flex; gap: 1rem;">
             <a href="/files" class="btn btn-secondary" style="flex: 1;">{{ T .Language "Cancel" }}</a>

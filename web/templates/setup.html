@@ -90,9 +90,11 @@
                 <label for="s3_secret_key">{{ T .Language "Secret Key" }}</label>
                 <input type="password" id="s3_secret_key" name="s3_secret_key">
             </div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked>
-                <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
+            <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked>
+                    <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
+                </div>
             </div>
         </div>
 

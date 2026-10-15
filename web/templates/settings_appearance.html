@@ -10,28 +10,32 @@
 
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
     {{.SuccessMessage}}
 </div>
 {{end}}
 {{if .ErrorMessage}}
 <div class="alert alert-error">
-    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
     {{.ErrorMessage}}
 </div>
 {{end}}
 
-<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
-    <!-- Account Security Section -->
-    <!-- Appearance Section -->
-<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← {{ T .Language "Back to Settings" }}</a></div>
+<div class="settings-overview-container">
+    <div class="settings-back-bar">
+        <a href="/settings" class="btn btn-secondary btn-sm">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Settings" }}
+        </a>
+    </div>
+
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
             <h2>{{ T .Language "Appearance" }}</h2>
         </div>
         
         <form method="POST" action="/settings/action/appearance" enctype="multipart/form-data">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="settings-grid-2">
                 <div class="form-group">
                     <label for="language">{{ T .Language "Language" }}</label>
                     <select id="language" name="language">
@@ -43,7 +47,7 @@
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="settings-grid-2">
                 <div class="form-group">
                     <label for="theme">{{ T .Language "Theme" }}</label>
                     <select id="theme" name="theme">
@@ -64,17 +68,18 @@
                 
                 <div class="form-group">
                     <label>{{ T .Language "Personal Accent Color" }}</label>
-                    <div style="display: flex; gap: 1rem; align-items: center; margin-top: 0.5rem;">
-                        <div class="checkbox-group" style="margin-bottom: 0;">
-                            <input type="checkbox" id="use_global_accent" name="use_global_accent" {{if or (not .User.Accent) (eq .User.Accent "global")}}checked{{end}} onchange="togglePersonalAccent()">
-                            <label for="use_global_accent">{{ T .Language "Use Global Default" }}</label>
-                        </div>
-                        
-                        
-                        <div id="personal_accent_container" style="display: flex; gap: 0.5rem; align-items: center; {{if or (not .User.Accent) (eq .User.Accent "global")}}display: none;{{end}}">
-                            <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
-                                <input type="color" id="accent" name="accent" value="{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('personal_hex_display').innerText = this.value.toUpperCase()">
-                                <span id="personal_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}</span>
+                    <div class="option-card" style="margin-bottom: 0;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1.125rem;">
+                            <div class="checkbox-group" style="margin-bottom: 0;">
+                                <input type="checkbox" id="use_global_accent" name="use_global_accent" {{if or (not .User.Accent) (eq .User.Accent "global")}}checked{{end}} onchange="togglePersonalAccent()">
+                                <label for="use_global_accent">{{ T .Language "Use Global Default" }}</label>
+                            </div>
+                            
+                            <div id="personal_accent_container" style="display: flex; gap: 0.5rem; align-items: center; {{if or (not .User.Accent) (eq .User.Accent "global")}}display: none;{{end}}">
+                                <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-surface); gap: 0.5rem;">
+                                    <input type="color" id="accent" name="accent" value="{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('personal_hex_display').innerText = this.value.toUpperCase()">
+                                    <span id="personal_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -87,7 +92,7 @@
             <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Global Default Appearance (Admin Only)" }}</h3>
             <p class="text-muted mb-2">{{ T .Language "These settings apply to users who have their theme/accent set to \"Global Default\"." }}</p>
             
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="settings-grid-2">
                 <div class="form-group">
                     <label for="global_theme">{{ T .Language "Global Theme" }}</label>
                     <select id="global_theme" name="global_theme">
@@ -115,7 +120,7 @@
                 </div>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="settings-grid-2">
                 <div class="form-group">
                     <label for="custom_accent_hex">{{ T .Language "Global Accent Color (Web Palette)" }}</label>
                     <div style="display: flex; align-items: center; margin-top: 0.5rem;">
@@ -127,21 +132,22 @@
                 </div>
             </div>
             
-            <div class="form-group" style="margin-bottom: 1.5rem; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px dashed var(--border-color);">
-                <div style="display: flex; align-items: center; gap: 1.5rem;">
-                    <img src="/logo?v={{.Config.CustomLogo}}" alt="Current Logo" id="logo_preview" style="width: 48px; height: 48px; object-fit: contain;" class="logo-img">
-                    <div style="flex-grow: 1;">
-                        <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">{{ T .Language "Custom Server Logo" }}</label>
-                        <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">{{ T .Language "Recommended: SVG or PNG, transparent background. Applies to login and nav." }}</p>
-                        <input type="file" id="custom_logo_file" name="custom_logo_file" accept="image/*">
-                        {{if and (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
-                        <div style="margin-top: 0.75rem;">
-                            <button type="submit" form="removeLogoForm" class="btn" style="background: rgba(239, 68, 68, 0.1); color: var(--error); border: 1px solid var(--error); font-size: 0.85rem; padding: 0.4rem 0.8rem; border-radius: var(--radius-sm); cursor: pointer; transition: all var(--transition);">
-                                {{ T $.Language "Remove Custom Logo" }}
-                            </button>
-                        </div>
-                        {{end}}
+            <div class="form-group settings-logo-upload-box">
+                <div class="settings-logo-preview-wrap">
+                    <img src="/logo?v={{.Config.CustomLogo}}" alt="Current Logo" id="logo_preview" class="logo-img">
+                </div>
+                <div style="flex-grow: 1; min-width: 0;">
+                    <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">{{ T .Language "Custom Server Logo" }}</label>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">{{ T .Language "Recommended: SVG or PNG, transparent background. Applies to login and nav." }}</p>
+                    <input type="file" id="custom_logo_file" name="custom_logo_file" accept="image/*">
+                    {{if and (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
+                    <div style="margin-top: 0.75rem;">
+                        <button type="submit" form="removeLogoForm" class="btn btn-danger btn-sm">
+                            <i class="bx bx-trash-alt"></i>
+                            {{ T $.Language "Remove Custom Logo" }}
+                        </button>
                     </div>
+                    {{end}}
                 </div>
             </div>
             {{end}}

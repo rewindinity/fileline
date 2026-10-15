@@ -27,8 +27,17 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 			is_private BOOLEAN NOT NULL DEFAULT 0,
 			storage_type TEXT NOT NULL,
 			storage_path TEXT NOT NULL,
-			uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		);`
+			uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			stats_enabled BOOLEAN NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS file_reads (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			file_id INTEGER NOT NULL,
+			device_type TEXT NOT NULL,
+			read_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_file_reads_file_id ON file_reads(file_id);
+		CREATE INDEX IF NOT EXISTS idx_file_reads_read_at ON file_reads(read_at);`
 	case "postgres":
 		query = `
 		CREATE TABLE IF NOT EXISTS users (
@@ -46,8 +55,17 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 			is_private BOOLEAN NOT NULL DEFAULT false,
 			storage_type VARCHAR(50) NOT NULL,
 			storage_path VARCHAR(255) NOT NULL,
-			uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		);`
+			uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			stats_enabled BOOLEAN NOT NULL DEFAULT false
+		);
+		CREATE TABLE IF NOT EXISTS file_reads (
+			id SERIAL PRIMARY KEY,
+			file_id INTEGER NOT NULL,
+			device_type VARCHAR(32) NOT NULL,
+			read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_file_reads_file_id ON file_reads(file_id);
+		CREATE INDEX IF NOT EXISTS idx_file_reads_read_at ON file_reads(read_at);`
 	default:
 		return fmt.Errorf("unsupported db type for migrations: %s", dbType)
 	}
@@ -66,6 +84,10 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent TEXT DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language TEXT DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
+		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN stats_enabled BOOLEAN DEFAULT 0")
+		db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS file_reads (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL, device_type TEXT NOT NULL, read_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
+		db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_file_reads_file_id ON file_reads(file_id)")
+		db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_file_reads_read_at ON file_reads(read_at)")
 	} else if dbType == "postgres" {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN totp_secret VARCHAR(255) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN webauthn_data TEXT DEFAULT '[]'")
@@ -74,6 +96,10 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent VARCHAR(50) DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language VARCHAR(50) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
+		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN stats_enabled BOOLEAN DEFAULT false")
+		db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS file_reads (id SERIAL PRIMARY KEY, file_id INTEGER NOT NULL, device_type VARCHAR(32) NOT NULL, read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+		db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_file_reads_file_id ON file_reads(file_id)")
+		db.ExecContext(ctx, "CREATE INDEX IF NOT EXISTS idx_file_reads_read_at ON file_reads(read_at)")
 	}
 
 	return nil

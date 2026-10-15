@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -454,3 +455,424 @@ func TestLogin2FAHandler(t *testing.T) {
 		t.Fatalf("expected JWT session cookie to be set")
 	}
 }
+
+func TestClassifyUserAgent(t *testing.T) {
+	cases := []struct {
+		ua       string
+		expected string
+	}{
+		// Bots
+		{"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)", "bot"},
+		{"Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)", "bot"},
+		{"Twitterbot/1.0", "bot"},
+		// Tablets
+		{"Mozilla/5.0 (iPad; CPU OS 12_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", "tablet"},
+		{"Mozilla/5.0 (Linux; Android 9; SM-T830 Build/PPR1.180610.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.157 Safari/537.36 tablet", "tablet"},
+		// Mobile
+		{"Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1", "mobile"},
+		{"Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36", "mobile"},
+		// PC
+		{"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "pc"},
+		{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", "pc"},
+		{"Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0", "pc"},
+		// Unknown / uncategorized
+		{"curl/7.68.0", "unknown"},
+		{"Wget/1.20.3 (linux-gnu)", "unknown"},
+		{"CustomClient/1.0", "unknown"},
+		{"", "unknown"},
+	}
+
+	for _, tc := range cases {
+		got := classifyUserAgent(tc.ua)
+		if got != tc.expected {
+			t.Errorf("classifyUserAgent(%q) = %q; want %q", tc.ua, got, tc.expected)
+		}
+	}
+}
+
+func TestServeFile_StatsTracking(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	// Save test content into storage
+	storageKey := "sample-test-file.txt"
+	if err := srv.storage.Save(context.Background(), storageKey, strings.NewReader("Hello FileLine Stats")); err != nil {
+		t.Fatalf("failed to save test file to storage: %v", err)
+	}
+
+	// 1. Insert file with StatsEnabled = false
+	disabledFile := &db.File{
+		OriginalName: "disabled.txt",
+		URLPath:      "disabled",
+		Size:         20,
+		IsPrivate:    false,
+		StorageType:  "local",
+		StoragePath:  storageKey,
+		UserID:       1,
+		StatsEnabled: false,
+	}
+	if err := db.InsertFile(context.Background(), database, disabledFile); err != nil {
+		t.Fatalf("failed to insert disabled file: %v", err)
+	}
+	dFile, _ := db.GetFileByURL(context.Background(), database, "disabled")
+
+	// Serve disabled file
+	req1 := httptest.NewRequest("GET", "/f/disabled", nil)
+	req1.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+	rr1 := httptest.NewRecorder()
+	srv.serveFileHandler(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr1.Code)
+	}
+
+	// Wait briefly for any async goroutine
+	time.Sleep(50 * time.Millisecond)
+	st1, _ := db.GetFileStats(context.Background(), database, dFile.ID)
+	if st1.TotalReads != 0 {
+		t.Errorf("expected 0 reads recorded for disabled stats file, got %d", st1.TotalReads)
+	}
+
+	// 2. Insert file with StatsEnabled = true
+	enabledFile := &db.File{
+		OriginalName: "enabled.txt",
+		URLPath:      "enabled",
+		Size:         20,
+		IsPrivate:    false,
+		StorageType:  "local",
+		StoragePath:  storageKey,
+		UserID:       1,
+		StatsEnabled: true,
+	}
+	if err := db.InsertFile(context.Background(), database, enabledFile); err != nil {
+		t.Fatalf("failed to insert enabled file: %v", err)
+	}
+	eFile, _ := db.GetFileByURL(context.Background(), database, "enabled")
+
+	// Serve enabled file with iPhone User-Agent
+	req2 := httptest.NewRequest("GET", "/f/enabled", nil)
+	req2.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) Version/16.5 Mobile/15E148 Safari/604.1")
+	rr2 := httptest.NewRecorder()
+	srv.serveFileHandler(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr2.Code)
+	}
+
+	// Wait for goroutine
+	time.Sleep(100 * time.Millisecond)
+	st2, err := db.GetFileStats(context.Background(), database, eFile.ID)
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if st2.TotalReads != 1 {
+		t.Fatalf("expected 1 read recorded, got %d", st2.TotalReads)
+	}
+	if st2.Mobile.Count != 1 {
+		t.Errorf("expected 1 mobile read, got %d", st2.Mobile.Count)
+	}
+	if st2.Mobile.Percentage != 100.0 {
+		t.Errorf("expected 100%% mobile, got %.1f", st2.Mobile.Percentage)
+	}
+}
+
+func TestEditFile_StatsToggleAndReset(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctx := context.WithValue(context.Background(), "username", "admin")
+
+	// 1. Create file with stats enabled
+	f := &db.File{
+		OriginalName: "report.pdf",
+		CustomName:   "Q3 Report",
+		URLPath:      "q3report",
+		Size:         100,
+		UserID:       1,
+		StatsEnabled: true,
+	}
+	db.InsertFile(context.Background(), database, f)
+	inserted, _ := db.GetFileByURL(context.Background(), database, "q3report")
+
+	// Record some reads
+	db.RecordFileRead(context.Background(), database, inserted.ID, "mobile")
+	db.RecordFileRead(context.Background(), database, inserted.ID, "pc")
+	st, _ := db.GetFileStats(context.Background(), database, inserted.ID)
+	if st.TotalReads != 2 {
+		t.Fatalf("expected 2 reads, got %d", st.TotalReads)
+	}
+
+	// 2. GET /edit?id=... should return 200 with Reset Statistics button rendered (since stats enabled)
+	getReq := httptest.NewRequest("GET", fmt.Sprintf("/edit?id=%d", inserted.ID), nil).WithContext(ctx)
+	getRR := httptest.NewRecorder()
+	srv.editFileHandler(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 on edit GET, got %d", getRR.Code)
+	}
+	if !strings.Contains(getRR.Body.String(), "Reset Statistics") {
+		t.Errorf("expected Reset Statistics in edit html")
+	}
+
+	// 3. POST /edit with stats_enabled unchecked (deactivating stats) -> resets DB stats!
+	deactForm := strings.NewReader(fmt.Sprintf("id=%d&custom_name=Q3+Report&url_path=q3report", inserted.ID))
+	deactReq := httptest.NewRequest("POST", "/edit", deactForm).WithContext(ctx)
+	deactReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	deactRR := httptest.NewRecorder()
+	srv.editFileHandler(deactRR, deactReq)
+	if deactRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after edit, got %d", deactRR.Code)
+	}
+
+	// Verify file stats_enabled is now false and stats were reset in DB
+	up1, _ := db.GetFileByID(context.Background(), database, inserted.ID)
+	if up1.StatsEnabled {
+		t.Errorf("expected stats_enabled to be false")
+	}
+	stAfterDeact, _ := db.GetFileStats(context.Background(), database, inserted.ID)
+	if stAfterDeact.TotalReads != 0 {
+		t.Errorf("expected 0 reads after stats deactivation, got %d", stAfterDeact.TotalReads)
+	}
+
+	// 4. POST /edit activating stats back on (activating stats) -> resets DB stats!
+	actForm := strings.NewReader(fmt.Sprintf("id=%d&custom_name=Q3+Report&url_path=q3report&stats_enabled=on", inserted.ID))
+	actReq := httptest.NewRequest("POST", "/edit", actForm).WithContext(ctx)
+	actReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	actRR := httptest.NewRecorder()
+	srv.editFileHandler(actRR, actReq)
+	if actRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after edit, got %d", actRR.Code)
+	}
+
+	up2, _ := db.GetFileByID(context.Background(), database, inserted.ID)
+	if !up2.StatsEnabled {
+		t.Errorf("expected stats_enabled to be true")
+	}
+
+	// 5. Add reads and test manual reset (reset_stats=1)
+	db.RecordFileRead(context.Background(), database, inserted.ID, "bot")
+	st3, _ := db.GetFileStats(context.Background(), database, inserted.ID)
+	if st3.TotalReads != 1 {
+		t.Fatalf("expected 1 read before manual reset, got %d", st3.TotalReads)
+	}
+
+	resetForm := strings.NewReader(fmt.Sprintf("id=%d&custom_name=Q3+Report&url_path=q3report&stats_enabled=on&reset_stats=1", inserted.ID))
+	resetReq := httptest.NewRequest("POST", "/edit", resetForm).WithContext(ctx)
+	resetReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resetRR := httptest.NewRecorder()
+	srv.editFileHandler(resetRR, resetReq)
+	if resetRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after reset, got %d", resetRR.Code)
+	}
+	if loc := resetRR.Header().Get("Location"); loc != fmt.Sprintf("/edit?id=%d", inserted.ID) {
+		t.Errorf("expected redirect to /edit?id=%d, got %s", inserted.ID, loc)
+	}
+
+	stAfterReset, _ := db.GetFileStats(context.Background(), database, inserted.ID)
+	if stAfterReset.TotalReads != 0 {
+		t.Errorf("expected 0 reads after reset_stats, got %d", stAfterReset.TotalReads)
+	}
+}
+
+func TestUploadHandler_StatsEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "uploader", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctx := context.WithValue(context.Background(), "username", "uploader")
+
+	// 1. Upload without stats_enabled
+	var b1 bytes.Buffer
+	w1 := multipart.NewWriter(&b1)
+	fPart1, _ := w1.CreateFormFile("file", "file_without_stats.txt")
+	fPart1.Write([]byte("content without stats"))
+	w1.WriteField("url_path", "nostats")
+	w1.Close()
+
+	req1 := httptest.NewRequest("POST", "/upload", &b1).WithContext(ctx)
+	req1.Header.Set("Content-Type", w1.FormDataContentType())
+	rr1 := httptest.NewRecorder()
+	srv.uploadHandler(rr1, req1)
+	if rr1.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", rr1.Code)
+	}
+
+	f1, err := db.GetFileByURL(context.Background(), database, "nostats")
+	if err != nil {
+		t.Fatalf("failed to get uploaded file 1: %v", err)
+	}
+	if f1.StatsEnabled {
+		t.Errorf("expected StatsEnabled to be false when not checked in upload form")
+	}
+
+	// 2. Upload with stats_enabled = on
+	var b2 bytes.Buffer
+	w2 := multipart.NewWriter(&b2)
+	fPart2, _ := w2.CreateFormFile("file", "file_with_stats.txt")
+	fPart2.Write([]byte("content with stats"))
+	w2.WriteField("url_path", "withstats")
+	w2.WriteField("stats_enabled", "on")
+	w2.Close()
+
+	req2 := httptest.NewRequest("POST", "/upload", &b2).WithContext(ctx)
+	req2.Header.Set("Content-Type", w2.FormDataContentType())
+	rr2 := httptest.NewRecorder()
+	srv.uploadHandler(rr2, req2)
+	if rr2.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", rr2.Code)
+	}
+
+	f2, err := db.GetFileByURL(context.Background(), database, "withstats")
+	if err != nil {
+		t.Fatalf("failed to get uploaded file 2: %v", err)
+	}
+	if !f2.StatsEnabled {
+		t.Errorf("expected StatsEnabled to be true when explicitly checked in upload form")
+	}
+
+	// 3. Chunk upload init with stats_enabled = true
+	initBody := `{"file_name": "chunked_stats.bin", "total_size": 2048, "total_chunks": 1, "stats_enabled": true, "url_path": "chunkedstats"}`
+	initReq := httptest.NewRequest("POST", "/api/upload/init", strings.NewReader(initBody)).WithContext(ctx)
+	initReq.Header.Set("Content-Type", "application/json")
+	initRR := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR, initReq)
+	if initRR.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", initRR.Code)
+	}
+	var initRes map[string]string
+	json.Unmarshal(initRR.Body.Bytes(), &initRes)
+	upID := initRes["upload_id"]
+	srv.chunkMu.RLock()
+	chunkUploadSession := srv.chunkUploads[upID]
+	srv.chunkMu.RUnlock()
+	if chunkUploadSession == nil || !chunkUploadSession.StatsEnabled {
+		t.Errorf("expected chunk upload session to have StatsEnabled=true")
+	}
+}
+
+func TestFileStatsAPIHandler(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	if err := db.CreateAdmin(context.Background(), database, "alice", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	userAlice, _ := db.GetUserByUsername(context.Background(), database, "alice")
+	if err := db.CreateSubuser(context.Background(), database, "bob", "hash", userAlice.ID); err != nil {
+		t.Fatalf("failed to create bob: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	fAlice := &db.File{
+		UserID:       userAlice.ID,
+		OriginalName: "alice_notes.pdf",
+		CustomName:   "Notes",
+		URLPath:      "alicenotes",
+		Size:         1024,
+		StoragePath:  "alice_notes.pdf",
+		StorageType:  "local",
+		StatsEnabled: true,
+	}
+	db.InsertFile(context.Background(), database, fAlice)
+	fileObj, _ := db.GetFileByURL(context.Background(), database, "alicenotes")
+
+	db.RecordFileRead(context.Background(), database, fileObj.ID, "mobile")
+	db.RecordFileRead(context.Background(), database, fileObj.ID, "mobile")
+	db.RecordFileRead(context.Background(), database, fileObj.ID, "pc")
+
+	// 1. Forbidden for Bob
+	ctxBob := context.WithValue(context.Background(), "username", "bob")
+	reqBob := httptest.NewRequest("GET", fmt.Sprintf("/api/files/stats?id=%d", fileObj.ID), nil).WithContext(ctxBob)
+	rrBob := httptest.NewRecorder()
+	srv.fileStatsAPIHandler(rrBob, reqBob)
+	if rrBob.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for non-owner, got %d", rrBob.Code)
+	}
+
+	// 2. Success for Alice
+	ctxAlice := context.WithValue(context.Background(), "username", "alice")
+	reqAlice := httptest.NewRequest("GET", fmt.Sprintf("/api/files/stats?id=%d", fileObj.ID), nil).WithContext(ctxAlice)
+	rrAlice := httptest.NewRecorder()
+	srv.fileStatsAPIHandler(rrAlice, reqAlice)
+	if rrAlice.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for owner, got %d", rrAlice.Code)
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(rrAlice.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode json: %v", err)
+	}
+	if res["stats_enabled"] != true {
+		t.Errorf("expected stats_enabled true, got %v", res["stats_enabled"])
+	}
+	if totalReads := res["total_reads"].(float64); totalReads != 3 {
+		t.Errorf("expected total_reads 3, got %v", totalReads)
+	}
+	mobileMap := res["mobile"].(map[string]interface{})
+	if mobileMap["count"].(float64) != 2 {
+		t.Errorf("expected mobile count 2, got %v", mobileMap["count"])
+	}
+	if mobileMap["percentage"].(float64) < 66.6 {
+		t.Errorf("expected mobile percentage ~66.7, got %v", mobileMap["percentage"])
+	}
+}
+

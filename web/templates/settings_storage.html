@@ -10,21 +10,25 @@
 
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-    <img src="/static/icons/bxs-check-circle.svg" alt="Success" style="width: 20px; filter: brightness(0) saturate(100%) invert(60%) sepia(80%) saturate(1000%) hue-rotate(110deg) brightness(90%) contrast(90%);">
+    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
     {{.SuccessMessage}}
 </div>
 {{end}}
 {{if .ErrorMessage}}
 <div class="alert alert-error">
-    <img src="/static/icons/bxs-error-circle.svg" alt="Error" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
     {{.ErrorMessage}}
 </div>
 {{end}}
 
-<div style="display: grid; grid-template-columns: 1fr; gap: 2rem;">
-    <!-- Account Security Section -->
-    <!-- Appearance Section -->
-<div style="margin-bottom: 1rem;"><a href="/settings" class="btn btn-secondary">← {{ T .Language "Back to Settings" }}</a></div>
+<div class="settings-overview-container">
+    <div class="settings-back-bar">
+        <a href="/settings" class="btn btn-secondary btn-sm">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Settings" }}
+        </a>
+    </div>
+
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
             <h2>{{ T .Language "Storage Configuration" }}</h2>
@@ -47,7 +51,7 @@
             </div>
 
             <div id="s3_storage_fields" style="display: none; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="settings-grid-2">
                     <div class="form-group">
                         <label for="s3_endpoint">{{ T .Language "S3 Endpoint" }}</label>
                         <input type="text" id="s3_endpoint" name="s3_endpoint" value="{{.Config.S3Endpoint}}">
@@ -61,7 +65,7 @@
                     <label for="s3_bucket">{{ T .Language "S3 Bucket" }}</label>
                     <input type="text" id="s3_bucket" name="s3_bucket" value="{{.Config.S3Bucket}}">
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="settings-grid-2">
                     <div class="form-group">
                         <label for="s3_access_key">{{ T .Language "Access Key" }}</label>
                         <input type="text" id="s3_access_key" name="s3_access_key" value="{{.Config.S3AccessKey}}">
@@ -71,17 +75,22 @@
                         <input type="password" id="s3_secret_key" name="s3_secret_key">
                     </div>
                 </div>
-                <div class="checkbox-group" style="margin-bottom: 0;">
-                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}}>
-                    <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
+                <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" {{if .Config.S3UseSSL}}checked{{end}}>
+                        <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
+                    </div>
                 </div>
             </div>
 
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+            <div class="settings-section-header">
                 <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">{{ T .Language "Additional Storage Drives" }}</h3>
-                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">{{ T .Language "+ Add Drive" }}</button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">
+                    <i class="bx bx-plus"></i>
+                    {{ T .Language "Add Drive" }}
+                </button>
             </div>
             
             <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem;">
@@ -92,7 +101,7 @@
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
             <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Upload Limits & Chunking" }}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+            <div class="settings-grid-3">
                 <div class="form-group">
                     <label for="max_upload_size_mb">{{ T .Language "Max Upload Size (MB)" }}</label>
                     <input type="number" id="max_upload_size_mb" name="max_upload_size_mb" value="{{.Config.MaxUploadSizeMB}}" required>
@@ -145,13 +154,16 @@
         
         drives.forEach((drive, idx) => {
             const html = `
-            <div style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+            <div style="background: var(--bg-base); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                     <h4 style="margin: 0; color: var(--accent-primary);">{{ T $.Language "Drive #" }}${idx + 1}</h4>
-                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">{{ T $.Language "Remove" }}</button>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="removeDrive(${idx})">
+                        <i class="bx bx-trash-alt"></i>
+                        {{ T $.Language "Remove" }}
+                    </button>
                 </div>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div class="settings-grid-2">
                     <div class="form-group">
                         <label>{{ T $.Language "Drive ID" }}</label>
                         <input type="text" value="${escapeHtml(drive.id)}" onchange="updateDrive(${idx}, 'id', this.value)" required>
@@ -163,7 +175,7 @@
                 </div>
 
                 ${drive.type === 'local' ? `
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="settings-grid-2">
                         <div class="form-group">
                             <label>{{ T $.Language "Storage Type" }}</label>
                             <select onchange="updateDrive(${idx}, 'type', this.value)">
@@ -185,7 +197,7 @@
                         </select>
                     </div>
                 
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="settings-grid-2">
                         <div class="form-group">
                             <label>{{ T $.Language "S3 Endpoint" }}</label>
                             <input type="text" value="${escapeHtml(drive.s3_endpoint || '')}" onchange="updateDrive(${idx}, 's3_endpoint', this.value)">
@@ -199,7 +211,7 @@
                         <label>{{ T $.Language "S3 Bucket" }}</label>
                         <input type="text" value="${escapeHtml(drive.s3_bucket || '')}" onchange="updateDrive(${idx}, 's3_bucket', this.value)">
                     </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="settings-grid-2">
                         <div class="form-group">
                             <label>{{ T $.Language "Access Key" }}</label>
                             <input type="text" value="${escapeHtml(drive.s3_access_key || '')}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
@@ -209,9 +221,11 @@
                             <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
                         </div>
                     </div>
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="d_s3_use_ssl_${idx}" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${drive.s3_use_ssl ? 'checked' : ''}>
-                        <label for="d_s3_use_ssl_${idx}">{{ T $.Language "Use SSL" }}</label>
+                    <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="d_s3_use_ssl_${idx}" onchange="updateDrive(${idx}, 's3_use_ssl', this.checked)" ${drive.s3_use_ssl ? 'checked' : ''}>
+                            <label for="d_s3_use_ssl_${idx}">{{ T $.Language "Use SSL" }}</label>
+                        </div>
                     </div>
                 `}
             </div>

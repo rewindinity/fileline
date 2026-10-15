@@ -23,6 +23,7 @@ type ChunkUpload struct {
 	TotalSize    int64
 	TotalChunks  int
 	IsPrivate    bool
+	StatsEnabled bool
 	DriveID      string
 	UserID       int
 	Received     []bool
@@ -67,6 +68,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isPrivate := r.FormValue("is_private") == "on"
+	statsEnabled := r.FormValue("stats_enabled") == "on"
 	driveID := r.FormValue("drive_id")
 
 	s.mu.RLock()
@@ -106,6 +108,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		URLPath:      urlPath,
 		Size:         header.Size,
 		IsPrivate:    isPrivate,
+		StatsEnabled: statsEnabled,
 		StorageType:  storageType,
 		StoragePath:  storageKey,
 		UserID:       user.ID,
@@ -127,13 +130,14 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		FileName    string `json:"file_name"`
-		TotalSize   int64  `json:"total_size"`
-		TotalChunks int    `json:"total_chunks"`
-		IsPrivate   bool   `json:"is_private"`
-		CustomName  string `json:"custom_name"`
-		URLPath     string `json:"url_path"`
-		DriveID     string `json:"drive_id"`
+		FileName     string `json:"file_name"`
+		TotalSize    int64  `json:"total_size"`
+		TotalChunks  int    `json:"total_chunks"`
+		IsPrivate    bool   `json:"is_private"`
+		StatsEnabled bool   `json:"stats_enabled"`
+		CustomName   string `json:"custom_name"`
+		URLPath      string `json:"url_path"`
+		DriveID      string `json:"drive_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
@@ -183,6 +187,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		TotalSize:    req.TotalSize,
 		TotalChunks:  req.TotalChunks,
 		IsPrivate:    req.IsPrivate,
+		StatsEnabled: req.StatsEnabled,
 		DriveID:      req.DriveID,
 		UserID:       user.ID,
 		Received:     make([]bool, req.TotalChunks),
@@ -335,6 +340,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		URLPath:      urlPath,
 		Size:         actualSize,
 		IsPrivate:    upload.IsPrivate,
+		StatsEnabled: upload.StatsEnabled,
 		StorageType:  storageType,
 		StoragePath:  storageKey,
 		UserID:       upload.UserID,
