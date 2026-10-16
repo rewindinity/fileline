@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 
 {{define "content"}}
+<!-- Page Header -->
 <div class="page-header">
     <div>
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
@@ -8,20 +9,22 @@
     </div>
 </div>
 
+<!-- Feedback Alerts -->
 {{if .SuccessMessage}}
 <div class="alert alert-success">
     <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{.SuccessMessage}}
+    {{ T .Language .SuccessMessage }}
 </div>
 {{end}}
 {{if .ErrorMessage}}
 <div class="alert alert-error">
     <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{.ErrorMessage}}
+    {{ T .Language .ErrorMessage }}
 </div>
 {{end}}
 
 <div class="settings-overview-container">
+    <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
             <i class="bx bx-arrow-back"></i>
@@ -29,12 +32,14 @@
         </a>
     </div>
 
+    <!-- Storage Configuration Card -->
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
             <h2>{{ T .Language "Storage Configuration" }}</h2>
         </div>
         
         <form id="storageForm" method="POST" action="/settings/action/storage">
+            <!-- Primary Storage Provider (Local or S3) -->
             <div class="form-group">
                 <label for="storage_type">{{ T .Language "Primary Storage Type" }}</label>
                 <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
@@ -43,6 +48,7 @@
                 </select>
             </div>
 
+            <!-- Primary Storage: Local Storage Settings -->
             <div id="local_storage_fields" style="background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                 <div class="form-group" style="margin-bottom: 0;">
                     <label for="local_path">{{ T .Language "Uploads Path" }}</label>
@@ -50,6 +56,7 @@
                 </div>
             </div>
 
+            <!-- Primary Storage: S3 / Object Storage Settings -->
             <div id="s3_storage_fields" style="display: none; background: var(--bg-base); padding: 1.5rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 1.5rem;">
                 <div class="settings-grid-2">
                     <div class="form-group">
@@ -85,6 +92,7 @@
 
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
+            <!-- Additional Storage Drives -->
             <div class="settings-section-header">
                 <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0;">{{ T .Language "Additional Storage Drives" }}</h3>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="addDrive()">
@@ -94,12 +102,13 @@
             </div>
             
             <div id="drives_container" style="display: flex; flex-direction: column; gap: 1rem;">
-                <!-- Drives populated by JS -->
+                <!-- Additional drives list dynamically rendered by JS -->
             </div>
             <input type="hidden" id="drives_json_input" name="drives_json">
 
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
+            <!-- Upload Limits & Chunking -->
             <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Upload Limits & Chunking" }}</h3>
             <div class="settings-grid-3">
                 <div class="form-group">
@@ -118,11 +127,13 @@
                 </div>
             </div>
 
+            <!-- Form Submit Action -->
             <button type="submit" class="btn btn-primary" onclick="prepareDrivesJson()">{{ T .Language "Save Storage Config" }}</button>
         </form>
     </div>
 
-    <!-- Users Management Section (Admin Only) --><script>
+    <script>
+    // Toggle Primary Storage Fields (Local or S3)
     function toggleStorageFields() {
         const type = document.getElementById('storage_type').value;
         if (type === 'local') {
@@ -134,7 +145,8 @@
         }
     }
     toggleStorageFields();
-    // Drives
+
+    // Additional Storage Drives State & Management
     let drivesStr = {{.DrivesJSON}};
     let drives = [];
     try {
@@ -234,6 +246,7 @@
         });
     }
 
+    // Add new drive to array and re-render
     function addDrive() {
         drives.push({
             id: 'drive_' + Date.now(),
@@ -245,11 +258,13 @@
         renderDrives();
     }
 
+    // Remove drive from array by index
     function removeDrive(idx) {
         drives.splice(idx, 1);
         renderDrives();
     }
 
+    // Update drive property
     function updateDrive(idx, field, value) {
         drives[idx][field] = value;
         if (field === 'type') {
@@ -270,7 +285,7 @@
              .replace(/'/g, "&#039;");
     }
 
-
+    // Initial render
     renderDrives();
 </script>
 </div>

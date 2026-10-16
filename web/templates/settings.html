@@ -1,83 +1,94 @@
-{{template "base.html" .}}
-
-{{define "content"}}
+{{template "base.html" .}} {{define "content"}}
+<!-- Page Header -->
 <div class="page-header">
-    <div>
-        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
-        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
-    </div>
+  <div>
+    <h1 style="margin-bottom: 0.25rem">{{ T .Language "Settings" }}</h1>
+    <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+  </div>
 </div>
 
+<!-- Feedback Alerts -->
 {{if .SuccessMessage}}
 <div class="alert alert-success">
-    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{.SuccessMessage}}
+  <i class="bx bxs-check-circle" style="font-size: 1.25rem"></i>
+  {{ T .Language .SuccessMessage }}
 </div>
-{{end}}
-{{if .ErrorMessage}}
+{{end}} {{if .ErrorMessage}}
 <div class="alert alert-error">
-    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{.ErrorMessage}}
+  <i class="bx bxs-error-circle" style="font-size: 1.25rem"></i>
+  {{ T .Language .ErrorMessage }}
 </div>
 {{end}}
 
+<!-- Settings Hub Container -->
 <div class="settings-overview-container">
-    <div class="card">
-        <div class="card-header">
-            <h2>{{ T .Language "Settings Overview" }}</h2>
-        </div>
-        <div class="settings-menu">
-            <a href="/settings/appearance" class="settings-menu-item">
-                <div class="settings-menu-icon">
-                    <i class="bx bxs-palette"></i>
-                </div>
-                <div class="settings-menu-content">
-                    <h3>{{ T .Language "Appearance" }}</h3>
-                    <p>{{ T .Language "Manage theme, accent colors, and custom logo" }}</p>
-                </div>
-                <div class="settings-menu-arrow">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </div>
-            </a>
-            <a href="/settings/account" class="settings-menu-item">
-                <div class="settings-menu-icon">
-                    <i class="bx bxs-shield"></i>
-                </div>
-                <div class="settings-menu-content">
-                    <h3>{{ T .Language "Account Security" }}</h3>
-                    <p>{{ T .Language "Update password and manage two-factor authentication" }}</p>
-                </div>
-                <div class="settings-menu-arrow">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </div>
-            </a>
-            {{if eq .User.Role "admin"}}
-            <a href="/settings/storage" class="settings-menu-item">
-                <div class="settings-menu-icon">
-                    <i class="bx bxs-data"></i>
-                </div>
-                <div class="settings-menu-content">
-                    <h3>{{ T .Language "Storage Configuration" }}</h3>
-                    <p>{{ T .Language "Configure local or S3-compatible backend storage" }}</p>
-                </div>
-                <div class="settings-menu-arrow">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </div>
-            </a>
-            <a href="/settings/subusers" class="settings-menu-item">
-                <div class="settings-menu-icon">
-                    <i class="bx bx-list-ul"></i>
-                </div>
-                <div class="settings-menu-content">
-                    <h3>{{ T .Language "Users Management" }}</h3>
-                    <p>{{ T .Language "Add, manage, and remove subuser accounts" }}</p>
-                </div>
-                <div class="settings-menu-arrow">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </div>
-            </a>
-            {{end}}
-        </div>
+  <div class="card">
+    <div class="card-header">
+      <h2>{{ T .Language "Settings Overview" }}</h2>
     </div>
+    <div class="settings-menu">
+      <!-- General Settings (All Users) -->
+      <a href="/settings/appearance" class="settings-menu-item">
+        <div class="settings-menu-icon">
+          <i class="bx bxs-palette"></i>
+        </div>
+        <div class="settings-menu-content">
+          <h3>{{ T .Language "Appearance" }}</h3>
+          <p>{{ T .Language "Manage theme, accent colors, and custom logo" }}</p>
+        </div>
+        <div class="settings-menu-arrow">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </div>
+      </a>
+      <a href="/settings/account" class="settings-menu-item">
+        <div class="settings-menu-icon">
+          <i class="bx bxs-shield"></i>
+        </div>
+        <div class="settings-menu-content">
+          <h3>{{ T .Language "Account Security" }}</h3>
+          <p>{{ T .Language "Update password and manage two-factor authentication" }}</p>
+        </div>
+        <div class="settings-menu-arrow">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </div>
+      </a>
+
+      <!-- Administrative Settings (Admin Only) -->
+      {{if eq .User.Role "admin"}}
+      <a href="/settings/storage" class="settings-menu-item">
+        <div class="settings-menu-icon">
+          <i class="bx bxs-data"></i>
+        </div>
+        <div class="settings-menu-content">
+          <h3>{{ T .Language "Storage Configuration" }}</h3>
+          <p>{{ T .Language "Configure local or S3-compatible backend storage" }}</p>
+        </div>
+        <div class="settings-menu-arrow">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </div>
+      </a>
+      <a href="/settings/subusers" class="settings-menu-item">
+        <div class="settings-menu-icon">
+          <i class="bx bx-list-ul"></i>
+        </div>
+        <div class="settings-menu-content">
+          <h3>{{ T .Language "Users Management" }}</h3>
+          <p>{{ T .Language "Add, manage, and remove subuser accounts" }}</p>
+        </div>
+        <div class="settings-menu-arrow">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="9 18 15 12 9 6"></polyline>
+          </svg>
+        </div>
+      </a>
+      {{end}}
+    </div>
+  </div>
 </div>
 {{end}}

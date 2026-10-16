@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 
 {{define "content"}}
+<!-- Page Header -->
 <div class="page-header">
     <div>
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
@@ -8,20 +9,22 @@
     </div>
 </div>
 
+<!-- Feedback Alerts -->
 {{if .SuccessMessage}}
 <div class="alert alert-success">
     <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{.SuccessMessage}}
+    {{ T .Language .SuccessMessage }}
 </div>
 {{end}}
 {{if .ErrorMessage}}
 <div class="alert alert-error">
     <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{.ErrorMessage}}
+    {{ T .Language .ErrorMessage }}
 </div>
 {{end}}
 
 <div class="settings-overview-container">
+    <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
             <i class="bx bx-arrow-back"></i>
@@ -29,11 +32,13 @@
         </a>
     </div>
 
+    <!-- Users Management Card -->
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
             <h2>{{ T .Language "Users Management" }}</h2>
         </div>
         
+        <!-- Existing Users List -->
         <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Existing Users" }}</h3>
         <div class="table-responsive" style="margin-bottom: 2rem;">
             <table>
@@ -73,6 +78,7 @@
 
         <hr style="border-color: var(--border-color); margin: 2rem 0;">
 
+        <!-- Add Subuser -->
         <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Add Subuser" }}</h3>
         <form method="POST" action="/settings/users/add">
             <div class="settings-grid-3" style="align-items: end;">

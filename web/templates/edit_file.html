@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 
 {{define "content"}}
+<!-- Page Header & Navigation Bar -->
 <div class="page-header">
     <div>
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Edit File" }}</h1>
@@ -14,10 +15,12 @@
     </div>
 </div>
 
+<!-- Edit File Form Card -->
 <div class="card" style="max-width: 650px; margin: 0 auto;">
     <form method="POST" action="/edit">
         <input type="hidden" name="id" value="{{.File.ID}}">
         
+        <!-- File Metadata Fields -->
         <div class="form-group">
             <label>{{ T .Language "Original Name" }} <span class="text-muted">({{ T .Language "Read-only" }})</span></label>
             <input type="text" value="{{.File.OriginalName}}" readonly style="background-color: var(--bg-base); opacity: 0.7; cursor: not-allowed;">
@@ -33,6 +36,7 @@
             <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}">
         </div>
         
+        <!-- Privacy & Analytics Options -->
         <div class="options-grid">
             <div class="option-card">
                 <div class="checkbox-group">
@@ -53,6 +57,7 @@
             {{ T .Language "Activating or deactivating statistics resets recorded stats in database." }}
         </p>
 
+        <!-- Reset Reading Statistics Box (Shown only if statistics are enabled) -->
         {{if .File.StatsEnabled}}
         <div class="file-reset-stats-box">
             <div>
@@ -66,6 +71,7 @@
         </div>
         {{end}}
         
+        <!-- Form Actions -->
         <div style="display: flex; gap: 1rem;">
             <a href="/files" class="btn btn-secondary" style="flex: 1;">{{ T .Language "Cancel" }}</a>
             <button type="submit" class="btn btn-primary" style="flex: 1;">{{ T .Language "Save Changes" }}</button>

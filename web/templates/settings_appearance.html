@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 
 {{define "content"}}
+<!-- Page Header -->
 <div class="page-header">
     <div>
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
@@ -8,20 +9,22 @@
     </div>
 </div>
 
+<!-- Feedback Alerts -->
 {{if .SuccessMessage}}
 <div class="alert alert-success">
     <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{.SuccessMessage}}
+    {{ T .Language .SuccessMessage }}
 </div>
 {{end}}
 {{if .ErrorMessage}}
 <div class="alert alert-error">
     <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{.ErrorMessage}}
+    {{ T .Language .ErrorMessage }}
 </div>
 {{end}}
 
 <div class="settings-overview-container">
+    <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
             <i class="bx bx-arrow-back"></i>
@@ -29,12 +32,15 @@
         </a>
     </div>
 
+    <!-- Appearance Settings Card -->
     <div class="card">
         <div class="card-header" style="margin-bottom: 2rem;">
             <h2>{{ T .Language "Appearance" }}</h2>
         </div>
         
+        <!-- Appearance Configuration Form -->
         <form method="POST" action="/settings/action/appearance" enctype="multipart/form-data">
+            <!-- Personal Preferences -->
             <div class="settings-grid-2">
                 <div class="form-group">
                     <label for="language">{{ T .Language "Language" }}</label>
@@ -86,7 +92,7 @@
                 </div>
             </div>
 
-            <!-- Global admin-only fields -->
+            <!-- Global Default Appearance (Admin Only) -->
             {{if eq .User.Role "admin"}}
             <hr style="border-color: var(--border-color); margin: 2rem 0;">
             <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Global Default Appearance (Admin Only)" }}</h3>
@@ -132,9 +138,10 @@
                 </div>
             </div>
             
+            <!-- Custom Server Logo Upload & Preview -->
             <div class="form-group settings-logo-upload-box">
                 <div class="settings-logo-preview-wrap">
-                    <img src="/logo?v={{.Config.CustomLogo}}" alt="Current Logo" id="logo_preview" class="logo-img">
+                    <img src="/logo?v={{.Config.CustomLogo}}" alt="{{ T .Language "Current Logo" }}" id="logo_preview" class="logo-img">
                 </div>
                 <div style="flex-grow: 1; min-width: 0;">
                     <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">{{ T .Language "Custom Server Logo" }}</label>
@@ -152,9 +159,11 @@
             </div>
             {{end}}
 
+            <!-- Form Submit Action -->
             <button type="submit" class="btn btn-primary">{{ T .Language "Save Appearance" }}</button>
         </form>
         
+        <!-- Logo Removal Helper Form (Admin Only) -->
         {{if and (eq .User.Role "admin") (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
         <form id="removeLogoForm" method="POST" action="/settings/appearance/remove_logo" style="display: none;"></form>
         {{end}}
@@ -162,27 +171,31 @@
     
     <script>
     document.addEventListener("DOMContentLoaded", function() {
+        // Uppercase hex preview strings
         var p = document.getElementById('personal_hex_display');
         var g = document.getElementById('global_hex_display');
         if (p) p.innerText = p.innerText.toUpperCase();
         if (g) g.innerText = g.innerText.toUpperCase();
 
-    var logoInput = document.getElementById('custom_logo_file');
-    if (logoInput) {
-        logoInput.addEventListener('change', function(e) {
-            if (e.target.files && e.target.files[0]) {
-                var reader = new FileReader();
-                reader.onload = function(e2) {
-                    var preview = document.getElementById('logo_preview');
-                    if (preview) {
-                        preview.src = e2.target.result;
+        // Real-time preview for uploaded logo file
+        var logoInput = document.getElementById('custom_logo_file');
+        if (logoInput) {
+            logoInput.addEventListener('change', function(e) {
+                if (e.target.files && e.target.files[0]) {
+                    var reader = new FileReader();
+                    reader.onload = function(e2) {
+                        var preview = document.getElementById('logo_preview');
+                        if (preview) {
+                            preview.src = e2.target.result;
+                        }
                     }
+                    reader.readAsDataURL(e.target.files[0]);
                 }
-                reader.readAsDataURL(e.target.files[0]);
-            }
-        });
-    }
+            });
+        }
     });
+
+    // Toggle personal accent color picker container
     function togglePersonalAccent() {
         var cb = document.getElementById('use_global_accent');
         var container = document.getElementById('personal_accent_container');

@@ -1,15 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{if .Language}}{{.Language}}{{else}}en{{end}}">
+<!-- Document Head -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{.Title}} - FileLine</title>
+    <title>{{if .Title}}{{ T .Language .Title }}{{else}}FileLine{{end}} - FileLine</title>
     <link rel="icon" href="/logo?v={{.Config.CustomLogo}}">
     <link rel="stylesheet" href="/static/icons.css">
     <link rel="stylesheet" href="/static/css/themes.css">
     <link rel="stylesheet" href="/static/css/style.css">
     {{block "head" .}}{{end}}
     
+    <!-- Theme & Accent Dynamic Calculation -->
     {{$theme := .Config.Theme}}
     {{$accentHex := .Config.CustomAccentHex}}
 
@@ -30,7 +32,9 @@
             
 </head>
 <body class="theme-{{$theme}}" style="--accent-primary: {{$accentHex}};">
+    <!----- Authenticated Layout ----->
     {{if .Username}}
+    <!-- Top Navigation Bar -->
     <header class="top-navbar">
         <div class="nav-container">
             <a href="/" class="brand">
@@ -39,49 +43,54 @@
             </a>
             
             <button class="mobile-nav-toggle" id="mobileNavBtn">
-                <img src="/static/icons/bx-list-ul.svg" alt="Menu" style="width: 24px; filter: brightness(0) invert(1);">
+                <img src="/static/icons/bx-list-ul.svg" alt="{{ T .Language "Menu" }}" style="width: 24px; filter: brightness(0) invert(1);">
             </button>
             
             <nav class="nav-links" id="navLinks">
                 <a href="/" class="nav-item {{if eq .Title "Dashboard"}}active{{end}}">
-                    <img src="/static/icons/bxs-dashboard.svg" alt="Dashboard">
+                    <img src="/static/icons/bxs-dashboard.svg" alt="{{ T .Language "Dashboard" }}">
                     {{ T .Language "Dashboard" }}
                 </a>
                 <a href="/files" class="nav-item {{if eq .Title "My Files"}}active{{end}}">
-                    <img src="/static/icons/bxs-folder.svg" alt="Files">
+                    <img src="/static/icons/bxs-folder.svg" alt="{{ T .Language "Files" }}">
                     {{ T .Language "Files" }}
                 </a>
                 <a href="/settings" class="nav-item {{if eq .Title "Settings"}}active{{end}}">
-                    <img src="/static/icons/bxs-cog.svg" alt="Settings">
+                    <img src="/static/icons/bxs-cog.svg" alt="{{ T .Language "Settings" }}">
                     {{ T .Language "Settings" }}
                 </a>
                 <a href="/logout" class="nav-item" style="color: var(--error);">
-                    <img src="/static/icons/bx-log-out.svg" alt="Logout" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+                    <img src="/static/icons/bx-log-out.svg" alt="{{ T .Language "Logout" }}" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
                     {{ T .Language "Logout" }} ({{.Username}})
                 </a>
             </nav>
         </div>
     </header>
     
+    <!-- Main Content Layout -->
     <div class="app-layout">
         <main class="main-content">
             {{block "content" .}}{{end}}
         </main>
     </div>
     
+    <!-- Mobile Navigation Toggle Script -->
     <script>
         document.getElementById('mobileNavBtn')?.addEventListener('click', function() {
             document.getElementById('navLinks').classList.toggle('show');
         });
     </script>
     {{else}}
+    <!----- Guest / Authentication Layout ----->
     <div class="auth-layout">
         <div class="auth-card">
+            <!-- Auth Card Header -->
             <div class="auth-header">
                 <img src="/logo?v={{.Config.CustomLogo}}" alt="FileLine Logo" style="width: 48px; margin-bottom: 1rem;" class="logo-img">
                 <h1>FileLine</h1>
-                <p class="text-muted">{{.Title}}</p>
+                <p class="text-muted">{{if .Title}}{{ T .Language .Title }}{{end}}</p>
             </div>
+            <!-- Auth Content Area -->
             {{block "content" .}}{{end}}
         </div>
     </div>

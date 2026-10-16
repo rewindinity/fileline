@@ -1,6 +1,7 @@
 {{template "base.html" .}}
 
 {{define "content"}}
+<!-- Page Header & Action Bar -->
 <div class="page-header">
     <div>
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Files" }}</h1>
@@ -8,14 +9,16 @@
     </div>
     <div class="header-actions">
         <a href="/" class="btn btn-primary">
-            <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" style="width: 18px; filter: brightness(0) invert(1);">
+            <img src="/static/icons/bxs-cloud-upload.svg" alt="{{ T .Language "Upload File" }}" style="width: 18px; filter: brightness(0) invert(1);">
             {{ T .Language "Upload File" }}
         </a>
     </div>
 </div>
 
+<!-- Files List Card -->
 <div class="card">
     <div class="table-responsive">
+        <!-- Files Data Table -->
         <table>
             <thead>
                 <tr>
@@ -32,7 +35,7 @@
                 <tr>
                     <td>
                         <div class="file-name-cell">
-                            <img src="/static/icons/bxs-file.svg" alt="File">
+                            <img src="/static/icons/bxs-file.svg" alt="{{ T $.Language "File" }}">
                             {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
                         </div>
                     </td>
@@ -49,15 +52,15 @@
                     <td style="text-align: right;">
                         <div class="actions" style="justify-content: flex-end;">
                             <button type="button" class="icon-btn" data-file-id="{{.ID}}" data-file-name="{{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}" onclick="openStatsModal(this)" title="{{if .StatsEnabled}}{{ T $.Language "View Statistics" }}{{else}}{{ T $.Language "Statistics Disabled" }}{{end}}" {{if not .StatsEnabled}}style="opacity: 0.45;"{{end}}>
-                                <img src="/static/icons/bx-data.svg" alt="Stats">
+                                <img src="/static/icons/bx-data.svg" alt="{{ T $.Language "Stats" }}">
                             </button>
-                            <a href="/edit?id={{.ID}}" class="icon-btn" title="Edit">
-                                <img src="/static/icons/bxs-edit.svg" alt="Edit">
+                            <a href="/edit?id={{.ID}}" class="icon-btn" title="{{ T $.Language "Edit" }}">
+                                <img src="/static/icons/bxs-edit.svg" alt="{{ T $.Language "Edit" }}">
                             </a>
-                            <form method="POST" action="/delete" style="margin: 0; display: inline-block;" onsubmit="return confirm('Are you sure you want to delete this file?')">
+                            <form method="POST" action="/delete" style="margin: 0; display: inline-block;" onsubmit="return confirm('{{ T $.Language "Are you sure you want to delete this file?" }}')">
                                 <input type="hidden" name="id" value="{{.ID}}">
-                                <button type="submit" class="icon-btn" title="Delete">
-                                    <img src="/static/icons/bxs-trash.svg" alt="Delete">
+                                <button type="submit" class="icon-btn" title="{{ T $.Language "Delete" }}">
+                                    <img src="/static/icons/bxs-trash.svg" alt="{{ T $.Language "Delete" }}">
                                 </button>
                             </form>
                         </div>
@@ -66,7 +69,7 @@
                 {{else}}
                 <tr>
                     <td colspan="6" class="text-center text-muted" style="padding: 3rem;">
-                        <img src="/static/icons/bx-data.svg" alt="No Data" style="width: 48px; opacity: 0.5; margin-bottom: 1rem; filter: brightness(0) invert(0.6);">
+                        <img src="/static/icons/bx-data.svg" alt="{{ T .Language "No Data" }}" style="width: 48px; opacity: 0.5; margin-bottom: 1rem; filter: brightness(0) invert(0.6);">
                         <br>{{ T .Language "No files uploaded yet." }}
                     </td>
                 </tr>
@@ -199,6 +202,7 @@
 </div>
 
 <script>
+    // Modal Management & Keyboard Listeners
     function openModal(modalId) {
         const modal = document.getElementById(modalId);
         if (!modal) return;
@@ -230,6 +234,7 @@
         }
     });
 
+    // File Reading Statistics Loader
     async function openStatsModal(btnOrId, name) {
         let id, fileName;
         if (typeof btnOrId === 'object' && btnOrId !== null) {
