@@ -282,5 +282,21 @@
   "Failed to read file": "Échec de la lecture du fichier",
   "Upload session not found": "Session de téléversement introuvable",
   "Invalid request": "Requête invalide",
-  "Invalid passkey authentication": "Authentification par clé d'accès invalide"
+  "Invalid passkey authentication": "Authentification par clé d'accès invalide",
+  "Forgot password?": "Mot de passe oublié ?",
+  "Reset Password": "Réinitialiser le mot de passe",
+  "Recovery Code": "Code de récupération",
+  "Confirm New Password": "Confirmer le nouveau mot de passe",
+  "Your Recovery Code": "Votre code de récupération",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Conservez ce code de récupération en lieu sûr. Vous pourrez l'utiliser pour réinitialiser votre mot de passe en cas d'oubli.",
+  "Copy": "Copier",
+  "Copied!": "Copié !",
+  "I have saved this code": "J'ai enregistré ce code",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Utilisez votre code de récupération pour réinitialiser votre mot de passe en cas d'oubli. Générer un nouveau code remplacera l'ancien.",
+  "Generate New Recovery Code": "Générer un nouveau code de récupération",
+  "Failed to generate recovery code": "Échec de la génération du code de récupération",
+  "Recovery code generated successfully": "Code de récupération généré avec succès",
+  "Invalid username or recovery code": "Nom d'utilisateur ou code de récupération invalide",
+  "Passwords do not match": "Les mots de passe ne correspondent pas",
+  "Too many failed attempts. Try again in 1 hour.": "Trop de tentatives échouées. Réessayez dans 1 heure."
 }

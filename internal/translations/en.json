@@ -282,5 +282,21 @@
   "Failed to read file": "Failed to read file",
   "Upload session not found": "Upload session not found",
   "Invalid request": "Invalid request",
-  "Invalid passkey authentication": "Invalid passkey authentication"
+  "Invalid passkey authentication": "Invalid passkey authentication",
+  "Forgot password?": "Forgot password?",
+  "Reset Password": "Reset Password",
+  "Recovery Code": "Recovery Code",
+  "Confirm New Password": "Confirm New Password",
+  "Your Recovery Code": "Your Recovery Code",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Save this recovery code in a safe place. You can use it to reset your password if you forget it.",
+  "Copy": "Copy",
+  "Copied!": "Copied!",
+  "I have saved this code": "I have saved this code",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.",
+  "Generate New Recovery Code": "Generate New Recovery Code",
+  "Failed to generate recovery code": "Failed to generate recovery code",
+  "Recovery code generated successfully": "Recovery code generated successfully",
+  "Invalid username or recovery code": "Invalid username or recovery code",
+  "Passwords do not match": "Passwords do not match",
+  "Too many failed attempts. Try again in 1 hour.": "Too many failed attempts. Try again in 1 hour."
 }

@@ -38,6 +38,10 @@ type Server struct {
 	totpTempStore     sync.Map // username -> string (secret)
 	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
 	login2FAStore     sync.Map // sessionID -> username
+	recoveryCodeStore sync.Map // username -> string (newly generated recovery code to display)
+	resetMu           sync.Mutex
+	resetAttempts     int
+	resetBlockedUntil time.Time
 	chunkMu           sync.RWMutex
 	chunkUploads      map[string]*ChunkUpload
 }
@@ -75,7 +79,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		},
 	}
 	pages := []string{
-		"setup.html", "login.html", "login_2fa.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
+		"setup.html", "login.html", "login_2fa.html", "reset_password.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
 		"settings_appearance.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
 	}
 	templateDir := "web/templates"
@@ -149,6 +153,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/setup", s.setupHandler)
 	mux.HandleFunc("/login", s.loginHandler)
 	mux.HandleFunc("/login/2fa", s.login2FAHandler)
+	mux.HandleFunc("/reset-password", s.resetPasswordHandler)
+	mux.HandleFunc("/forgot-password", s.resetPasswordHandler)
 	mux.HandleFunc("/logout", s.logoutHandler)
 	mux.HandleFunc("/webauthn/login/begin", s.webAuthnLoginBegin)
 	mux.HandleFunc("/webauthn/login/finish", s.webAuthnLoginFinish)
@@ -172,11 +178,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/settings/subusers", s.requireAuth(s.settingsSubusersHandler))
 	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
 	mux.HandleFunc("/settings/users/delete", s.requireAuth(s.deleteUserHandler))
-	// Account Security routes - 2FA & WebAuthn passkeys (security.go)
+	// Account Security routes - 2FA, WebAuthn passkeys & Recovery Code (security.go)
 	mux.HandleFunc("/settings/account", s.requireAuth(s.settingsAccountHandler))
 	mux.HandleFunc("/settings/2fa/generate", s.requireAuth(s.totpGenerateHandler))
 	mux.HandleFunc("/settings/2fa/verify", s.requireAuth(s.totpVerifyHandler))
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
+	mux.HandleFunc("/settings/recovery/generate", s.requireAuth(s.recoveryGenerateHandler))
+	mux.HandleFunc("/settings/recovery/ack", s.requireAuth(s.recoveryAckHandler))
 	mux.HandleFunc("/webauthn/register/begin", s.requireAuth(s.webAuthnRegisterBegin))
 	mux.HandleFunc("/webauthn/register/finish", s.requireAuth(s.webAuthnRegisterFinish))
 	mux.HandleFunc("/settings/webauthn/rename", s.requireAuth(s.webAuthnRenameHandler))

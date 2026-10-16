@@ -3,6 +3,12 @@
 {{define "content"}}
 <div>
     <!-- Feedback Alerts -->
+    {{if .Success}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .Success }}
+    </div>
+    {{end}}
     {{if .Error}}
     <div class="alert alert-error">
         <img src="/static/icons/bxs-error-circle.svg" alt="{{ T .Language "Error" }}" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
@@ -31,6 +37,9 @@
             {{ T .Language "Login with Passkey" }}
         </button>
         <p id="passkey_status" style="margin-top: 1rem;" class="text-muted"></p>
+        <div style="margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+            <a href="/reset-password" class="text-muted" style="font-size: 0.9rem;">{{ T .Language "Forgot password?" }}</a>
+        </div>
     </div>
 </div>
 

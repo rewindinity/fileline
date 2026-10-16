@@ -282,5 +282,21 @@
   "Failed to read file": "Fehler beim Lesen der Datei",
   "Upload session not found": "Upload-Sitzung nicht gefunden",
   "Invalid request": "Ungültige Anfrage",
-  "Invalid passkey authentication": "Ungültige Passkey-Authentifizierung"
+  "Invalid passkey authentication": "Ungültige Passkey-Authentifizierung",
+  "Forgot password?": "Passwort vergessen?",
+  "Reset Password": "Passwort zurücksetzen",
+  "Recovery Code": "Wiederherstellungscode",
+  "Confirm New Password": "Neues Passwort bestätigen",
+  "Your Recovery Code": "Ihr Wiederherstellungscode",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Bewahren Sie diesen Wiederherstellungscode an einem sicheren Ort auf. Sie können damit Ihr Passwort zurücksetzen, falls Sie es vergessen.",
+  "Copy": "Kopieren",
+  "Copied!": "Kopiert!",
+  "I have saved this code": "Ich habe diesen Code gespeichert",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Verwenden Sie Ihren Wiederherstellungscode, um Ihr Passwort zurückzusetzen, falls Sie es vergessen. Ein neuer Code ersetzt den bisherigen.",
+  "Generate New Recovery Code": "Neuen Wiederherstellungscode generieren",
+  "Failed to generate recovery code": "Fehler beim Generieren des Wiederherstellungscodes",
+  "Recovery code generated successfully": "Wiederherstellungscode erfolgreich generiert",
+  "Invalid username or recovery code": "Ungültiger Benutzername oder Wiederherstellungscode",
+  "Passwords do not match": "Passwörter stimmen nicht überein",
+  "Too many failed attempts. Try again in 1 hour.": "Zu viele Fehlversuche. Versuchen Sie es in 1 Stunde erneut."
 }

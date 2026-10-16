@@ -83,6 +83,7 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme TEXT DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent TEXT DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language TEXT DEFAULT ''")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN recovery_code_hash TEXT DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN stats_enabled BOOLEAN DEFAULT 0")
 		db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS file_reads (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL, device_type TEXT NOT NULL, read_at DATETIME DEFAULT CURRENT_TIMESTAMP)")
@@ -95,6 +96,7 @@ func Migrate(ctx context.Context, db *sql.DB, dbType string) error {
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN theme VARCHAR(50) DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN accent VARCHAR(50) DEFAULT 'global'")
 		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN language VARCHAR(50) DEFAULT ''")
+		db.ExecContext(ctx, "ALTER TABLE users ADD COLUMN recovery_code_hash VARCHAR(255) DEFAULT ''")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN user_id INTEGER DEFAULT 1")
 		db.ExecContext(ctx, "ALTER TABLE files ADD COLUMN stats_enabled BOOLEAN DEFAULT false")
 		db.ExecContext(ctx, "CREATE TABLE IF NOT EXISTS file_reads (id SERIAL PRIMARY KEY, file_id INTEGER NOT NULL, device_type VARCHAR(32) NOT NULL, read_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
@@ -122,25 +124,26 @@ func CreateAdmin(ctx context.Context, db *sql.DB, username, passwordHash string)
 }
 
 type User struct {
-	ID             int
-	Username       string
-	PasswordHash   string
-	Role           string
-	TOTPSecret     string
-	WebAuthnData   string
-	StorageQuotaMB int
-	Theme          string
-	Accent         string
-	Language       string
+	ID               int
+	Username         string
+	PasswordHash     string
+	Role             string
+	TOTPSecret       string
+	WebAuthnData     string
+	StorageQuotaMB   int
+	Theme            string
+	Accent           string
+	Language         string
+	RecoveryCodeHash string
 }
 
 // GetUserByUsername retrieves a user by username.
 func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User, error) {
 	u := &User{Username: username}
-	var totp, webauthn, theme, accent, language sql.NullString
+	var totp, webauthn, theme, accent, language, recoveryCodeHash sql.NullString
 	var quota sql.NullInt64
-	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent, language FROM users WHERE username = $1", username).
-		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent, &language)
+	err := db.QueryRowContext(ctx, "SELECT id, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent, language, recovery_code_hash FROM users WHERE username = $1", username).
+		Scan(&u.ID, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent, &language, &recoveryCodeHash)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +165,9 @@ func GetUserByUsername(ctx context.Context, db *sql.DB, username string) (*User,
 	if language.Valid {
 		u.Language = language.String
 	}
+	if recoveryCodeHash.Valid {
+		u.RecoveryCodeHash = recoveryCodeHash.String
+	}
 	return u, nil
 }
 
@@ -177,13 +183,19 @@ func UpdatePassword(ctx context.Context, db *sql.DB, username, passwordHash stri
 	return err
 }
 
+// UpdateRecoveryCode updates a user's recovery code hash
+func UpdateRecoveryCode(ctx context.Context, db *sql.DB, username, recoveryCodeHash string) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET recovery_code_hash = $1 WHERE username = $2", recoveryCodeHash, username)
+	return err
+}
+
 // GetUserByID retrieves a user by ID
 func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	u := &User{ID: id}
-	var totp, webauthn, theme, accent sql.NullString
+	var totp, webauthn, theme, accent, recoveryCodeHash sql.NullString
 	var quota sql.NullInt64
-	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent FROM users WHERE id = $1", id).
-		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent)
+	err := db.QueryRowContext(ctx, "SELECT username, password_hash, role, totp_secret, webauthn_data, storage_quota_mb, theme, accent, recovery_code_hash FROM users WHERE id = $1", id).
+		Scan(&u.Username, &u.PasswordHash, &u.Role, &totp, &webauthn, &quota, &theme, &accent, &recoveryCodeHash)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +213,9 @@ func GetUserByID(ctx context.Context, db *sql.DB, id int) (*User, error) {
 	}
 	if accent.Valid {
 		u.Accent = accent.String
+	}
+	if recoveryCodeHash.Valid {
+		u.RecoveryCodeHash = recoveryCodeHash.String
 	}
 	return u, nil
 }

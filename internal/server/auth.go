@@ -28,6 +28,21 @@ func generateRandomSessionID() string {
 	return hex.EncodeToString(b)
 }
 
+// generateRecoveryCode generates a human-readable recovery code (XXXX-XXXX-XXXX-XXXX) and its bcrypt hash
+func generateRecoveryCode() (string, string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", err
+	}
+	raw := strings.ToUpper(hex.EncodeToString(b))
+	code := fmt.Sprintf("%s-%s-%s-%s", raw[0:4], raw[4:8], raw[8:12], raw[12:16])
+	hash, err := bcrypt.GenerateFromPassword([]byte(code), bcrypt.DefaultCost)
+	if err != nil {
+		return "", "", err
+	}
+	return code, string(hash), nil
+}
+
 // requireAuth is a middleware requiring an authenticated JWT session
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +202,10 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.renderSetupError(w, dbConfigured, fmt.Sprintf("Failed to create admin: %v", err))
 			return
 		}
+		if recoveryCode, recoveryHash, err := generateRecoveryCode(); err == nil {
+			_ = db.UpdateRecoveryCode(r.Context(), database, username, recoveryHash)
+			s.recoveryCodeStore.Store(username, recoveryCode)
+		}
 		logger.Action("Initial system setup completed (admin user: '%s')", username)
 		// Login user automatically
 		s.setJWTCookie(w, username)
@@ -201,7 +220,10 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodGet {
 		s.renderTemplate(w, r, "login.html", map[string]interface{}{
-			"Title": "Setup", "Config": s.cfg,
+			"Title":   "Login",
+			"Config":  s.cfg,
+			"Error":   r.URL.Query().Get("error"),
+			"Success": r.URL.Query().Get("success"),
 		})
 		return
 	}
@@ -215,18 +237,29 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			logger.Action("Failed login attempt for username '%s' from %s (user not found)", username, s.clientIP(r))
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
-				"Title": "Login",
-				"Error": "Invalid credentials",
+				"Title":  "Login",
+				"Config": s.cfg,
+				"Error":  "Invalid credentials",
 			})
 			return
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 			logger.Action("Failed login attempt for username '%s' from %s (invalid password)", username, s.clientIP(r))
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
-				"Title": "Login",
-				"Error": "Invalid credentials",
+				"Title":  "Login",
+				"Config": s.cfg,
+				"Error":  "Invalid credentials",
 			})
 			return
+		}
+		// Generate recovery code on first login if not yet generated (e.g. for subusers)
+		if user.RecoveryCodeHash == "" {
+			if recoveryCode, recoveryHash, err := generateRecoveryCode(); err == nil {
+				if err := db.UpdateRecoveryCode(r.Context(), database, username, recoveryHash); err == nil {
+					s.recoveryCodeStore.Store(username, recoveryCode)
+					logger.Action("Generated initial recovery code for user '%s' on first login", username)
+				}
+			}
 		}
 		if user.TOTPSecret != "" {
 			// Require 2FA
@@ -246,6 +279,118 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		s.setJWTCookie(w, username)
 		logger.Action("User '%s' logged in successfully via password from %s", username, s.clientIP(r))
 		http.Redirect(w, r, "/", http.StatusFound)
+	}
+}
+
+func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	if !s.isConfigured() {
+		http.Redirect(w, r, "/setup", http.StatusFound)
+		return
+	}
+	if r.Method == http.MethodGet {
+		s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+			"Title":  "Reset Password",
+			"Config": s.cfg,
+		})
+		return
+	}
+	if r.Method == http.MethodPost {
+		now := time.Now()
+		s.resetMu.Lock()
+		if !s.resetBlockedUntil.IsZero() {
+			if now.Before(s.resetBlockedUntil) {
+				s.resetMu.Unlock()
+				logger.Action("Blocked password reset attempt from %s (rate limit active)", s.clientIP(r))
+				w.WriteHeader(http.StatusTooManyRequests)
+				s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+					"Title":  "Reset Password",
+					"Config": s.cfg,
+					"Error":  "Too many failed attempts. Try again in 1 hour.",
+				})
+				return
+			}
+			s.resetBlockedUntil = time.Time{}
+			s.resetAttempts = 0
+		}
+		s.resetMu.Unlock()
+
+		username := strings.TrimSpace(r.FormValue("username"))
+		recoveryCode := strings.TrimSpace(r.FormValue("recovery_code"))
+		newPassword := r.FormValue("new_password")
+		confirmPassword := r.FormValue("confirm_password")
+
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+
+		user, err := db.GetUserByUsername(r.Context(), database, username)
+		invalidCreds := username == "" || recoveryCode == "" || err != nil || user.RecoveryCodeHash == "" ||
+			bcrypt.CompareHashAndPassword([]byte(user.RecoveryCodeHash), []byte(recoveryCode)) != nil
+
+		if invalidCreds {
+			s.resetMu.Lock()
+			s.resetAttempts++
+			attempts := s.resetAttempts
+			if attempts >= 3 {
+				s.resetBlockedUntil = time.Now().Add(time.Hour)
+			}
+			s.resetMu.Unlock()
+
+			if attempts >= 3 {
+				logger.Action("Failed password reset attempt for username '%s' from %s (rate limit reached: %d/3, locked for 1h)", username, s.clientIP(r), attempts)
+				w.WriteHeader(http.StatusTooManyRequests)
+				s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+					"Title":  "Reset Password",
+					"Config": s.cfg,
+					"Error":  "Too many failed attempts. Try again in 1 hour.",
+				})
+				return
+			}
+			logger.Action("Failed password reset attempt for username '%s' from %s (attempt %d/3)", username, s.clientIP(r), attempts)
+			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+				"Title":  "Reset Password",
+				"Config": s.cfg,
+				"Error":  "Invalid username or recovery code",
+			})
+			return
+		}
+
+		if newPassword == "" {
+			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+				"Title":  "Reset Password",
+				"Config": s.cfg,
+				"Error":  "Username and password are required",
+			})
+			return
+		}
+
+		if newPassword != confirmPassword {
+			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+				"Title":  "Reset Password",
+				"Config": s.cfg,
+				"Error":  "Passwords do not match",
+			})
+			return
+		}
+
+		newHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+		if err != nil {
+			s.internalError(w, r, "Failed to hash new password during recovery", err)
+			return
+		}
+
+		if err := db.UpdatePassword(r.Context(), database, username, string(newHash)); err != nil {
+			s.internalError(w, r, "Failed to update password during recovery", err)
+			return
+		}
+
+		s.resetMu.Lock()
+		s.resetAttempts = 0
+		s.resetBlockedUntil = time.Time{}
+		s.resetMu.Unlock()
+
+		logger.Action("User '%s' successfully reset their password using recovery code from %s", username, s.clientIP(r))
+		http.Redirect(w, r, "/login?success=Password+updated+successfully", http.StatusFound)
 	}
 }
 

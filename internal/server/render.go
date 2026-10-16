@@ -29,8 +29,12 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 			}
 			// If user is logged in, use user's preferred language
 			if username := r.Context().Value("username"); username != nil {
-				if user, err := db.GetUserByUsername(r.Context(), s.db, username.(string)); err == nil && user.Language != "" && user.Language != "global" {
+				uname := username.(string)
+				if user, err := db.GetUserByUsername(r.Context(), s.db, uname); err == nil && user.Language != "" && user.Language != "global" {
 					lang = user.Language
+				}
+				if codeAny, ok := s.recoveryCodeStore.LoadAndDelete(uname); ok {
+					m["NewRecoveryCode"] = codeAny.(string)
 				}
 			}
 		}

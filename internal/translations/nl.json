@@ -282,5 +282,21 @@
   "Failed to read file": "Lezen van bestand mislukt",
   "Upload session not found": "Uploadsessie niet gevonden",
   "Invalid request": "Ongeldig verzoek",
-  "Invalid passkey authentication": "Ongeldige passkey-authenticatie"
+  "Invalid passkey authentication": "Ongeldige passkey-authenticatie",
+  "Forgot password?": "Wachtwoord vergeten?",
+  "Reset Password": "Wachtwoord herstellen",
+  "Recovery Code": "Herstelcode",
+  "Confirm New Password": "Nieuw wachtwoord bevestigen",
+  "Your Recovery Code": "Uw herstelcode",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Bewaar deze herstelcode op een veilige plek. U kunt deze gebruiken om uw wachtwoord te herstellen als u het vergeet.",
+  "Copy": "Kopiëren",
+  "Copied!": "Gekopieerd!",
+  "I have saved this code": "Ik heb deze code opgeslagen",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Gebruik uw herstelcode om uw wachtwoord te herstellen als u het vergeet. Het genereren van een nieuwe code vervangt uw vorige code.",
+  "Generate New Recovery Code": "Nieuwe herstelcode genereren",
+  "Failed to generate recovery code": "Genereren van herstelcode mislukt",
+  "Recovery code generated successfully": "Herstelcode succesvol gegenereerd",
+  "Invalid username or recovery code": "Ongeldige gebruikersnaam of herstelcode",
+  "Passwords do not match": "Wachtwoorden komen niet overeen",
+  "Too many failed attempts. Try again in 1 hour.": "Te veel mislukte pogingen. Probeer het over 1 uur opnieuw."
 }

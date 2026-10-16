@@ -74,6 +74,48 @@
         </main>
     </div>
     
+    {{if .NewRecoveryCode}}
+    <!-- Initial / Newly Generated Recovery Code Modal -->
+    <div id="newRecoveryCodeModal" class="modal-overlay active">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="recoveryModalTitle">
+            <div class="modal-header">
+                <h3 id="recoveryModalTitle">{{ T .Language "Your Recovery Code" }}</h3>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted" style="margin-bottom: 1rem;">{{ T .Language "Save this recovery code in a safe place. You can use it to reset your password if you forget it." }}</p>
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: var(--bg-base); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+                    <code id="initialRecoveryCodeText" style="font-family: monospace; font-size: 1.2rem; font-weight: 700; color: var(--accent-primary); letter-spacing: 0.08em; word-break: break-all;">{{.NewRecoveryCode}}</code>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="copyInitialRecoveryCode(this)">
+                        <img src="/static/icons/bx-copy.svg" alt="Copy" style="width: 16px; filter: brightness(0) invert(0.8);">
+                        <span>{{ T .Language "Copy" }}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="acknowledgeRecoveryCode()">{{ T .Language "I have saved this code" }}</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        function copyInitialRecoveryCode(btn) {
+            const code = document.getElementById('initialRecoveryCodeText').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                const span = btn.querySelector('span');
+                if (span) {
+                    const orig = span.innerText;
+                    span.innerText = '{{ T .Language "Copied!" }}';
+                    setTimeout(() => { span.innerText = orig; }, 2000);
+                }
+            });
+        }
+        function acknowledgeRecoveryCode() {
+            fetch('/settings/recovery/ack', { method: 'POST' }).catch(() => {});
+            const modal = document.getElementById('newRecoveryCodeModal');
+            if (modal) modal.classList.remove('active');
+        }
+    </script>
+    {{end}}
+
     <!-- Mobile Navigation Toggle Script -->
     <script>
         document.getElementById('mobileNavBtn')?.addEventListener('click', function() {

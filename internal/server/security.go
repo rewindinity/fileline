@@ -142,6 +142,52 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/settings/account?success=2FA+Disabled+Successfully", http.StatusFound)
 }
 
+func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
+		return
+	}
+	username := r.Context().Value("username").(string)
+	recoveryCode, recoveryHash, err := generateRecoveryCode()
+	if err != nil {
+		s.internalError(w, r, "Failed to generate recovery code", err)
+		return
+	}
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	if err := db.UpdateRecoveryCode(r.Context(), database, username, recoveryHash); err != nil {
+		s.internalError(w, r, "Failed to update recovery code in database", err)
+		return
+	}
+
+	logger.Action("User '%s' generated a new recovery code", username)
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":        "ok",
+			"recovery_code": recoveryCode,
+		})
+		return
+	}
+
+	s.recoveryCodeStore.Store(username, recoveryCode)
+	http.Redirect(w, r, "/settings/account?success=Recovery+code+generated+successfully", http.StatusFound)
+}
+
+func (s *Server) recoveryAckHandler(w http.ResponseWriter, r *http.Request) {
+	if username, ok := r.Context().Value("username").(string); ok && username != "" {
+		s.recoveryCodeStore.Delete(username)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "ok"}`))
+}
+
 func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	username := r.Context().Value("username").(string)
 

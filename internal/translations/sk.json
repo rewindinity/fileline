@@ -282,5 +282,21 @@
   "Failed to read file": "Nepodarilo sa prečítať súbor",
   "Upload session not found": "Relácia nahrávania sa nenašla",
   "Invalid request": "Neplatná požiadavka",
-  "Invalid passkey authentication": "Neplatné overenie prístupovým kľúčom"
+  "Invalid passkey authentication": "Neplatné overenie prístupovým kľúčom",
+  "Forgot password?": "Zabudli ste heslo?",
+  "Reset Password": "Obnoviť heslo",
+  "Recovery Code": "Obnovovací kód",
+  "Confirm New Password": "Potvrďte nové heslo",
+  "Your Recovery Code": "Váš obnovovací kód",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Uložte si tento obnovovací kód na bezpečné miesto. Môžete ho použiť na obnovenie hesla, ak ho zabudnete.",
+  "Copy": "Kopírovať",
+  "Copied!": "Skopírované!",
+  "I have saved this code": "Uložil som si tento kód",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Pomocou obnovovacieho kódu môžete obnoviť heslo, ak ho zabudnete. Vygenerovaním nového kódu nahradíte predchádzajúci.",
+  "Generate New Recovery Code": "Vygenerovať nový obnovovací kód",
+  "Failed to generate recovery code": "Nepodarilo sa vygenerovať obnovovací kód",
+  "Recovery code generated successfully": "Obnovovací kód bol úspešne vygenerovaný",
+  "Invalid username or recovery code": "Neplatné používateľské meno alebo obnovovací kód",
+  "Passwords do not match": "Heslá sa nezhodujú",
+  "Too many failed attempts. Try again in 1 hour.": "Príliš veľa neúspešných pokusov. Skúste to znova o 1 hodinu."
 }

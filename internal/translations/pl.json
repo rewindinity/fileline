@@ -282,5 +282,21 @@
   "Failed to read file": "Nie udało się odczytać pliku",
   "Upload session not found": "Nie znaleziono sesji przesyłania",
   "Invalid request": "Nieprawidłowe żądanie",
-  "Invalid passkey authentication": "Nieprawidłowe uwierzytelnienie kluczem dostępu"
+  "Invalid passkey authentication": "Nieprawidłowe uwierzytelnienie kluczem dostępu",
+  "Forgot password?": "Zapomniałeś hasła?",
+  "Reset Password": "Zresetuj hasło",
+  "Recovery Code": "Kod odzyskiwania",
+  "Confirm New Password": "Potwierdź nowe hasło",
+  "Your Recovery Code": "Twój kod odzyskiwania",
+  "Save this recovery code in a safe place. You can use it to reset your password if you forget it.": "Zapisz ten kod odzyskiwania w bezpiecznym miejscu. Możesz go użyć do zresetowania hasła, jeśli je zapomnisz.",
+  "Copy": "Kopiuj",
+  "Copied!": "Skopiowano!",
+  "I have saved this code": "Zapisałem ten kod",
+  "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code.": "Użyj kodu odzyskiwania, aby zresetować hasło w razie jego utraty. Wygenerowanie nowego kodu zastąpi poprzedni.",
+  "Generate New Recovery Code": "Wygeneruj nowy kod odzyskiwania",
+  "Failed to generate recovery code": "Nie udało się wygenerować kodu odzyskiwania",
+  "Recovery code generated successfully": "Kod odzyskiwania został wygenerowany pomyślnie",
+  "Invalid username or recovery code": "Nieprawidłowa nazwa użytkownika lub kod odzyskiwania",
+  "Passwords do not match": "Hasła nie są identyczne",
+  "Too many failed attempts. Try again in 1 hour.": "Zbyt wiele nieudanych prób. Spróbuj ponownie za godzinę."
 }

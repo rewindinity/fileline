@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/pquerna/otp/totp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -875,4 +876,158 @@ func TestFileStatsAPIHandler(t *testing.T) {
 		t.Errorf("expected mobile percentage ~66.7, got %v", mobileMap["percentage"])
 	}
 }
+
+func TestRecoveryCodeAndPasswordReset(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		JWTKey:    "test-jwt-secret",
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	// Admin setup generates recovery code
+	setupForm := strings.NewReader("storage_type=local&local_path=" + tempDir + "&username=admin&password=initialPass123")
+	setupReq := httptest.NewRequest("POST", "/setup", setupForm)
+	setupReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	setupRR := httptest.NewRecorder()
+	srv.setupHandler(setupRR, setupReq)
+	if setupRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 after setup, got %d", setupRR.Code)
+	}
+
+	adminUser, err := db.GetUserByUsername(context.Background(), database, "admin")
+	if err != nil || adminUser.RecoveryCodeHash == "" {
+		t.Fatalf("expected admin recovery code hash to be set on setup")
+	}
+	adminCodeAny, ok := srv.recoveryCodeStore.Load("admin")
+	if !ok || adminCodeAny.(string) == "" {
+		t.Fatalf("expected admin plaintext recovery code in recoveryCodeStore after setup")
+	}
+	adminCode := adminCodeAny.(string)
+
+	// Render dashboard once -> modal with recovery code shown, then cleared from store
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+	dashReq := httptest.NewRequest("GET", "/", nil).WithContext(ctxAdmin)
+	dashRR := httptest.NewRecorder()
+	srv.dashboardHandler(dashRR, dashReq)
+	if !strings.Contains(dashRR.Body.String(), adminCode) {
+		t.Errorf("expected dashboard to display newly generated admin recovery code %s", adminCode)
+	}
+	if _, stillThere := srv.recoveryCodeStore.Load("admin"); stillThere {
+		t.Errorf("expected recoveryCodeStore to be cleared after rendering")
+	}
+
+	// Subuser creation and first login generates recovery code
+	subHash, _ := bcrypt.GenerateFromPassword([]byte("subPass123"), bcrypt.DefaultCost)
+	if err := db.CreateSubuser(context.Background(), database, "subuser1", string(subHash), 1024); err != nil {
+		t.Fatalf("failed to create subuser: %v", err)
+	}
+	subBefore, _ := db.GetUserByUsername(context.Background(), database, "subuser1")
+	if subBefore.RecoveryCodeHash != "" {
+		t.Fatalf("expected subuser recovery code hash to be empty before first login")
+	}
+
+	loginForm := strings.NewReader("username=subuser1&password=subPass123")
+	loginReq := httptest.NewRequest("POST", "/login", loginForm)
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR := httptest.NewRecorder()
+	srv.loginHandler(loginRR, loginReq)
+	if loginRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 on subuser login, got %d", loginRR.Code)
+	}
+	subAfter, _ := db.GetUserByUsername(context.Background(), database, "subuser1")
+	if subAfter.RecoveryCodeHash == "" {
+		t.Fatalf("expected subuser recovery code hash to be generated on first login")
+	}
+	if _, ok := srv.recoveryCodeStore.Load("subuser1"); !ok {
+		t.Fatalf("expected subuser plaintext recovery code in store on first login")
+	}
+
+	// Regenerate recovery code in Account Security settings
+	regenReq := httptest.NewRequest("POST", "/settings/recovery/generate", nil).WithContext(ctxAdmin)
+	regenReq.Header.Set("Accept", "application/json")
+	regenRR := httptest.NewRecorder()
+	srv.recoveryGenerateHandler(regenRR, regenReq)
+	if regenRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 on recovery code regenerate, got %d", regenRR.Code)
+	}
+	var regenData map[string]string
+	json.Unmarshal(regenRR.Body.Bytes(), &regenData)
+	newAdminCode := regenData["recovery_code"]
+	if newAdminCode == "" || newAdminCode == adminCode {
+		t.Fatalf("expected a new distinct recovery code, got %q", newAdminCode)
+	}
+
+	// Password reset using recovery code (and verify it can be reused multiple times)
+	resetForm1 := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass1&confirm_password=resetPass1", newAdminCode))
+	resetReq1 := httptest.NewRequest("POST", "/reset-password", resetForm1)
+	resetReq1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resetRR1 := httptest.NewRecorder()
+	srv.resetPasswordHandler(resetRR1, resetReq1)
+	if resetRR1.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after successful password reset, got %d", resetRR1.Code)
+	}
+	adminAfterReset1, _ := db.GetUserByUsername(context.Background(), database, "admin")
+	if bcrypt.CompareHashAndPassword([]byte(adminAfterReset1.PasswordHash), []byte("resetPass1")) != nil {
+		t.Errorf("expected password to be updated to resetPass1")
+	}
+
+	// Reuse the exact same recovery code a second time!
+	resetForm2 := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass2&confirm_password=resetPass2", newAdminCode))
+	resetReq2 := httptest.NewRequest("POST", "/reset-password", resetForm2)
+	resetReq2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resetRR2 := httptest.NewRecorder()
+	srv.resetPasswordHandler(resetRR2, resetReq2)
+	if resetRR2.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect on second password reset with same recovery code, got %d", resetRR2.Code)
+	}
+	adminAfterReset2, _ := db.GetUserByUsername(context.Background(), database, "admin")
+	if bcrypt.CompareHashAndPassword([]byte(adminAfterReset2.PasswordHash), []byte("resetPass2")) != nil {
+		t.Errorf("expected password to be updated to resetPass2")
+	}
+
+	// Rate limit: 3 failed attempts -> 1 hour block
+	for i := 1; i <= 2; i++ {
+		badForm := strings.NewReader("username=admin&recovery_code=XXXX-YYYY-ZZZZ-0000&new_password=a&confirm_password=a")
+		badReq := httptest.NewRequest("POST", "/reset-password", badForm)
+		badReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		badRR := httptest.NewRecorder()
+		srv.resetPasswordHandler(badRR, badReq)
+		if badRR.Code != http.StatusOK {
+			t.Fatalf("attempt %d: expected 200 with error message, got %d", i, badRR.Code)
+		}
+	}
+
+	// 3rd failed attempt triggers the 1-hour block (429 Too Many Requests)
+	badForm3 := strings.NewReader("username=nonexistent&recovery_code=XXXX-YYYY-ZZZZ-0000&new_password=a&confirm_password=a")
+	badReq3 := httptest.NewRequest("POST", "/reset-password", badForm3)
+	badReq3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badRR3 := httptest.NewRecorder()
+	srv.resetPasswordHandler(badRR3, badReq3)
+	if badRR3.Code != http.StatusTooManyRequests {
+		t.Fatalf("attempt 3: expected 429 TooManyRequests, got %d", badRR3.Code)
+	}
+
+	// Even a valid recovery code attempt must now be blocked while within the 1-hour window
+	blockedValidForm := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass3&confirm_password=resetPass3", newAdminCode))
+	blockedValidReq := httptest.NewRequest("POST", "/reset-password", blockedValidForm)
+	blockedValidReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	blockedValidRR := httptest.NewRecorder()
+	srv.resetPasswordHandler(blockedValidRR, blockedValidReq)
+	if blockedValidRR.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 TooManyRequests when blocked, got %d", blockedValidRR.Code)
+	}
+}
+
 
