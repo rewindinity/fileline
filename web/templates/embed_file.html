@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="{{if .Language}}{{.Language}}{{else}}en{{end}}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{if .Config.BlockIndexing}}
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    {{end}}
+    <title>{{if .EmbedTitle}}{{.EmbedTitle}} - {{end}}{{if .SiteName}}{{.SiteName}}{{else}}FileLine{{end}}</title>
+    <link rel="icon" href="/logo?v={{.Config.CustomLogo}}">
+
+    <!-- Discord / X (Twitter) / OpenGraph Embed Meta Tags -->
+    <meta name="theme-color" content="{{.EmbedColor}}">
+    <meta property="og:url" content="{{.PageURL}}">
+    {{if .OGSiteName}}
+    <meta property="og:site_name" content="{{.OGSiteName}}">
+    {{end}}
+    {{if .EmbedTitle}}
+    <meta property="og:title" content="{{.EmbedTitle}}">
+    <meta name="twitter:title" content="{{.EmbedTitle}}">
+    {{end}}
+    {{if .EmbedDescription}}
+    <meta property="og:description" content="{{.EmbedDescription}}">
+    <meta name="twitter:description" content="{{.EmbedDescription}}">
+    {{end}}
+    <link rel="alternate" type="application/json+oembed" href="{{.OEmbedURL}}" title="{{.EmbedTitle}}">
+
+    {{if eq .MediaType "image"}}
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta property="og:image" content="{{.RawURL}}">
+    <meta property="og:image:url" content="{{.RawURL}}">
+    <meta property="og:image:secure_url" content="{{.RawURL}}">
+    <meta property="og:image:type" content="{{.MimeType}}">
+    <meta property="og:image:alt" content="{{.DisplayName}}">
+    <meta name="twitter:image" content="{{.RawURL}}">
+    <meta name="twitter:image:src" content="{{.RawURL}}">
+    {{else if eq .MediaType "video"}}
+    <meta property="og:type" content="video.other">
+    <meta name="twitter:card" content="player">
+    <meta property="og:video" content="{{.RawURL}}">
+    <meta property="og:video:url" content="{{.RawURL}}">
+    <meta property="og:video:secure_url" content="{{.RawURL}}">
+    <meta property="og:video:type" content="{{.MimeType}}">
+    <meta property="og:video:width" content="1280">
+    <meta property="og:video:height" content="720">
+    <meta name="twitter:player" content="{{.RawURL}}">
+    <meta name="twitter:player:width" content="1280">
+    <meta name="twitter:player:height" content="720">
+    <meta name="twitter:player:stream" content="{{.RawURL}}">
+    <meta name="twitter:player:stream:content_type" content="{{.MimeType}}">
+    {{else if eq .MediaType "audio"}}
+    <meta property="og:type" content="music.song">
+    <meta name="twitter:card" content="summary">
+    <meta property="og:audio" content="{{.RawURL}}">
+    <meta property="og:audio:secure_url" content="{{.RawURL}}">
+    <meta property="og:audio:type" content="{{.MimeType}}">
+    {{else}}
+    <meta property="og:type" content="website">
+    <meta name="twitter:card" content="summary">
+    {{end}}
+
+    <link rel="stylesheet" href="/static/icons.css">
+    <link rel="stylesheet" href="/static/css/themes.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        body.embed-viewer-body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            background: var(--bg-base);
+        }
+        .x-embed-card {
+            width: 100%;
+            max-width: 720px;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid {{.EmbedColor}};
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-md);
+            overflow: hidden;
+        }
+        .x-embed-inner {
+            padding: 1.5rem;
+        }
+        .x-embed-provider {
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-secondary);
+            margin-bottom: 0.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .x-embed-author {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.35rem;
+        }
+        .x-embed-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: {{.EmbedColor}};
+            margin-bottom: 0.5rem;
+            word-break: break-all;
+        }
+        .x-embed-desc {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 0.75rem;
+            white-space: pre-wrap;
+        }
+        .x-embed-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        .x-embed-meta-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.25rem 0.65rem;
+            background: var(--bg-base);
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+        }
+        .x-embed-media-wrap {
+            background: #000;
+            border-radius: var(--radius-md);
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1.25rem;
+            border: 1px solid var(--border-color);
+        }
+        .x-embed-media-wrap img {
+            max-width: 100%;
+            max-height: 70vh;
+            object-fit: contain;
+            display: block;
+        }
+        .x-embed-media-wrap video {
+            width: 100%;
+            max-height: 70vh;
+            display: block;
+            outline: none;
+        }
+        .x-embed-audio-wrap {
+            padding: 1.5rem;
+            background: var(--bg-base);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-color);
+            margin-bottom: 1.25rem;
+        }
+        .x-embed-audio-wrap audio {
+            width: 100%;
+        }
+        .x-embed-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+        }
+    </style>
+</head>
+<body class="theme-{{if .Config.Theme}}{{.Config.Theme}}{{else}}dark-blue{{end}} embed-viewer-body" style="--accent-primary: {{.EmbedColor}};">
+    <div class="x-embed-card">
+        <div class="x-embed-inner">
+            {{if .SiteName}}
+            <div class="x-embed-provider">
+                <img src="/logo?v={{.Config.CustomLogo}}" alt="Logo" style="width: 16px; height: 16px; object-fit: contain;">
+                <span>{{.SiteName}}</span>
+            </div>
+            {{end}}
+
+            {{if and .ShowAuthor .Author}}
+            <div class="x-embed-author">@{{.Author}}</div>
+            {{end}}
+
+            {{if .ShowTitle}}
+            <div class="x-embed-title">{{.DisplayName}}</div>
+            {{end}}
+
+            {{if .CustomText}}
+            <div class="x-embed-desc">{{.CustomText}}</div>
+            {{end}}
+
+            {{if or .ShowSize .ShowDate}}
+            <div class="x-embed-meta">
+                {{if .ShowSize}}
+                <span class="x-embed-meta-pill">
+                    <i class="bx bxs-data"></i>
+                    {{.FormattedSize}}
+                </span>
+                {{end}}
+                {{if .ShowDate}}
+                <span class="x-embed-meta-pill">
+                    <i class="bx bx-calendar"></i>
+                    {{.FormattedDate}}
+                </span>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{if eq .MediaType "image"}}
+            <div class="x-embed-media-wrap">
+                <a href="{{.RawURL}}" target="_blank" rel="noopener">
+                    <img src="{{.RawURL}}" alt="{{.DisplayName}}">
+                </a>
+            </div>
+            {{else if eq .MediaType "video"}}
+            <div class="x-embed-media-wrap">
+                <video controls playsinline preload="metadata" src="{{.RawURL}}"></video>
+            </div>
+            {{else if eq .MediaType "audio"}}
+            <div class="x-embed-audio-wrap">
+                <audio controls preload="metadata" src="{{.RawURL}}"></audio>
+            </div>
+            {{end}}
+
+            <div class="x-embed-actions">
+                <a href="{{.RawURL}}" class="btn btn-secondary btn-sm" target="_blank" rel="noopener">
+                    {{ T .Language "Open Raw File" }}
+                </a>
+                <a href="{{.DownloadURL}}" class="btn btn-primary btn-sm" download="{{.DisplayName}}">
+                    {{ T .Language "Download" }}
+                </a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

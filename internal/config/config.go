@@ -51,6 +51,7 @@ type Config struct {
 	CustomAccentHex  string  `json:"custom_accent_hex"`
 	CustomLogo       string  `json:"custom_logo"`
 	DefaultLanguage  string  `json:"default_language"`
+	BlockIndexing    bool    `json:"block_indexing"`
 	Debug            bool    `json:"debug"`
 	EnvOnly          bool    `json:"-"` // Not serialized
 }
@@ -73,6 +74,7 @@ func DefaultConfig() Config {
 		CustomAccentHex:  "#2563eb",
 		CustomLogo:       "/static/logo.svg",
 		DefaultLanguage:  "en",
+		BlockIndexing:    true,
 	}
 }
 
@@ -177,6 +179,11 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	if v, ok := os.LookupEnv("FL_CUSTOM_LOGO"); ok {
 		cfg.CustomLogo = v
 	}
+	if v, ok := os.LookupEnv("FL_BLOCK_INDEXING"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.BlockIndexing = b
+		}
+	}
 	if v, ok := os.LookupEnv("FL_DEBUG"); ok {
 		if d, err := strconv.ParseBool(v); err == nil {
 			cfg.Debug = d
@@ -187,9 +194,13 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 
 // Save writes the current configuration back to config.json.
 func (c *Config) Save(configPath string) error {
+	if c.EnvOnly {
+		return nil
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 	return os.WriteFile(configPath, data, 0644)
 }
+

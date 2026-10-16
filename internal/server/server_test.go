@@ -1030,4 +1030,247 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 	}
 }
 
+func TestIndexingProtection(t *testing.T) {
+	cfg := &config.Config{
+		DBType:        "sqlite",
+		SQLiteURL:     ":memory:",
+		BlockIndexing: true,
+		EnvOnly:       true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	// 1. /robots.txt returns Disallow: / when BlockIndexing is true, even for Googlebot
+	robotsReq := httptest.NewRequest("GET", "/robots.txt", nil)
+	robotsReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	robotsRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(robotsRR, robotsReq)
+	if robotsRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /robots.txt, got %d", robotsRR.Code)
+	}
+	if !strings.Contains(robotsRR.Body.String(), "Disallow: /") {
+		t.Errorf("expected Disallow: / in /robots.txt, got %q", robotsRR.Body.String())
+	}
+
+	// 2. Search engine crawlers are blocked with 403 Forbidden
+	crawlerUAs := []string{
+		"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+		"Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+		"Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
+		"Mozilla/5.0 (compatible; GPTBot/1.0; +https://openai.com/gptbot)",
+	}
+	for _, ua := range crawlerUAs {
+		req := httptest.NewRequest("GET", "/login", nil)
+		req.Header.Set("User-Agent", ua)
+		rr := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("expected 403 Forbidden for crawler UA %q, got %d", ua, rr.Code)
+		}
+		if gotTag := rr.Header().Get("X-Robots-Tag"); !strings.Contains(gotTag, "noindex") {
+			t.Errorf("expected X-Robots-Tag header with noindex, got %q", gotTag)
+		}
+	}
+
+	// 3. Social preview bots (e.g. Discordbot, Twitterbot) and regular browsers are NOT blocked,
+	//    and receive X-Robots-Tag header + <meta name="robots" ...> tags in HTML head.
+	allowedUAs := []string{
+		"Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+		"Twitterbot/1.0",
+		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+	}
+	for _, ua := range allowedUAs {
+		req := httptest.NewRequest("GET", "/login", nil)
+		req.Header.Set("User-Agent", ua)
+		rr := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Errorf("expected 200 OK for allowed UA %q, got %d", ua, rr.Code)
+		}
+		if gotTag := rr.Header().Get("X-Robots-Tag"); !strings.Contains(gotTag, "noindex") {
+			t.Errorf("expected X-Robots-Tag header with noindex, got %q", gotTag)
+		}
+		if !strings.Contains(rr.Body.String(), `<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">`) {
+			t.Errorf("expected robots meta tag in HTML head for UA %q", ua)
+		}
+	}
+
+	// 4. Admin can toggle BlockIndexing off via /settings/action/indexing
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+	toggleForm := strings.NewReader("return_to=/settings/appearance") // block_indexing unchecked -> false
+	toggleReq := httptest.NewRequest("POST", "/settings/action/indexing", toggleForm).WithContext(ctxAdmin)
+	toggleReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	toggleRR := httptest.NewRecorder()
+	srv.settingsActionHandler(toggleRR, toggleReq)
+	if toggleRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect on indexing settings save, got %d", toggleRR.Code)
+	}
+	if srv.cfg.BlockIndexing {
+		t.Errorf("expected BlockIndexing to be false after admin unchecked it")
+	}
+
+	// Verify Googlebot is now allowed and noindex meta tag is omitted when BlockIndexing is false
+	gReq := httptest.NewRequest("GET", "/login", nil)
+	gReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+	gRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(gRR, gReq)
+	if gRR.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for Googlebot when BlockIndexing is false, got %d", gRR.Code)
+	}
+	if strings.Contains(gRR.Body.String(), `<meta name="robots"`) {
+		t.Errorf("did not expect robots noindex meta tag when BlockIndexing is false")
+	}
+}
+
+func TestPersonalMediaEmbedPreview(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		BlockIndexing:    true,
+		Accent:           "custom",
+		CustomAccentHex:  "#5865f2",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	if err := db.CreateAdmin(context.Background(), database, "alice", "hash"); err != nil {
+		t.Fatalf("failed to create alice: %v", err)
+	}
+	alice, _ := db.GetUserByUsername(context.Background(), database, "alice")
+
+	srv := New(cfg, database)
+
+	// Save a dummy PNG image and MP4 video
+	pngBytes := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	if err := srv.storage.Save(context.Background(), "shot.png", bytes.NewReader(pngBytes)); err != nil {
+		t.Fatalf("failed to save image: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		UserID:       alice.ID,
+		OriginalName: "screenshot.png",
+		CustomName:   "Epic Screenshot",
+		URLPath:      "shot",
+		Size:         2048,
+		StorageType:  "local",
+		StoragePath:  "shot.png",
+		StatsEnabled: true,
+	}); err != nil {
+		t.Fatalf("failed to insert file: %v", err)
+	}
+	shotFile, _ := db.GetFileByURL(context.Background(), database, "shot")
+
+	// 1. Default user setting: Embed is DISABLED -> /f/shot serves raw image bytes directly
+	req1 := httptest.NewRequest("GET", "/f/shot", nil)
+	req1.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)")
+	rr1 := httptest.NewRecorder()
+	srv.serveFileHandler(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr1.Code)
+	}
+	if strings.Contains(rr1.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("expected raw image content-type when embed disabled, got %s", rr1.Header().Get("Content-Type"))
+	}
+	if !bytes.Equal(rr1.Body.Bytes(), pngBytes) {
+		t.Errorf("expected raw PNG bytes when embed disabled")
+	}
+
+	// 2. Alice enables rich embed via personal settings POST /settings/action/embed
+	ctxAlice := context.WithValue(context.Background(), "username", "alice")
+	embedForm := strings.NewReader("embed_enabled=on&embed_color=%2300b0f4&embed_site_name=Alice+Clips&embed_custom_text=Captured+in+4K&embed_show_title=on&embed_show_size=on&embed_show_date=on&embed_show_author=on")
+	embedReq := httptest.NewRequest("POST", "/settings/action/embed", embedForm).WithContext(ctxAlice)
+	embedReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	embedRR := httptest.NewRecorder()
+	srv.settingsActionHandler(embedRR, embedReq)
+	if embedRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after saving embed settings, got %d", embedRR.Code)
+	}
+
+	// 3. Now /f/shot serves HTML embed page with OpenGraph / Twitter Card / oEmbed tags
+	req2 := httptest.NewRequest("GET", "https://files.example.com/f/shot", nil)
+	req2.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)")
+	rr2 := httptest.NewRecorder()
+	srv.serveFileHandler(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr2.Code)
+	}
+	if !strings.Contains(rr2.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("expected text/html for embed page, got %s", rr2.Header().Get("Content-Type"))
+	}
+	htmlBody := rr2.Body.String()
+	expectedSnippets := []string{
+		`<meta name="theme-color" content="#00b0f4">`,
+		`<meta property="og:title" content="Epic Screenshot">`,
+		`<meta property="og:site_name" content="Alice Clips">`,
+		`<meta name="twitter:card" content="summary_large_image">`,
+		`https://files.example.com/f/shot?raw=1`,
+		`Captured in 4K`,
+		`2.0 KB`,
+		`@alice`,
+	}
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(htmlBody, snippet) {
+			t.Errorf("expected embed HTML to contain %q, got:\n%s", snippet, htmlBody)
+		}
+	}
+
+	// 4. Requesting /f/shot?raw=1 returns the raw image bytes and does NOT double-count read stats
+	time.Sleep(50 * time.Millisecond)
+	statsBeforeRaw, _ := db.GetFileStats(context.Background(), database, shotFile.ID)
+
+	reqRaw := httptest.NewRequest("GET", "https://files.example.com/f/shot?raw=1", nil)
+	rrRaw := httptest.NewRecorder()
+	srv.serveFileHandler(rrRaw, reqRaw)
+	if rrRaw.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for ?raw=1, got %d", rrRaw.Code)
+	}
+	if !bytes.Equal(rrRaw.Body.Bytes(), pngBytes) {
+		t.Errorf("expected raw PNG bytes on ?raw=1")
+	}
+	time.Sleep(50 * time.Millisecond)
+	statsAfterRaw, _ := db.GetFileStats(context.Background(), database, shotFile.ID)
+	if statsAfterRaw.TotalReads != statsBeforeRaw.TotalReads {
+		t.Errorf("expected ?raw=1 sub-request not to increment read count (before=%d, after=%d)", statsBeforeRaw.TotalReads, statsAfterRaw.TotalReads)
+	}
+
+	// 5. /oembed?f=shot returns valid oEmbed JSON with Alice's personal settings
+	oembedReq := httptest.NewRequest("GET", "https://files.example.com/oembed?f=shot", nil)
+	oembedRR := httptest.NewRecorder()
+	srv.oembedHandler(oembedRR, oembedReq)
+	if oembedRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on /oembed, got %d", oembedRR.Code)
+	}
+	var oembedData map[string]interface{}
+	if err := json.Unmarshal(oembedRR.Body.Bytes(), &oembedData); err != nil {
+		t.Fatalf("failed to unmarshal oEmbed JSON: %v", err)
+	}
+	if oembedData["provider_name"] != "Alice Clips" {
+		t.Errorf("expected provider_name 'Alice Clips', got %v", oembedData["provider_name"])
+	}
+	if oembedData["author_name"] != "@alice" {
+		t.Errorf("expected author_name '@alice', got %v", oembedData["author_name"])
+	}
+}
+
+
 

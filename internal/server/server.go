@@ -80,7 +80,7 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	pages := []string{
 		"setup.html", "login.html", "login_2fa.html", "reset_password.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
-		"settings_appearance.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
+		"settings_appearance.html", "settings_embed.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
 	}
 	templateDir := "web/templates"
 	if _, err := os.Stat(filepath.Join(templateDir, "base.html")); err != nil {
@@ -98,6 +98,12 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		} else {
 			s.tmpls[page] = t
 		}
+	}
+	embedPagePath := filepath.Join(templateDir, "embed_file.html")
+	if tEmbed, err := template.New("embed_file.html").Funcs(funcs).ParseFiles(embedPagePath); err != nil {
+		logger.Error("Failed to parse template embed_file.html: %v", err)
+	} else {
+		s.tmpls["embed_file.html"] = tEmbed
 	}
 
 	// Initialize storage if configured
@@ -146,6 +152,8 @@ func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	// Base & System routes
 	mux.HandleFunc("/health", s.healthHandler)
+	mux.HandleFunc("/robots.txt", s.robotsTxtHandler)
+	mux.HandleFunc("/oembed", s.oembedHandler)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
 	mux.HandleFunc("/logo", s.logoHandler)
 	mux.HandleFunc("/favicon.ico", s.logoHandler)
@@ -174,6 +182,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/settings/action/", s.requireAuth(s.settingsActionHandler))
 	mux.HandleFunc("/settings/appearance", s.requireAuth(s.settingsAppearanceHandler))
 	mux.HandleFunc("/settings/appearance/remove_logo", s.requireAuth(s.settingsRemoveLogoHandler))
+	mux.HandleFunc("/settings/embed", s.requireAuth(s.settingsEmbedHandler))
 	mux.HandleFunc("/settings/storage", s.requireAuth(s.settingsStorageHandler))
 	mux.HandleFunc("/settings/subusers", s.requireAuth(s.settingsSubusersHandler))
 	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
@@ -192,7 +201,7 @@ func (s *Server) routes() http.Handler {
 	// Main Dashboard route (render.go)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
-	return s.recoveryMiddleware(s.loggingMiddleware(mux))
+	return s.recoveryMiddleware(s.loggingMiddleware(s.indexingProtectionMiddleware(mux)))
 }
 
 // Start begins listening for HTTP requests.
@@ -365,6 +374,124 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+var allowedPreviewBots = []string{
+	"discordbot",
+	"twitterbot",
+	"telegrambot",
+	"slackbot",
+	"whatsapp",
+	"facebookexternalhit",
+	"linkedinbot",
+	"viber",
+	"skypeuripreview",
+	"vkshare",
+	"pinterest",
+}
+
+var blockedSearchBotTokens = []string{
+	"googlebot",
+	"adsbot-google",
+	"mediapartners-google",
+	"googleother",
+	"google-extended",
+	"bingbot",
+	"bingpreview",
+	"msnbot",
+	"adidxbot",
+	"slurp",
+	"duckduckbot",
+	"duckduckgo",
+	"baiduspider",
+	"yandexbot",
+	"yandeximages",
+	"yandex",
+	"sogou",
+	"exabot",
+	"ia_archiver",
+	"archive.org_bot",
+	"ahrefsbot",
+	"semrushbot",
+	"mj12bot",
+	"dotbot",
+	"petalbot",
+	"bytespider",
+	"gptbot",
+	"chatgpt-user",
+	"oai-searchbot",
+	"claudebot",
+	"anthropic-ai",
+	"ccbot",
+	"perplexitybot",
+	"applebot",
+	"seznambot",
+	"qwantify",
+	"blexbot",
+	"dataforseobot",
+	"rogerbot",
+	"screaming frog",
+	"amazonbot",
+	"youbot",
+	"diffbot",
+	"cohere-ai",
+	"meta-externalagent",
+	"facebookbot",
+	"searchbot",
+	"spider",
+	"crawler",
+}
+
+// isSearchEngineBot returns true if the User-Agent belongs to a search engine or indexing bot,
+// while allowing social/chat link-preview bots (like Discordbot, Twitterbot, TelegramBot).
+func isSearchEngineBot(uaStr string) bool {
+	if uaStr == "" {
+		return false
+	}
+	ua := strings.ToLower(uaStr)
+	for _, allowed := range allowedPreviewBots {
+		if strings.Contains(ua, allowed) {
+			return false
+		}
+	}
+	for _, token := range blockedSearchBotTokens {
+		if strings.Contains(ua, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) indexingProtectionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		blockIndexing := s.cfg != nil && s.cfg.BlockIndexing
+		s.mu.RUnlock()
+
+		if blockIndexing {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive, nosnippet, noimageindex")
+			if r.URL.Path != "/robots.txt" && isSearchEngineBot(r.UserAgent()) {
+				logger.Debug("Blocked search engine bot from %s (UA: %s)", s.clientIP(r), r.UserAgent())
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) robotsTxtHandler(w http.ResponseWriter, r *http.Request) {
+	s.mu.RLock()
+	blockIndexing := s.cfg != nil && s.cfg.BlockIndexing
+	s.mu.RUnlock()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if blockIndexing {
+		w.Write([]byte("User-agent: *\nDisallow: /\n"))
+		return
+	}
+	w.Write([]byte("User-agent: *\nAllow: /\n"))
 }
 
 // internalError logs the error to the backend console ONLY and returns a generic "Internal Server Error" to the client.

@@ -152,6 +152,27 @@
         {{else}}
             <p class="text-muted" id="noPasskeysMsg">{{ T .Language "No passkeys registered." }}</p>
         {{end}}
+
+        {{if eq .User.Role "admin"}}
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <!-- Search Engine Indexing Protection (Admin Only) -->
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0.75rem;">{{ T .Language "Search Engine Indexing Protection (Admin Only)" }}</h3>
+        <form method="POST" action="/settings/action/indexing">
+            <div class="option-card" style="margin-bottom: 1.25rem;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="account_block_indexing" name="block_indexing" {{if .Config.BlockIndexing}}checked{{end}}>
+                    <label for="account_block_indexing">
+                        <strong>{{ T .Language "Block Search Engine Indexing" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Protects the instance from search engines via noindex meta tags, X-Robots-Tag headers, and blocking crawler user-agents." }}
+                        </span>
+                    </label>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">{{ T .Language "Save Indexing Settings" }}</button>
+        </form>
+        {{end}}
     </div>
 
     <!----- Modals ----->

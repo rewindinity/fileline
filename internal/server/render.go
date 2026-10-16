@@ -19,7 +19,13 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 	}
 	// Inject language into data if it's a map
 	if m, ok := data.(map[string]interface{}); ok {
-		lang := s.cfg.DefaultLanguage
+		if _, hasCfg := m["Config"]; !hasCfg {
+			m["Config"] = s.cfg
+		}
+		lang := ""
+		if s.cfg != nil {
+			lang = s.cfg.DefaultLanguage
+		}
 		if lang == "" {
 			lang = "en"
 		}

@@ -73,6 +73,25 @@ func (s *Server) settingsAppearanceHandler(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (s *Server) settingsEmbedHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.Context().Value("username").(string)
+	s.mu.RLock()
+	cfg := s.cfg
+	database := s.db
+	s.mu.RUnlock()
+	user, _ := db.GetUserByUsername(r.Context(), database, username)
+	successMsg := r.URL.Query().Get("success")
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTemplate(w, r, "settings_embed.html", map[string]interface{}{
+		"Title":          "Media Preview (Embed)",
+		"Username":       username,
+		"User":           user,
+		"Config":         cfg,
+		"SuccessMessage": successMsg,
+		"ErrorMessage":   errorMsg,
+	})
+}
+
 func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.Context().Value("username").(string)
 	s.mu.RLock()
@@ -276,6 +295,9 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			if globalLanguage != "" {
 				s.cfg.DefaultLanguage = globalLanguage
 			}
+			if r.FormValue("block_indexing_present") == "1" {
+				s.cfg.BlockIndexing = r.FormValue("block_indexing") == "on"
+			}
 			s.cfg.Save("config.json")
 			s.mu.Unlock()
 			_ = r.ParseMultipartForm(32 << 20)
@@ -320,6 +342,59 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 
 		logger.Action("User '%s' updated appearance settings (theme=%s, accent=%s, language=%s)", username, theme, accent, language)
 		http.Redirect(w, r, "/settings/appearance?success=Appearance+updated", http.StatusFound)
+		return
+	}
+
+	if action == "indexing" {
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		user, err := db.GetUserByUsername(r.Context(), database, username)
+		if err != nil || user.Role != "admin" {
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			return
+		}
+		blockIndexing := r.FormValue("block_indexing") == "on"
+		s.mu.Lock()
+		s.cfg.BlockIndexing = blockIndexing
+		_ = s.cfg.Save("config.json")
+		s.mu.Unlock()
+		logger.Action("User '%s' updated search engine indexing protection (block_indexing=%t)", username, blockIndexing)
+		http.Redirect(w, r, "/settings/account?success=Indexing+protection+settings+saved", http.StatusFound)
+		return
+	}
+
+	if action == "embed" {
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		if _, err := db.GetUserByUsername(r.Context(), database, username); err != nil {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		color := strings.TrimSpace(r.FormValue("embed_color"))
+		if color == "" {
+			color = "#1d9bf0"
+		}
+		siteName := strings.TrimSpace(r.FormValue("embed_site_name"))
+		customText := strings.TrimSpace(r.FormValue("embed_custom_text"))
+		embedCfg := db.EmbedConfig{
+			Enabled:        r.FormValue("embed_enabled") == "on",
+			Color:          color,
+			UseAccentColor: r.FormValue("embed_use_accent") == "on",
+			SiteName:       siteName,
+			CustomText:     customText,
+			ShowTitle:      r.FormValue("embed_show_title") == "on",
+			ShowSize:       r.FormValue("embed_show_size") == "on",
+			ShowDate:       r.FormValue("embed_show_date") == "on",
+			ShowAuthor:     r.FormValue("embed_show_author") == "on",
+		}
+		if err := db.UpdateUserEmbedConfig(r.Context(), database, username, embedCfg); err != nil {
+			http.Redirect(w, r, "/settings/embed?error=Failed+to+update+embed+settings", http.StatusFound)
+			return
+		}
+		logger.Action("User '%s' updated personal media embed settings (enabled=%t, color=%s, use_accent=%t)", username, embedCfg.Enabled, embedCfg.Color, embedCfg.UseAccentColor)
+		http.Redirect(w, r, "/settings/embed?success=Embed+settings+saved", http.StatusFound)
 		return
 	}
 

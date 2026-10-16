@@ -1,0 +1,247 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Page Header -->
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+    </div>
+</div>
+
+<!-- Feedback Alerts -->
+{{if .SuccessMessage}}
+<div class="alert alert-success">
+    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+    {{ T .Language .SuccessMessage }}
+</div>
+{{end}}
+{{if .ErrorMessage}}
+<div class="alert alert-error">
+    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+    {{ T .Language .ErrorMessage }}
+</div>
+{{end}}
+
+<div class="settings-overview-container">
+    <!-- Navigation / Back Bar -->
+    <div class="settings-back-bar">
+        <a href="/settings" class="btn btn-secondary btn-sm">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Settings" }}
+        </a>
+    </div>
+
+    <!-- Media Preview (Embed) Card -->
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 1.5rem;">
+            <h2>{{ T .Language "Media Preview (Embed)" }}</h2>
+        </div>
+        <p class="text-muted" style="margin-bottom: 1.5rem;">
+            {{ T .Language "Configure how your shared media links appear on Discord, X (Twitter), and other platforms. This is a personal setting for your account." }}
+        </p>
+
+        <form method="POST" action="/settings/action/embed" id="embedSettingsForm">
+            <!-- Enable / Disable Embed Mode -->
+            <div class="option-card" style="margin-bottom: 1.5rem;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="embed_enabled" name="embed_enabled" {{if .User.EmbedConfig.Enabled}}checked{{end}} onchange="updateEmbedPreview()">
+                    <label for="embed_enabled">
+                        <strong>{{ T .Language "Enable Rich Media Embed" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "When disabled (default), links point directly to the raw media file. When enabled, links render an X/Twitter-style rich embed card with selected metadata." }}
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <div id="embedOptionsContainer" style="{{if not .User.EmbedConfig.Enabled}}opacity: 0.6;{{end}} transition: opacity 0.2s;">
+                <!-- Header / Provider & Color -->
+                <div class="settings-grid-2">
+                    <div class="form-group">
+                        <label for="embed_site_name">{{ T .Language "Embed Header / Site Name" }}</label>
+                        <input type="text" id="embed_site_name" name="embed_site_name" value="{{.User.EmbedConfig.SiteName}}" placeholder="FileLine" oninput="updateEmbedPreview()">
+                    </div>
+
+                    <div class="form-group">
+                        <label>{{ T .Language "Embed Sidebar Color" }}</label>
+                        <div class="option-card" style="margin-bottom: 0;">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.7rem 1.125rem;">
+                                <div class="checkbox-group" style="margin-bottom: 0;">
+                                    <input type="checkbox" id="embed_use_accent" name="embed_use_accent" {{if .User.EmbedConfig.UseAccentColor}}checked{{end}} onchange="toggleEmbedColorPicker(); updateEmbedPreview();">
+                                    <label for="embed_use_accent">{{ T .Language "Use Accent Color" }}</label>
+                                </div>
+
+                                <div id="embed_color_picker_wrap" style="display: flex; gap: 0.5rem; align-items: center; {{if .User.EmbedConfig.UseAccentColor}}display: none;{{end}}">
+                                    <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.2rem 0.5rem; background: var(--bg-surface); gap: 0.5rem;">
+                                        <input type="color" id="embed_color" name="embed_color" value="{{if .User.EmbedConfig.Color}}{{.User.EmbedConfig.Color}}{{else}}#1d9bf0{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('embed_hex_display').innerText = this.value.toUpperCase(); updateEmbedPreview();">
+                                        <span id="embed_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if .User.EmbedConfig.Color}}{{.User.EmbedConfig.Color}}{{else}}#1D9BF0{{end}}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom Text / Note -->
+                <div class="form-group">
+                    <label for="embed_custom_text">{{ T .Language "Custom Embed Description" }} <span class="text-muted">({{ T .Language "optional" }})</span></label>
+                    <input type="text" id="embed_custom_text" name="embed_custom_text" value="{{.User.EmbedConfig.CustomText}}" placeholder="{{ T .Language "Optional note displayed inside the embed" }}" oninput="updateEmbedPreview()">
+                </div>
+
+                <!-- Metadata Toggles -->
+                <h3 class="text-muted" style="font-size: 0.95rem; margin-top: 1.5rem; margin-bottom: 0.5rem;">{{ T .Language "Displayed Information" }}</h3>
+                <div class="options-grid" style="margin-top: 0.75rem;">
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_show_title" name="embed_show_title" {{if .User.EmbedConfig.ShowTitle}}checked{{end}} onchange="updateEmbedPreview()">
+                            <label for="embed_show_title">{{ T .Language "Show File Name (Title)" }}</label>
+                        </div>
+                    </div>
+
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_show_size" name="embed_show_size" {{if .User.EmbedConfig.ShowSize}}checked{{end}} onchange="updateEmbedPreview()">
+                            <label for="embed_show_size">{{ T .Language "Show File Size" }}</label>
+                        </div>
+                    </div>
+
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_show_date" name="embed_show_date" {{if .User.EmbedConfig.ShowDate}}checked{{end}} onchange="updateEmbedPreview()">
+                            <label for="embed_show_date">{{ T .Language "Show Upload Date & Time" }}</label>
+                        </div>
+                    </div>
+
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_show_author" name="embed_show_author" {{if .User.EmbedConfig.ShowAuthor}}checked{{end}} onchange="updateEmbedPreview()">
+                            <label for="embed_show_author">{{ T .Language "Show Uploader Username" }}</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Discord / X Preview -->
+            <hr style="border-color: var(--border-color); margin: 2rem 0 1.5rem 0;">
+            <h3 class="text-muted" style="font-size: 0.95rem; margin-bottom: 0.75rem;">{{ T .Language "Live Discord Preview" }}</h3>
+
+            <div style="background: #313338; color: #dbdee1; padding: 1.25rem; border-radius: var(--radius-md); font-family: system-ui, -apple-system, sans-serif; margin-bottom: 1.75rem; border: 1px solid rgba(255,255,255,0.08);">
+                <!-- Mock Discord Message Header -->
+                <div style="display: flex; align-items: flex-start; gap: 0.875rem;">
+                    <div style="width: 40px; height: 40px; border-radius: 50%; background: var(--accent-primary); display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; flex-shrink: 0;">
+                        <img src="/logo?v={{.Config.CustomLogo}}" alt="Avatar" style="width: 22px; height: 22px; filter: brightness(0) invert(1);">
+                    </div>
+                    <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: baseline; gap: 0.5rem; margin-bottom: 0.25rem;">
+                            <span style="font-weight: 600; color: #f2f3f5; font-size: 0.95rem;">{{.Username}}</span>
+                            <span style="font-size: 0.75rem; color: #949ba4;">23:00</span>
+                        </div>
+                        <div style="color: #00a8fc; font-size: 0.925rem; margin-bottom: 0.5rem; word-break: break-all;">
+                            https://{{.Config.Domain}}/f/screenshot.png
+                        </div>
+
+                        <!-- Plain Media URL Mode Preview -->
+                        <div id="previewPlainMode" style="{{if .User.EmbedConfig.Enabled}}display: none;{{end}}">
+                            <div style="max-width: 380px; border-radius: 8px; overflow: hidden; background: #1e1f22; border: 1px solid rgba(255,255,255,0.06);">
+                                <div style="height: 180px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #94a3b8; gap: 0.5rem;">
+                                    <i class="bx bxs-file" style="font-size: 2.25rem; color: #64748b;"></i>
+                                    <span style="font-size: 0.85rem;">screenshot.png ({{ T .Language "Direct Raw Media URL" }})</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Rich Embed Mode Preview -->
+                        <div id="previewEmbedCard" style="{{if not .User.EmbedConfig.Enabled}}display: none;{{end}} max-width: 432px; background: #2b2d31; border-left: 4px solid {{if .User.EmbedConfig.Color}}{{.User.EmbedConfig.Color}}{{else}}#1d9bf0{{end}}; border-radius: 4px; padding: 0.75rem 1rem 1rem 0.875rem;">
+                            <div id="previewSiteName" style="font-size: 0.75rem; color: #b5bac1; margin-bottom: 0.2rem;"></div>
+                            <div id="previewAuthor" style="font-size: 0.875rem; font-weight: 600; color: #f2f3f5; margin-bottom: 0.25rem;"></div>
+                            <div id="previewTitle" style="font-size: 1rem; font-weight: 600; color: #00a8fc; margin-bottom: 0.35rem;">screenshot.png</div>
+                            <div id="previewDesc" style="font-size: 0.85rem; color: #dbdee1; margin-bottom: 0.65rem; white-space: pre-line;"></div>
+                            <div style="border-radius: 4px; overflow: hidden; background: #1e1f22;">
+                                <div style="height: 180px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; color: #cbd5e1; gap: 0.5rem;">
+                                    <i class="bx bxs-file" style="font-size: 2.25rem; opacity: 0.85;"></i>
+                                    <span style="font-size: 0.85rem; opacity: 0.85;">screenshot.png</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">{{ T .Language "Save Embed Settings" }}</button>
+        </form>
+    </div>
+
+    <script>
+    const effectiveAccentColor = "{{if and .User.Accent (ne .User.Accent "global")}}{{.User.Accent}}{{else if .Config.CustomAccentHex}}{{.Config.CustomAccentHex}}{{else}}#2563eb{{end}}";
+    const currentUsername = "{{.Username}}";
+
+    function toggleEmbedColorPicker() {
+        const useAccent = document.getElementById('embed_use_accent').checked;
+        const wrap = document.getElementById('embed_color_picker_wrap');
+        if (wrap) {
+            wrap.style.display = useAccent ? 'none' : 'flex';
+        }
+    }
+
+    function updateEmbedPreview() {
+        const enabled = document.getElementById('embed_enabled').checked;
+        const optionsContainer = document.getElementById('embedOptionsContainer');
+        const plainMode = document.getElementById('previewPlainMode');
+        const embedCard = document.getElementById('previewEmbedCard');
+
+        if (optionsContainer) {
+            optionsContainer.style.opacity = enabled ? '1' : '0.6';
+        }
+        if (!enabled) {
+            plainMode.style.display = 'block';
+            embedCard.style.display = 'none';
+            return;
+        }
+        plainMode.style.display = 'none';
+        embedCard.style.display = 'block';
+
+        const useAccent = document.getElementById('embed_use_accent').checked;
+        const colorInput = document.getElementById('embed_color').value || '#1d9bf0';
+        const borderColor = useAccent ? effectiveAccentColor : colorInput;
+        embedCard.style.borderLeftColor = borderColor;
+
+        const siteName = document.getElementById('embed_site_name').value.trim();
+        const customText = document.getElementById('embed_custom_text').value.trim();
+        const showTitle = document.getElementById('embed_show_title').checked;
+        const showSize = document.getElementById('embed_show_size').checked;
+        const showDate = document.getElementById('embed_show_date').checked;
+        const showAuthor = document.getElementById('embed_show_author').checked;
+
+        const siteEl = document.getElementById('previewSiteName');
+        siteEl.textContent = siteName;
+        siteEl.style.display = siteName ? 'block' : 'none';
+
+        const authorEl = document.getElementById('previewAuthor');
+        authorEl.textContent = '@' + currentUsername;
+        authorEl.style.display = showAuthor ? 'block' : 'none';
+
+        const titleEl = document.getElementById('previewTitle');
+        titleEl.style.display = showTitle ? 'block' : 'none';
+
+        const metaParts = [];
+        if (showSize) metaParts.push('📦 2.45 MB');
+        if (showDate) metaParts.push('🕒 2026-10-16 23:00');
+
+        const lines = [];
+        if (customText) lines.push(customText);
+        if (metaParts.length > 0) lines.push(metaParts.join('  •  '));
+
+        const descEl = document.getElementById('previewDesc');
+        descEl.textContent = lines.join('\n');
+        descEl.style.display = lines.length > 0 ? 'block' : 'none';
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const hexDisp = document.getElementById('embed_hex_display');
+        if (hexDisp) hexDisp.innerText = hexDisp.innerText.toUpperCase();
+        updateEmbedPreview();
+    });
+    </script>
+</div>
+{{end}}

@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/logger"
 
@@ -34,6 +38,213 @@ func classifyUserAgent(uaStr string) string {
 	}
 }
 
+// detectMediaInfo determines the media category ("image", "video", "audio", "other") and MIME type.
+func detectMediaInfo(filename string) (string, string) {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png":
+		return "image", "image/png"
+	case ".jpg", ".jpeg":
+		return "image", "image/jpeg"
+	case ".gif":
+		return "image", "image/gif"
+	case ".webp":
+		return "image", "image/webp"
+	case ".svg":
+		return "image", "image/svg+xml"
+	case ".avif":
+		return "image", "image/avif"
+	case ".bmp":
+		return "image", "image/bmp"
+	case ".ico":
+		return "image", "image/x-icon"
+	case ".mp4", ".m4v":
+		return "video", "video/mp4"
+	case ".webm":
+		return "video", "video/webm"
+	case ".mov":
+		return "video", "video/quicktime"
+	case ".ogv":
+		return "video", "video/ogg"
+	case ".mkv":
+		return "video", "video/x-matroska"
+	case ".avi":
+		return "video", "video/x-msvideo"
+	case ".mp3":
+		return "audio", "audio/mpeg"
+	case ".wav":
+		return "audio", "audio/wav"
+	case ".ogg", ".opus":
+		return "audio", "audio/ogg"
+	case ".flac":
+		return "audio", "audio/flac"
+	case ".m4a", ".aac":
+		return "audio", "audio/mp4"
+	}
+	if m := mime.TypeByExtension(ext); m != "" {
+		if strings.HasPrefix(m, "image/") {
+			return "image", m
+		}
+		if strings.HasPrefix(m, "video/") {
+			return "video", m
+		}
+		if strings.HasPrefix(m, "audio/") {
+			return "audio", m
+		}
+		return "other", m
+	}
+	return "other", "application/octet-stream"
+}
+
+func resolveEmbedColor(owner *db.User, cfg *config.Config) string {
+	if owner == nil {
+		return "#1d9bf0"
+	}
+	if owner.EmbedConfig.UseAccentColor {
+		if owner.Accent != "" && owner.Accent != "global" {
+			return owner.Accent
+		}
+		if cfg != nil && cfg.CustomAccentHex != "" {
+			return cfg.CustomAccentHex
+		}
+		return "#2563eb"
+	}
+	if owner.EmbedConfig.Color != "" {
+		return owner.EmbedConfig.Color
+	}
+	return "#1d9bf0"
+}
+
+func requestBaseURL(r *http.Request, cfg *config.Config) string {
+	scheme := "http"
+	if r != nil {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			scheme = strings.Split(proto, ",")[0]
+		} else if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	if cfg != nil && (cfg.SSL || cfg.ReverseProxy) {
+		scheme = "https"
+	}
+	host := ""
+	if r != nil && r.Host != "" {
+		host = r.Host
+	} else if cfg != nil && cfg.Domain != "" {
+		host = cfg.Domain
+		if !strings.Contains(host, ":") && !cfg.ReverseProxy && cfg.Port != 0 && cfg.Port != 80 && cfg.Port != 443 {
+			host = fmt.Sprintf("%s:%d", host, cfg.Port)
+		}
+	} else {
+		host = "localhost"
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+func buildEmbedStrings(f *db.File, owner *db.User, mediaType string) (displayName, siteName, ogSiteName, embedTitle, embedDesc string) {
+	displayName = f.OriginalName
+	if f.CustomName != "" {
+		displayName = f.CustomName
+	}
+	if owner == nil {
+		return displayName, "FileLine", "FileLine", displayName, ""
+	}
+	ec := owner.EmbedConfig
+	siteName = ec.SiteName
+	formattedSize := logger.FormatBytes(f.Size)
+	formattedDate := f.UploadedAt.Format("2006-01-02 15:04")
+
+	var metaParts []string
+	if ec.ShowSize {
+		metaParts = append(metaParts, "📦 "+formattedSize)
+	}
+	if ec.ShowDate {
+		metaParts = append(metaParts, "🕒 "+formattedDate)
+	}
+	metaLine := strings.Join(metaParts, "  •  ")
+
+	var descLines []string
+	if ec.CustomText != "" {
+		descLines = append(descLines, ec.CustomText)
+	}
+	if metaLine != "" {
+		descLines = append(descLines, metaLine)
+	}
+	embedDesc = strings.Join(descLines, "\n")
+
+	if ec.ShowTitle {
+		embedTitle = displayName
+	} else if ec.CustomText != "" {
+		embedTitle = ec.CustomText
+	} else if siteName != "" {
+		embedTitle = siteName
+	} else {
+		embedTitle = "FileLine"
+	}
+
+	ogSiteName = siteName
+	if mediaType == "video" && metaLine != "" {
+		if ogSiteName != "" {
+			ogSiteName = ogSiteName + "  •  " + metaLine
+		} else {
+			ogSiteName = metaLine
+		}
+	}
+	return displayName, siteName, ogSiteName, embedTitle, embedDesc
+}
+
+func (s *Server) oembedHandler(w http.ResponseWriter, r *http.Request) {
+	urlPath := r.URL.Query().Get("f")
+	if urlPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.mu.RLock()
+	database := s.db
+	cfg := s.cfg
+	s.mu.RUnlock()
+
+	f, err := db.GetFileByURL(r.Context(), database, urlPath)
+	if err != nil || f.IsPrivate {
+		http.NotFound(w, r)
+		return
+	}
+
+	owner, _ := db.GetUserByID(r.Context(), database, f.UserID)
+	nameForExt := f.OriginalName
+	if nameForExt == "" {
+		nameForExt = f.URLPath
+	}
+	mediaType, _ := detectMediaInfo(nameForExt)
+	_, siteName, ogSiteName, embedTitle, _ := buildEmbedStrings(f, owner, mediaType)
+
+	providerName := siteName
+	if mediaType == "video" && ogSiteName != "" {
+		providerName = ogSiteName
+	}
+
+	authorName := ""
+	if owner != nil && owner.EmbedConfig.ShowAuthor && owner.Username != "" {
+		authorName = "@" + owner.Username
+	}
+
+	baseURL := requestBaseURL(r, cfg)
+	resp := map[string]interface{}{
+		"version":       "1.0",
+		"type":          "rich",
+		"title":         embedTitle,
+		"provider_name": providerName,
+		"provider_url":  baseURL,
+	}
+	if authorName != "" {
+		resp["author_name"] = authorName
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	urlPath := strings.TrimPrefix(r.URL.Path, "/f/")
 	if urlPath == "" {
@@ -43,6 +254,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	database := s.db
+	cfg := s.cfg
 	s.mu.RUnlock()
 
 	f, err := db.GetFileByURL(r.Context(), database, urlPath)
@@ -70,17 +282,73 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Record read statistics if enabled
+	isRaw := r.URL.Query().Get("raw") == "1" || r.URL.Query().Get("download") == "1"
+	isDownload := r.URL.Query().Get("download") == "1"
+
+	var owner *db.User
+	if database != nil {
+		owner, _ = db.GetUserByID(r.Context(), database, f.UserID)
+	}
+	embedEnabled := owner != nil && owner.EmbedConfig.Enabled
+
+	// Record read statistics if enabled (avoid double counting when raw=1 is sub-requested by embed view)
 	if f.StatsEnabled && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
-		uaStr := r.UserAgent()
-		devType := classifyUserAgent(uaStr)
-		go func(fileID int, dt string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := db.RecordFileRead(ctx, database, fileID, dt); err != nil {
-				logger.Error("Failed to record read for file id=%d: %v", fileID, err)
-			}
-		}(f.ID, devType)
+		if !(embedEnabled && isRaw) {
+			uaStr := r.UserAgent()
+			devType := classifyUserAgent(uaStr)
+			go func(fileID int, dt string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := db.RecordFileRead(ctx, database, fileID, dt); err != nil {
+					logger.Error("Failed to record read for file id=%d: %v", fileID, err)
+				}
+			}(f.ID, devType)
+		}
+	}
+
+	nameForExt := f.OriginalName
+	if nameForExt == "" {
+		nameForExt = f.URLPath
+	}
+	mediaType, mimeType := detectMediaInfo(nameForExt)
+
+	if embedEnabled && !isRaw {
+		baseURL := requestBaseURL(r, cfg)
+		escapedPath := url.PathEscape(f.URLPath)
+		pageURL := fmt.Sprintf("%s/f/%s", baseURL, escapedPath)
+		rawURL := fmt.Sprintf("%s/f/%s?raw=1", baseURL, escapedPath)
+		downloadURL := fmt.Sprintf("%s/f/%s?raw=1&download=1", baseURL, escapedPath)
+		oembedURL := fmt.Sprintf("%s/oembed?f=%s", baseURL, url.QueryEscape(f.URLPath))
+
+		displayName, siteName, ogSiteName, embedTitle, embedDesc := buildEmbedStrings(f, owner, mediaType)
+		embedColor := resolveEmbedColor(owner, cfg)
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		s.renderTemplate(w, r, "embed_file.html", map[string]interface{}{
+			"Config":           cfg,
+			"File":             f,
+			"DisplayName":      displayName,
+			"EmbedColor":       embedColor,
+			"SiteName":         siteName,
+			"OGSiteName":       ogSiteName,
+			"EmbedTitle":       embedTitle,
+			"EmbedDescription": embedDesc,
+			"CustomText":       owner.EmbedConfig.CustomText,
+			"Author":           owner.Username,
+			"FormattedSize":    logger.FormatBytes(f.Size),
+			"FormattedDate":    f.UploadedAt.Format("2006-01-02 15:04"),
+			"ShowTitle":        owner.EmbedConfig.ShowTitle,
+			"ShowSize":         owner.EmbedConfig.ShowSize,
+			"ShowDate":         owner.EmbedConfig.ShowDate,
+			"ShowAuthor":       owner.EmbedConfig.ShowAuthor,
+			"MediaType":        mediaType,
+			"MimeType":         mimeType,
+			"PageURL":          pageURL,
+			"RawURL":           rawURL,
+			"DownloadURL":      downloadURL,
+			"OEmbedURL":        oembedURL,
+		})
+		return
 	}
 
 	s.mu.RLock()
@@ -98,7 +366,17 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		downloadName = f.CustomName
 	}
 	logger.Debug("Serving file: '/f/%s' (id=%d, original_name='%s', size=%s)", urlPath, f.ID, downloadName, logger.FormatBytes(f.Size))
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, downloadName))
+	if mimeType != "" && mimeType != "application/octet-stream" {
+		w.Header().Set("Content-Type", mimeType)
+	}
+	if f.Size > 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", f.Size))
+	}
+	disposition := "inline"
+	if isDownload {
+		disposition = "attachment"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, downloadName))
 	io.Copy(w, reader)
 }
 
