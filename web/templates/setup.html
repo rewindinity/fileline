@@ -12,6 +12,14 @@
     
     <!-- Initial Setup Wizard Form -->
     <form method="POST" action="/setup">
+        {{if .RequireToken}}
+        <div class="form-group">
+            <label for="setup_token">{{ T .Language "Setup Token (printed in server logs on first boot)" }}</label>
+            <input type="password" id="setup_token" name="setup_token" value="{{.SetupToken}}" autocomplete="off" required>
+        </div>
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+        {{end}}
+
         <!-- Database Configuration -->
         {{if not .DBConfigured}}
         <div class="form-group">

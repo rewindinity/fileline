@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"fileline/internal/config"
@@ -20,7 +21,6 @@ import (
 	"fileline/internal/translations"
 
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // Server represents the HTTP server for the application.
@@ -32,29 +32,46 @@ type Server struct {
 	storage       storage.Provider            // Default legacy provider
 	storageDrives map[string]storage.Provider // Configured drives
 	mu            sync.RWMutex
+	setupMu       sync.Mutex
+	configured    atomic.Bool
+	setupToken    string
 	tmpls         map[string]*template.Template
 	webAuthn      *webauthn.WebAuthn
 	// Temporary session stores
 	totpTempStore     sync.Map // username -> string (secret)
 	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
-	login2FAStore     sync.Map // sessionID -> username
+	login2FAStore     sync.Map // sessionID -> *twoFASession
+	login2FAMu        sync.Mutex
 	recoveryCodeStore sync.Map // username -> string (newly generated recovery code to display)
-	resetMu           sync.Mutex
-	resetAttempts     int
-	resetBlockedUntil time.Time
+	authLimiter       *authRateLimiter
 	chunkMu           sync.RWMutex
 	chunkUploads      map[string]*ChunkUpload
+	stopOnce          sync.Once
+	stopCh            chan struct{}
 }
 
 // New creates a new Server instance and configures its dependencies and routes.
 func New(cfg *config.Config, database *sql.DB) *Server {
 	if cfg != nil {
 		logger.SetDebug(cfg.Debug)
+		if !config.IsValidJWTKey(cfg.JWTKey) {
+			if key, err := config.GenerateJWTKey(); err == nil {
+				cfg.JWTKey = key
+			}
+		}
 	}
 	s := &Server{
 		db:           database,
 		cfg:          cfg,
+		authLimiter:  newAuthRateLimiter(),
 		chunkUploads: make(map[string]*ChunkUpload),
+		stopCh:       make(chan struct{}),
+	}
+	go s.runBackgroundJanitor()
+	if database != nil {
+		if hasAdmin, err := db.HasAdmin(context.Background(), database); err == nil && hasAdmin {
+			s.configured.Store(true)
+		}
 	}
 	// Parse templates safely for each page to avoid block overwriting
 	s.tmpls = make(map[string]*template.Template)
@@ -201,7 +218,17 @@ func (s *Server) routes() http.Handler {
 	// Main Dashboard route (render.go)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
-	return s.recoveryMiddleware(s.loggingMiddleware(s.indexingProtectionMiddleware(mux)))
+	return s.recoveryMiddleware(s.loggingMiddleware(s.indexingProtectionMiddleware(s.requestBodyLimitMiddleware(mux))))
+}
+
+// requestBodyLimitMiddleware applies a 1 MB default request body limit to all routes that are not file/chunk upload routes
+func (s *Server) requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.URL.Path != "/upload" && r.URL.Path != "/api/upload/chunk" && r.URL.Path != "/settings/action/appearance" {
+			r.Body = http.MaxBytesReader(w, r.Body, defaultMaxBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start begins listening for HTTP requests.
@@ -227,21 +254,60 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down the server
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.stopCh != nil {
+		s.stopOnce.Do(func() { close(s.stopCh) })
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 
-func (s *Server) isConfigured() bool {
+func (s *Server) limiter() *authRateLimiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authLimiter == nil {
+		s.authLimiter = newAuthRateLimiter()
+	}
+	return s.authLimiter
+}
+
+// CheckConfigured returns whether an admin account exists in the database
+func (s *Server) CheckConfigured(ctx context.Context) (bool, error) {
+	if s.configured.Load() {
+		return true, nil
+	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.db == nil {
-		return false
+	database := s.db
+	s.mu.RUnlock()
+	if database == nil {
+		return false, nil
 	}
-	// Check if admin exists
-	hasAdmin, err := db.HasAdmin(context.Background(), s.db)
-	if err != nil || !hasAdmin {
-		return false
+	hasAdmin, err := db.HasAdmin(ctx, database)
+	if err != nil {
+		return false, err
 	}
-	return true
+	if hasAdmin {
+		s.configured.Store(true)
+		return true, nil
+	}
+	return false, nil
+}
+
+// EnableSetupToken generates and stores a cryptographically random one-time setup token required to complete the setup wizard when starting unconfigured.
+func (s *Server) EnableSetupToken() string {
+	s.setupMu.Lock()
+	defer s.setupMu.Unlock()
+	if s.setupToken == "" {
+		s.setupToken = newUploadID()
+	}
+	return s.setupToken
+}
+
+func (s *Server) isConfigured() bool {
+	configured, err := s.CheckConfigured(context.Background())
+	if err != nil {
+		// Fail closed on DB error: do not report "not configured" when the DB is unhealthy.
+		return true
+	}
+	return configured
 }
 
 func (s *Server) initDrives(ctx context.Context) {
@@ -343,18 +409,8 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			}
 			if username == "" {
 				if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
-					token, _ := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-						s.mu.RLock()
-						key := []byte(s.cfg.JWTKey)
-						s.mu.RUnlock()
-						return key, nil
-					})
-					if token != nil && token.Valid {
-						if claims, ok := token.Claims.(jwt.MapClaims); ok {
-							if u, ok := claims["username"].(string); ok {
-								username = u
-							}
-						}
+					if u, ok := s.parseJWTUsername(cookie.Value); ok {
+						username = u
 					}
 				}
 			}

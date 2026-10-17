@@ -63,6 +63,7 @@ func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, erro
 		"Title":        "Setup",
 		"Config":       s.cfg,
 		"DBConfigured": dbConfigured,
+		"RequireToken": s.setupToken != "",
 		"Error":        errorMsg,
 	})
 }

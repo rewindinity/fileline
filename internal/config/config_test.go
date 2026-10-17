@@ -74,3 +74,84 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	}
 }
 
+func TestEnsureJWTKey_GeneratesAndPersists0600(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.json")
+
+	// 1. DefaultConfig starts with empty JWTKey
+	cfg := DefaultConfig()
+	if cfg.JWTKey != "" {
+		t.Fatalf("expected DefaultConfig().JWTKey to be empty, got %q", cfg.JWTKey)
+	}
+
+	if err := cfg.EnsureJWTKey(cfgPath); err != nil {
+		t.Fatalf("EnsureJWTKey failed: %v", err)
+	}
+	if !IsValidJWTKey(cfg.JWTKey) {
+		t.Fatalf("expected generated JWTKey to be valid (>= %d bytes), got %q (len=%d)", MinJWTKeyLength, cfg.JWTKey, len(cfg.JWTKey))
+	}
+
+	// Verify file was written with 0600 permissions
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("expected config.json to be written: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected config.json permissions 0600, got %04o", perm)
+	}
+
+	// 2. Short key (< 32 bytes) is rejected and rotated
+	firstKey := cfg.JWTKey
+	cfg.JWTKey = "too-short-secret"
+	if IsValidJWTKey(cfg.JWTKey) {
+		t.Fatalf("expected short key to be rejected by IsValidJWTKey")
+	}
+	if err := cfg.EnsureJWTKey(cfgPath); err != nil {
+		t.Fatalf("EnsureJWTKey on short key failed: %v", err)
+	}
+	if cfg.JWTKey == "too-short-secret" || cfg.JWTKey == firstKey || !IsValidJWTKey(cfg.JWTKey) {
+		t.Fatalf("expected short key to be replaced with a new random key, got %q", cfg.JWTKey)
+	}
+
+	// 3. Existing valid key is preserved across restarts
+	savedKey := cfg.JWTKey
+	loaded, err := Load(cfgPath, false)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if err := loaded.EnsureJWTKey(cfgPath); err != nil {
+		t.Fatalf("EnsureJWTKey on loaded config failed: %v", err)
+	}
+	if loaded.JWTKey != savedKey {
+		t.Errorf("expected existing valid key to be preserved: got %q, want %q", loaded.JWTKey, savedKey)
+	}
+}
+
+func TestEnsureJWTKey_EnvOnlyRefusesWeakKey(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"empty", ""},
+		{"whitespace_only", "   "},
+		{"too_short", "short-key-under-32-bytes"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.EnvOnly = true
+			cfg.JWTKey = tc.key
+			if err := cfg.EnsureJWTKey(""); err == nil {
+				t.Errorf("expected EnsureJWTKey in EnvOnly mode to reject key %q, got nil", tc.key)
+			}
+		})
+	}
+
+	// Valid 32+ byte key in EnvOnly mode succeeds
+	cfg := DefaultConfig()
+	cfg.EnvOnly = true
+	cfg.JWTKey = "0123456789abcdef0123456789abcdef-valid-secret"
+	if err := cfg.EnsureJWTKey(""); err != nil {
+		t.Errorf("expected valid FL_JWT_KEY in EnvOnly mode to succeed, got %v", err)
+	}
+}

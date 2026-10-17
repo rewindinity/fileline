@@ -85,6 +85,15 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
+		return
+	}
 	username := r.Context().Value("username").(string)
 	code := r.FormValue("code")
 	secretAny, ok := s.totpTempStore.Load(username)
@@ -117,6 +126,15 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
+		return
+	}
 	username := r.Context().Value("username").(string)
 	code := r.FormValue("code")
 
@@ -147,6 +165,7 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username := r.Context().Value("username").(string)
 	recoveryCode, recoveryHash, err := generateRecoveryCode()
 	if err != nil {
@@ -180,6 +199,7 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) recoveryAckHandler(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	if username, ok := r.Context().Value("username").(string); ok && username != "" {
 		s.recoveryCodeStore.Delete(username)
 	}
@@ -223,6 +243,7 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username := r.Context().Value("username").(string)
 	cookie, err := r.Cookie("wa_session")
 	if err != nil {
@@ -247,6 +268,10 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	user := auth.NewWebAuthnUser(dbUser)
 	credential, err := s.webAuthn.FinishRegistration(user, sessionData, r)
 	if err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -279,6 +304,7 @@ func (s *Server) webAuthnRenameHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username := r.Context().Value("username").(string)
 
 	var idToRename, newName string
@@ -287,11 +313,24 @@ func (s *Server) webAuthnRenameHandler(w http.ResponseWriter, r *http.Request) {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&reqData); err == nil {
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		} else {
 			idToRename = reqData.ID
 			newName = strings.TrimSpace(reqData.Name)
 		}
 	} else {
+		if err := r.ParseForm(); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid form submission", http.StatusBadRequest)
+			return
+		}
 		idToRename = r.FormValue("id")
 		newName = strings.TrimSpace(r.FormValue("name"))
 	}
@@ -392,6 +431,7 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username := r.Context().Value("username").(string)
 
 	var idToDelete string
@@ -399,10 +439,23 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		var reqData struct {
 			ID string `json:"id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&reqData); err == nil {
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		} else {
 			idToDelete = reqData.ID
 		}
 	} else {
+		if err := r.ParseForm(); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid form submission", http.StatusBadRequest)
+			return
+		}
 		idToDelete = r.FormValue("id")
 	}
 

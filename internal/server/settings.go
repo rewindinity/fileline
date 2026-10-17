@@ -166,6 +166,37 @@ func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// isValidLogoMagicBytes verifies that blob matches the expected magic signature for ext
+func isValidLogoMagicBytes(ext string, blob []byte) bool {
+	if len(blob) == 0 {
+		return false
+	}
+	switch ext {
+	case ".png":
+		return len(blob) >= 8 &&
+			blob[0] == 0x89 && blob[1] == 'P' && blob[2] == 'N' && blob[3] == 'G' &&
+			blob[4] == '\r' && blob[5] == '\n' && blob[6] == 0x1a && blob[7] == '\n'
+	case ".jpg", ".jpeg":
+		return len(blob) >= 3 && blob[0] == 0xff && blob[1] == 0xd8 && blob[2] == 0xff
+	case ".svg":
+		sample := blob
+		if len(sample) > 4096 {
+			sample = sample[:4096]
+		}
+		trimmed := strings.TrimSpace(strings.ToLower(string(sample)))
+		if !strings.Contains(trimmed, "<svg") {
+			return false
+		}
+		// Reject SVG logos containing script tags or inline event handlers
+		if strings.Contains(trimmed, "<script") || strings.Contains(trimmed, "javascript:") || strings.Contains(trimmed, "onload=") || strings.Contains(trimmed, "onerror=") {
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -174,6 +205,41 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 
 	username := r.Context().Value("username").(string)
 	action := strings.TrimPrefix(r.URL.Path, "/settings/action/")
+
+	if action == "appearance" {
+		// Cap the entire appearance form (including any custom logo multipart upload) to 1 MB + 64 KB overhead.
+		r.Body = http.MaxBytesReader(w, r.Body, maxLogoUploadBytes+maxJSONOrFormBodyBytes)
+		ct := r.Header.Get("Content-Type")
+		if strings.HasPrefix(strings.ToLower(ct), "multipart/form-data") {
+			if err := r.ParseMultipartForm(maxLogoUploadBytes); err != nil {
+				if isMaxBytesError(err) {
+					http.Error(w, "Logo file exceeds maximum allowed size (1 MB)", http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Redirect(w, r, "/settings/appearance?error=Logo+file+too+large+or+invalid+form", http.StatusFound)
+				return
+			}
+		} else {
+			if err := r.ParseForm(); err != nil {
+				if isMaxBytesError(err) {
+					http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Redirect(w, r, "/settings/appearance?error=Invalid+form+submission", http.StatusFound)
+				return
+			}
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+		if err := r.ParseForm(); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid form submission", http.StatusBadRequest)
+			return
+		}
+	}
 
 	if action == "storage" {
 		s.mu.RLock()
@@ -300,18 +366,32 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			s.cfg.Save("config.json")
 			s.mu.Unlock()
-			_ = r.ParseMultipartForm(32 << 20)
 
-			// Handle custom logo upload
-			file, header, err := r.FormFile("custom_logo_file")
-			if err == nil {
-				defer file.Close()
-				ext := strings.ToLower(filepath.Ext(header.Filename))
-				if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".svg" {
-					blob, ioErr := io.ReadAll(file)
-					if ioErr == nil && len(blob) > 0 {
+			// Handle custom logo upload (bounded to maxLogoUploadBytes = 1 MB and verified via magic bytes)
+			if r.MultipartForm != nil {
+				file, header, err := r.FormFile("custom_logo_file")
+				if err == nil {
+					defer file.Close()
+					if header.Size > maxLogoUploadBytes {
+						http.Redirect(w, r, "/settings/appearance?error=Logo+exceeds+maximum+size+of+1+MB", http.StatusFound)
+						return
+					}
+					ext := strings.ToLower(filepath.Ext(header.Filename))
+					if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".svg" {
+						blob, ioErr := io.ReadAll(io.LimitReader(file, maxLogoUploadBytes+1))
+						if ioErr != nil || int64(len(blob)) > maxLogoUploadBytes || len(blob) == 0 {
+							logger.Error("ReadAll/size error for logo: err=%v, len=%d", ioErr, len(blob))
+							http.Redirect(w, r, "/settings/appearance?error=Failed+to+read+logo+file+or+file+too+large", http.StatusFound)
+							return
+						}
+						if !isValidLogoMagicBytes(ext, blob) {
+							logger.Debug("Logo magic bytes check failed for extension %s", ext)
+							http.Redirect(w, r, "/settings/appearance?error=Invalid+logo+file+content", http.StatusFound)
+							return
+						}
 						filename := "custom-logo" + ext
-						writeErr := os.WriteFile(filepath.Join("data", filename), blob, 0644)
+						_ = os.MkdirAll("data", 0o750)
+						writeErr := os.WriteFile(filepath.Join("data", filename), blob, 0o600)
 						if writeErr == nil {
 							s.mu.Lock()
 							s.cfg.CustomLogo = filename
@@ -324,19 +404,15 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					} else {
-						logger.Error("ReadAll error for logo: %v", ioErr)
-						http.Redirect(w, r, "/settings/appearance?error=Failed+to+read+logo+file", http.StatusFound)
+						logger.Debug("Invalid logo extension: %s", ext)
+						http.Redirect(w, r, "/settings/appearance?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
 						return
 					}
-				} else {
-					logger.Debug("Invalid logo extension: %s", ext)
-					http.Redirect(w, r, "/settings/appearance?error=Invalid+logo+extension.+Only+PNG,+JPG,+SVG+allowed.", http.StatusFound)
+				} else if err != http.ErrMissingFile {
+					logger.Debug("FormFile error for logo: %v", err)
+					http.Redirect(w, r, "/settings/appearance?error=Failed+to+process+logo+upload", http.StatusFound)
 					return
 				}
-			} else if err != http.ErrMissingFile {
-				logger.Debug("FormFile error for logo: %v", err)
-				http.Redirect(w, r, "/settings/appearance?error=Failed+to+process+logo+upload", http.StatusFound)
-				return
 			}
 		}
 
@@ -436,6 +512,7 @@ func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Reques
 		http.Redirect(w, r, "/settings", http.StatusFound)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username, ok := r.Context().Value("username").(string)
 	if !ok {
 		http.Redirect(w, r, "/login", http.StatusFound)
@@ -467,6 +544,15 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
+		return
+	}
 	username := r.Context().Value("username").(string)
 	s.mu.RLock()
 	database := s.db
@@ -496,6 +582,15 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
 		return
 	}
 	username := r.Context().Value("username").(string)

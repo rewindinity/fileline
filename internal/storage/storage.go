@@ -2,10 +2,11 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"strings"
 
 	fileline_config "fileline/internal/config"
 
@@ -14,6 +15,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// ErrInvalidKey is returned when a storage key is not a single, plain file name
+var ErrInvalidKey = errors.New("storage: invalid key")
 
 // Provider defines the interface for file storage operations.
 type Provider interface {
@@ -29,33 +33,73 @@ type LocalProvider struct {
 
 // NewLocalProvider creates a new local storage provider.
 func NewLocalProvider(basePath string) (*LocalProvider, error) {
-	if err := os.MkdirAll(basePath, 0755); err != nil {
+	if err := os.MkdirAll(basePath, 0o750); err != nil {
 		return nil, fmt.Errorf("failed to create upload directory: %w", err)
 	}
 	return &LocalProvider{basePath: basePath}, nil
 }
 
+// validateLocalKey accepts only a single path component
+func validateLocalKey(key string) error {
+	if key == "" || key == "." || key == ".." || strings.ContainsAny(key, "/\\\x00") {
+		return fmt.Errorf("%w: %q", ErrInvalidKey, key)
+	}
+	return nil
+}
+
+// openRoot opens the storage directory as an os.Root
+func (p *LocalProvider) openRoot(key string) (*os.Root, error) {
+	if err := validateLocalKey(key); err != nil {
+		return nil, err
+	}
+	return os.OpenRoot(p.basePath)
+}
+
 func (p *LocalProvider) Save(ctx context.Context, key string, reader io.Reader) error {
-	path := filepath.Join(p.basePath, key)
-	out, err := os.Create(path)
+	root, err := p.openRoot(key)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer root.Close()
 
-	_, err = io.Copy(out, reader)
-	return err
+	// O_EXCL: never overwrite an existing object.
+	out, err := root.OpenFile(key, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, reader); err != nil {
+		out.Close()
+		_ = root.Remove(key)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = root.Remove(key)
+		return err
+	}
+	return nil
 }
 
 func (p *LocalProvider) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	path := filepath.Join(p.basePath, key)
-	return os.Open(path)
+	root, err := p.openRoot(key)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(key)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 func (p *LocalProvider) Delete(ctx context.Context, key string) error {
-	path := filepath.Join(p.basePath, key)
-	err := os.Remove(path)
-	if os.IsNotExist(err) {
+	root, err := p.openRoot(key)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	err = root.Remove(key)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err

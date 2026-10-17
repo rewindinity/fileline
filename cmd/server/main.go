@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"net/http"
@@ -23,12 +24,15 @@ func main() {
 	flag.BoolVar(debug, "d", false, "Enable debug mode (shorthand)")
 	flag.Parse()
 
-	// Initialize configuration
+	// Initialize configuration (fail closed on parse/read errors)
 	cfg, err := config.Load("config.json", *envOnly)
 	if err != nil {
-		defaultCfg := config.DefaultConfig()
-		defaultCfg.EnvOnly = *envOnly
-		cfg = &defaultCfg
+		logger.Error("Failed to load configuration: %v", err)
+		os.Exit(1)
+	}
+	if err := cfg.EnsureJWTKey("config.json"); err != nil {
+		logger.Error("Invalid JWT signing key configuration: %v", err)
+		os.Exit(1)
 	}
 
 	if *debug {
@@ -51,26 +55,36 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize Server
-	srv := server.New(cfg, nil)
-
-	// Attempt to initialize Database if configured
+	// Attempt to initialize Database if configured (fail closed on error)
+	var database *sql.DB
 	if cfg.DBType != "" {
-		database, err := db.InitDB(ctx, cfg)
+		var err error
+		database, err = db.InitDB(ctx, cfg)
 		if err != nil {
 			logger.Error("Configured database failed to initialize: %v", err)
-		} else {
-			// Run migrations automatically
-			if err := db.Migrate(ctx, database, cfg.DBType); err != nil {
-				logger.Error("Database migration failed: %v", err)
-				os.Exit(1)
-			}
-			logger.Debug("Successfully connected to %s database and migrated", cfg.DBType)
-			// Inject database into server
-			srv = server.New(cfg, database)
+			os.Exit(1)
 		}
-	} else {
-		logger.Info("Database not configured. Starting in Setup mode.")
+		// Run migrations automatically
+		if err := db.Migrate(ctx, database, cfg.DBType); err != nil {
+			logger.Error("Database migration failed: %v", err)
+			os.Exit(1)
+		}
+		logger.Debug("Successfully connected to %s database and migrated", cfg.DBType)
+	}
+
+	// Initialize Server
+	srv := server.New(cfg, database)
+
+	// Check setup state and generate a one-time setup token when not yet configured
+	configured, err := srv.CheckConfigured(ctx)
+	if err != nil {
+		logger.Error("Failed to verify setup state: %v", err)
+		os.Exit(1)
+	}
+	if !configured {
+		token := srv.EnableSetupToken()
+		logger.Info("Instance is not yet configured. Starting in Setup mode.")
+		logger.Info("One-time setup token: %s", token)
 	}
 
 	serverErrors := make(chan error, 1)

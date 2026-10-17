@@ -10,7 +10,10 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"fileline/internal/logger"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -1272,5 +1276,1059 @@ func TestPersonalMediaEmbedPreview(t *testing.T) {
 	}
 }
 
+func TestSanitizeFileName(t *testing.T) {
+	validCases := []struct {
+		in   string
+		want string
+	}{
+		{"report.pdf", "report.pdf"},
+		{"../../etc/passwd", "passwd"},
+		{"/../../../../app/data", "data"},
+		{"..\\..\\config.json", "config.json"},
+		{"C:\\Users\\alice\\notes.txt", "notes.txt"},
+		{"hello\x00world\n.txt", "helloworld.txt"},
+		{"   spaced.txt   ", "spaced.txt"},
+	}
+	for _, tc := range validCases {
+		got, err := sanitizeFileName(tc.in)
+		if err != nil {
+			t.Errorf("sanitizeFileName(%q) unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("sanitizeFileName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
 
+	invalidCases := []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"/",
+		"\\",
+		"../..",
+		"../../",
+		"\x00\r\n\t",
+		string([]byte{0xff, 0xfe, 0xfd}), // invalid UTF-8
+		strings.Repeat("a", maxFileNameBytes+1),
+	}
+	for _, in := range invalidCases {
+		if got, err := sanitizeFileName(in); err == nil {
+			t.Errorf("sanitizeFileName(%q) expected error, got %q", in, got)
+		}
+	}
+}
+
+func FuzzSanitizeFileName(f *testing.F) {
+	seeds := []string{
+		"file.txt",
+		"../x",
+		"/../../x",
+		"..\\x",
+		"a/../../x",
+		"file\x00name.txt",
+		".",
+		"..",
+		"/",
+		"\\",
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		out, err := sanitizeFileName(input)
+		if err != nil {
+			return
+		}
+		if out == "" || out == "." || out == ".." || len(out) > maxFileNameBytes {
+			t.Fatalf("sanitizeFileName(%q) returned invalid name %q", input, out)
+		}
+		if strings.ContainsAny(out, "/\\\x00\r\n") {
+			t.Fatalf("sanitizeFileName(%q) returned name with forbidden characters: %q", input, out)
+		}
+	})
+}
+
+func TestChunkUploadPathTraversalPrevented(t *testing.T) {
+	parentDir := t.TempDir()
+	uploadsDir := filepath.Join(parentDir, "uploads")
+	canaryDir := filepath.Join(parentDir, "data")
+	if err := os.MkdirAll(canaryDir, 0o750); err != nil {
+		t.Fatalf("failed to create canary dir: %v", err)
+	}
+	canaryFile := filepath.Join(canaryDir, "database.sqlite")
+	if err := os.WriteFile(canaryFile, []byte("sqlite-db-canary"), 0o600); err != nil {
+		t.Fatalf("failed to write canary file: %v", err)
+	}
+	canaryConfig := filepath.Join(parentDir, "config.json")
+	if err := os.WriteFile(canaryConfig, []byte(`{"jwt_key":"safe"}`), 0o600); err != nil {
+		t.Fatalf("failed to write canary config: %v", err)
+	}
+
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: uploadsDir,
+		MaxUploadSizeMB:  10,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "attacker", "hash"); err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctx := context.WithValue(context.Background(), "username", "attacker")
+
+	// 1. Pure traversal names with no valid base name are rejected with 400
+	for _, badName := range []string{"", ".", "..", "../..", "/", "\\", "\x00"} {
+		body, _ := json.Marshal(map[string]interface{}{
+			"file_name":    badName,
+			"total_size":   5,
+			"total_chunks": 1,
+		})
+		req := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(body)).WithContext(ctx)
+		rr := httptest.NewRecorder()
+		srv.chunkUploadInitHandler(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 BadRequest for file_name=%q, got %d", badName, rr.Code)
+		}
+	}
+
+	// 2. Traversal payloads in file_name must never write outside chunkBaseDir or uploadsDir, and must never delete canaryDir.
+	traversalPayloads := []struct {
+		fileName string
+		urlPath  string
+		wantBase string
+	}{
+		{"/../../config.json", "poc-config", "config.json"},
+		{"/../../../../" + canaryDir, "poc-data", "data"},
+		{"..\\..\\config.json", "poc-win", "config.json"},
+	}
+
+	for _, tc := range traversalPayloads {
+		initBody, _ := json.Marshal(map[string]interface{}{
+			"file_name":    tc.fileName,
+			"total_size":   12,
+			"total_chunks": 1,
+			"url_path":     tc.urlPath,
+		})
+		initReq := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initBody)).WithContext(ctx)
+		initRR := httptest.NewRecorder()
+		srv.chunkUploadInitHandler(initRR, initReq)
+		if initRR.Code != http.StatusOK {
+			t.Fatalf("init(%q) expected 200, got %d: %s", tc.fileName, initRR.Code, initRR.Body.String())
+		}
+		var initRes map[string]string
+		if err := json.Unmarshal(initRR.Body.Bytes(), &initRes); err != nil {
+			t.Fatalf("failed to decode init response: %v", err)
+		}
+		uploadID := initRes["upload_id"]
+		if !isValidUploadID(uploadID) || strings.Contains(uploadID, "config") || strings.Contains(uploadID, "..") {
+			t.Fatalf("uploadID must be random and not contain user input, got %q", uploadID)
+		}
+
+		// Upload chunk 0
+		var chunkBuf bytes.Buffer
+		mw := multipart.NewWriter(&chunkBuf)
+		_ = mw.WriteField("upload_id", uploadID)
+		_ = mw.WriteField("chunk_index", "0")
+		part, _ := mw.CreateFormFile("chunk", "chunk0")
+		_, _ = part.Write([]byte("evil-content"))
+		mw.Close()
+
+		chunkReq := httptest.NewRequest("POST", "/api/upload/chunk", &chunkBuf).WithContext(ctx)
+		chunkReq.Header.Set("Content-Type", mw.FormDataContentType())
+		chunkRR := httptest.NewRecorder()
+		srv.chunkUploadHandler(chunkRR, chunkReq)
+		if chunkRR.Code != http.StatusOK {
+			t.Fatalf("chunk upload failed: %d %s", chunkRR.Code, chunkRR.Body.String())
+		}
+
+		// Complete upload
+		compBody, _ := json.Marshal(map[string]string{"upload_id": uploadID})
+		compReq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(compBody)).WithContext(ctx)
+		compRR := httptest.NewRecorder()
+		srv.chunkUploadCompleteHandler(compRR, compReq)
+		if compRR.Code != http.StatusOK {
+			t.Fatalf("complete upload failed: %d %s", compRR.Code, compRR.Body.String())
+		}
+
+		// Verify DB record has sanitized OriginalName and random StoragePath
+		storedFile, err := db.GetFileByURL(context.Background(), database, tc.urlPath)
+		if err != nil {
+			t.Fatalf("GetFileByURL(%q) failed: %v", tc.urlPath, err)
+		}
+		if storedFile.OriginalName != tc.wantBase {
+			t.Errorf("expected sanitized OriginalName %q, got %q", tc.wantBase, storedFile.OriginalName)
+		}
+		if strings.Contains(storedFile.StoragePath, "config") || strings.ContainsAny(storedFile.StoragePath, "/\\.") {
+			t.Errorf("expected random StoragePath with no user filename or dots, got %q", storedFile.StoragePath)
+		}
+	}
+
+	// Verify neither canaryFile nor canaryConfig was touched or deleted
+	if got, err := os.ReadFile(canaryFile); err != nil || string(got) != "sqlite-db-canary" {
+		t.Fatalf("canary database file was destroyed or altered: err=%v, content=%q", err, string(got))
+	}
+	if got, err := os.ReadFile(canaryConfig); err != nil || string(got) != `{"jwt_key":"safe"}` {
+		t.Fatalf("canary config.json was overwritten or deleted: err=%v, content=%q", err, string(got))
+	}
+}
+
+func TestWeakJWTKeyRejectedAndForgedTokenBlocked(t *testing.T) {
+	weakKey := "weak-secret-key-too-short"
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		JWTKey:    weakKey, // simulate invalid/weak key
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	// Server.New must replace the weak key with a strong random key
+	srv := New(cfg, database)
+	if srv.cfg.JWTKey == weakKey || !config.IsValidJWTKey(srv.cfg.JWTKey) {
+		t.Fatalf("expected Server.New to replace weak key with a strong random key, got %q", srv.cfg.JWTKey)
+	}
+
+	// Attacker forges an admin token using the weak key
+	forgedToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": "admin",
+		"exp":      time.Now().Add(time.Hour).Unix(),
+	})
+	forgedStr, err := forgedToken.SignedString([]byte(weakKey))
+	if err != nil {
+		t.Fatalf("failed to sign forged token: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: "session", Value: forgedStr})
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound || rr.Header().Get("Location") != "/login" {
+		t.Fatalf("expected forged token signed with weak key to be rejected with 302 -> /login, got %d (Location=%q)", rr.Code, rr.Header().Get("Location"))
+	}
+
+	// Even if someone mutates srv.cfg.JWTKey back to the weak key at runtime, parseJWTUsername refuses it
+	srv.mu.Lock()
+	srv.cfg.JWTKey = weakKey
+	srv.mu.Unlock()
+	if _, ok := srv.parseJWTUsername(forgedStr); ok {
+		t.Fatalf("parseJWTUsername must never accept tokens when JWTKey is invalid")
+	}
+}
+
+func TestStoredXSSMitigatedOnServedFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	// Upload active/sniffable payloads: HTML, SVG with script, and extensionless HTML content
+	testFiles := []struct {
+		key          string
+		originalName string
+		customName   string
+		urlPath      string
+		payload      string
+		wantMime     string
+		wantDisp     string
+	}{
+		{
+			key:          "xsshtml",
+			originalName: "exploit.html",
+			customName:   `evil"; injected=1`,
+			urlPath:      "xss-html",
+			payload:      `<!DOCTYPE html><script>fetch('/settings/users/add')</script>`,
+			wantMime:     "application/octet-stream",
+			wantDisp:     "attachment",
+		},
+		{
+			key:          "xsssvg",
+			originalName: "image.svg",
+			urlPath:      "xss-svg",
+			payload:      `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(document.domain)"/>`,
+			wantMime:     "application/octet-stream",
+			wantDisp:     "attachment",
+		},
+		{
+			key:          "sniffed",
+			originalName: "README",
+			urlPath:      "xss-sniff",
+			payload:      `<html><body><script>alert(1)</script></body></html>`,
+			wantMime:     "application/octet-stream",
+			wantDisp:     "attachment",
+		},
+		{
+			key:          "safeimg",
+			originalName: "photo.png",
+			urlPath:      "safe-png",
+			payload:      "\x89PNG\r\n\x1a\n",
+			wantMime:     "image/png",
+			wantDisp:     "inline",
+		},
+		{
+			key:          "safepdf",
+			originalName: "doc.pdf",
+			urlPath:      "safe-pdf",
+			payload:      "%PDF-1.7",
+			wantMime:     "application/pdf",
+			wantDisp:     "inline",
+		},
+	}
+
+	for _, tf := range testFiles {
+		if err := srv.storage.Save(context.Background(), tf.key, strings.NewReader(tf.payload)); err != nil {
+			t.Fatalf("failed to save %s: %v", tf.key, err)
+		}
+		if err := db.InsertFile(context.Background(), database, &db.File{
+			OriginalName: tf.originalName,
+			CustomName:   tf.customName,
+			URLPath:      tf.urlPath,
+			Size:         int64(len(tf.payload)),
+			StorageType:  "local",
+			StoragePath:  tf.key,
+			UserID:       1,
+		}); err != nil {
+			t.Fatalf("failed to insert %s: %v", tf.key, err)
+		}
+
+		req := httptest.NewRequest("GET", "/f/"+tf.urlPath+"?raw=1", nil)
+		rr := httptest.NewRecorder()
+		srv.serveFileHandler(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET /f/%s status = %d, want 200", tf.urlPath, rr.Code)
+		}
+		h := rr.Header()
+		if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("%s: X-Content-Type-Options = %q, want 'nosniff'", tf.urlPath, got)
+		}
+		csp := h.Get("Content-Security-Policy")
+		if !strings.HasPrefix(csp, "sandbox;") || strings.Contains(csp, "allow-scripts") || strings.Contains(csp, "allow-same-origin") {
+			t.Errorf("%s: unexpected CSP %q (must start with 'sandbox;' and not allow scripts/same-origin)", tf.urlPath, csp)
+		}
+		if got := h.Get("Cross-Origin-Resource-Policy"); got != "same-site" {
+			t.Errorf("%s: Cross-Origin-Resource-Policy = %q, want 'same-site'", tf.urlPath, got)
+		}
+		if got := h.Get("Content-Type"); got != tf.wantMime {
+			t.Errorf("%s: Content-Type = %q, want %q", tf.urlPath, got, tf.wantMime)
+		}
+		cd := h.Get("Content-Disposition")
+		if !strings.HasPrefix(cd, tf.wantDisp+";") {
+			t.Errorf("%s: Content-Disposition = %q, expected prefix %q", tf.urlPath, cd, tf.wantDisp+";")
+		}
+		// Ensure quote injection in custom_name is properly escaped by mime.FormatMediaType
+		if tf.customName != "" && strings.Contains(cd, `filename="evil"; injected=1"`) {
+			t.Errorf("%s: Content-Disposition vulnerable to quote injection: %q", tf.urlPath, cd)
+		}
+	}
+}
+
+func TestSetupFailClosedTokenAndLockout(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	srv := New(cfg, database)
+	token := srv.EnableSetupToken()
+	if token == "" {
+		t.Fatalf("expected non-empty setup token")
+	}
+
+	// 1. POST /setup without token or with wrong token is rejected with 403 Forbidden
+	noTokenForm := strings.NewReader("storage_type=local&local_path=" + tempDir + "&username=evil&password=Password123!")
+	noTokenReq := httptest.NewRequest("POST", "/setup", noTokenForm)
+	noTokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	noTokenRR := httptest.NewRecorder()
+	srv.setupHandler(noTokenRR, noTokenReq)
+	if noTokenRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden when setup_token is missing, got %d", noTokenRR.Code)
+	}
+
+	// 2. POST /setup with valid token but dangerous local_path (e.g. "/" or "../outside") is rejected
+	for _, badPath := range []string{"/", "../escape", "/../../etc"} {
+		badForm := strings.NewReader("setup_token=" + token + "&storage_type=local&local_path=" + badPath + "&username=admin&password=Password123!")
+		badReq := httptest.NewRequest("POST", "/setup", badForm)
+		badReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		badRR := httptest.NewRecorder()
+		srv.setupHandler(badRR, badReq)
+		if badRR.Code == http.StatusFound {
+			t.Fatalf("expected setup with dangerous local_path %q to be rejected, got 302 redirect", badPath)
+		}
+	}
+
+	// 3. Valid setup with token succeeds and locks setup permanently
+	validForm := strings.NewReader("setup_token=" + token + "&storage_type=local&local_path=" + tempDir + "&username=admin&password=Password123!")
+	validReq := httptest.NewRequest("POST", "/setup", validForm)
+	validReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	validRR := httptest.NewRecorder()
+	srv.setupHandler(validRR, validReq)
+	if validRR.Code != http.StatusFound || validRR.Header().Get("Location") != "/" {
+		t.Fatalf("expected 302 -> / on valid setup, got %d (Location=%q)", validRR.Code, validRR.Header().Get("Location"))
+	}
+
+	// 4. Subsequent POST /setup (even with the token) is redirected to "/" and does not create a second admin
+	secondForm := strings.NewReader("setup_token=" + token + "&storage_type=local&local_path=" + tempDir + "&username=attacker&password=Password123!")
+	secondReq := httptest.NewRequest("POST", "/setup", secondForm)
+	secondReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	secondRR := httptest.NewRecorder()
+	srv.setupHandler(secondRR, secondReq)
+	if secondRR.Code != http.StatusFound || secondRR.Header().Get("Location") != "/" {
+		t.Fatalf("expected 302 -> / when already configured, got %d", secondRR.Code)
+	}
+	if _, err := db.GetUserByUsername(context.Background(), database, "attacker"); err == nil {
+		t.Fatalf("attacker admin should not have been created after setup completed")
+	}
+
+	// 5. Direct db.CreateAdmin call when an admin already exists fails with db.ErrAdminAlreadyExists
+	if err := db.CreateAdmin(context.Background(), database, "secondadmin", "hash"); !errors.Is(err, db.ErrAdminAlreadyExists) {
+		t.Fatalf("expected ErrAdminAlreadyExists on second CreateAdmin, got %v", err)
+	}
+
+	// 6. Simulate a database outage on a non-cached server: CheckConfigured returns error, and handlers return 503 Service Unavailable instead of redirecting to /setup!
+	closedDB, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init second db: %v", err)
+	}
+	closedDB.Close() // force DB error on HasAdmin
+
+	srvBroken := New(cfg, closedDB)
+	loginReq := httptest.NewRequest("GET", "/login", nil)
+	loginRR := httptest.NewRecorder()
+	srvBroken.loginHandler(loginRR, loginReq)
+	if loginRR.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable on /login when DB fails, got %d (Location=%q)", loginRR.Code, loginRR.Header().Get("Location"))
+	}
+
+	setupReq := httptest.NewRequest("GET", "/setup", nil)
+	setupRR := httptest.NewRecorder()
+	srvBroken.setupHandler(setupRR, setupReq)
+	if setupRR.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable on /setup when DB fails, got %d", setupRR.Code)
+	}
+}
+
+func TestLoginAnd2FABruteForceAndReplayProtection(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("CorrectPassword123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	_, recHash, _ := generateRecoveryCode()
+	_ = db.UpdateRecoveryCode(context.Background(), database, "admin", recHash)
+
+	srv := New(cfg, database)
+
+	// 1. /login brute-force rate limit: 10 failed attempts from an attacker IP trigger 429 + Retry-After
+	for i := 1; i <= loginMaxAttempts; i++ {
+		form := strings.NewReader("username=admin&password=WrongPassword")
+		req := httptest.NewRequest("POST", "/login", form)
+		req.RemoteAddr = "198.51.100.42:54321"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.loginHandler(rr, req)
+
+		if i < loginMaxAttempts {
+			if rr.Code != http.StatusOK {
+				t.Fatalf("attempt %d: expected 200 OK with error form, got %d", i, rr.Code)
+			}
+		} else {
+			if rr.Code != http.StatusTooManyRequests {
+				t.Fatalf("attempt %d: expected 429 TooManyRequests, got %d", i, rr.Code)
+			}
+			if rr.Header().Get("Retry-After") == "" {
+				t.Errorf("expected Retry-After header on 429 response")
+			}
+		}
+	}
+
+	// Legitimate user on a different IP is NOT locked out by the attacker's IP
+	legitForm := strings.NewReader("username=admin&password=CorrectPassword123!")
+	legitReq := httptest.NewRequest("POST", "/login", legitForm)
+	legitReq.RemoteAddr = "203.0.113.7:12345"
+	legitReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	legitRR := httptest.NewRecorder()
+	srv.loginHandler(legitRR, legitReq)
+	if legitRR.Code != http.StatusFound || legitRR.Header().Get("Location") != "/" {
+		t.Fatalf("expected legitimate user on another IP to succeed with 302 -> /, got %d", legitRR.Code)
+	}
+
+	// 2. /reset-password per-IP isolation: attacker IP hitting 429 does not lock out legitimate IP
+	for i := 1; i <= resetMaxAttempts; i++ {
+		form := strings.NewReader("username=admin&recovery_code=XXXX-XXXX-XXXX-XXXX&new_password=New1!&confirm_password=New1!")
+		req := httptest.NewRequest("POST", "/reset-password", form)
+		req.RemoteAddr = "198.51.100.99:11111"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.resetPasswordHandler(rr, req)
+		if i == resetMaxAttempts && rr.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 on %dth reset failure, got %d", i, rr.Code)
+		}
+	}
+	otherIPForm := strings.NewReader("username=admin&recovery_code=YYYY-YYYY-YYYY-YYYY&new_password=New1!&confirm_password=New1!")
+	otherIPReq := httptest.NewRequest("POST", "/reset-password", otherIPForm)
+	otherIPReq.RemoteAddr = "203.0.113.88:22222"
+	otherIPReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	otherIPRR := httptest.NewRecorder()
+	srv.resetPasswordHandler(otherIPRR, otherIPReq)
+	if otherIPRR.Code == http.StatusTooManyRequests {
+		t.Fatalf("attacker IP lockout on /reset-password must not lock out a different client IP")
+	}
+
+	// 3. /login/2fa session attempt cap (max 5 failed attempts invalidates the 2fa_session)
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "FileLine",
+		AccountName: "admin",
+	})
+	if err != nil {
+		t.Fatalf("failed to generate TOTP key: %v", err)
+	}
+	if err := db.UpdateUserAuthData(context.Background(), database, "admin", key.Secret(), "[]"); err != nil {
+		t.Fatalf("failed to set TOTP secret: %v", err)
+	}
+
+	// Login to get a fresh 2fa_session cookie
+	loginReq := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=CorrectPassword123!"))
+	loginReq.RemoteAddr = "203.0.113.50:4000"
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR := httptest.NewRecorder()
+	srv.loginHandler(loginRR, loginReq)
+	if loginRR.Code != http.StatusFound || loginRR.Header().Get("Location") != "/login/2fa" {
+		t.Fatalf("expected redirect to /login/2fa, got %d (%s)", loginRR.Code, loginRR.Header().Get("Location"))
+	}
+	var twoFACookie *http.Cookie
+	for _, c := range loginRR.Result().Cookies() {
+		if c.Name == "2fa_session" {
+			twoFACookie = c
+			break
+		}
+	}
+	if twoFACookie == nil {
+		t.Fatalf("expected 2fa_session cookie")
+	}
+
+	// Submit 5 wrong 6-digit codes; on the 5th attempt the session must be deleted and redirect to /login
+	for i := 1; i <= twoFAMaxAttempts; i++ {
+		req := httptest.NewRequest("POST", "/login/2fa", strings.NewReader("code=000000"))
+		req.RemoteAddr = "203.0.113.50:4000"
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.AddCookie(twoFACookie)
+		rr := httptest.NewRecorder()
+		srv.login2FAHandler(rr, req)
+
+		if i < twoFAMaxAttempts {
+			if rr.Code != http.StatusOK {
+				t.Fatalf("2FA failure %d: expected 200 error page, got %d", i, rr.Code)
+			}
+		} else {
+			if rr.Code != http.StatusFound || !strings.HasPrefix(rr.Header().Get("Location"), "/login") {
+				t.Fatalf("5th 2FA failure must invalidate session and redirect to /login, got %d (%s)", rr.Code, rr.Header().Get("Location"))
+			}
+		}
+	}
+
+	// 4. TOTP replay protection: a valid 6-digit code can only be used once within its time-step
+	loginReq2 := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=CorrectPassword123!"))
+	loginReq2.RemoteAddr = "203.0.113.51:4000"
+	loginReq2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR2 := httptest.NewRecorder()
+	srv.loginHandler(loginRR2, loginReq2)
+	var cookie1 *http.Cookie
+	for _, c := range loginRR2.Result().Cookies() {
+		if c.Name == "2fa_session" {
+			cookie1 = c
+		}
+	}
+
+	loginReq3 := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=CorrectPassword123!"))
+	loginReq3.RemoteAddr = "203.0.113.52:4000"
+	loginReq3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR3 := httptest.NewRecorder()
+	srv.loginHandler(loginRR3, loginReq3)
+	var cookie2 *http.Cookie
+	for _, c := range loginRR3.Result().Cookies() {
+		if c.Name == "2fa_session" {
+			cookie2 = c
+		}
+	}
+
+	validCode, err := totp.GenerateCode(key.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("failed to generate TOTP code: %v", err)
+	}
+
+	// First use of validCode succeeds
+	use1Req := httptest.NewRequest("POST", "/login/2fa", strings.NewReader("code="+validCode))
+	use1Req.RemoteAddr = "203.0.113.51:4000"
+	use1Req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	use1Req.AddCookie(cookie1)
+	use1RR := httptest.NewRecorder()
+	srv.login2FAHandler(use1RR, use1Req)
+	if use1RR.Code != http.StatusFound || use1RR.Header().Get("Location") != "/" {
+		t.Fatalf("expected first use of TOTP code to succeed, got %d (%s)", use1RR.Code, use1RR.Header().Get("Location"))
+	}
+
+	// Second use (replay) of the exact same validCode in the same 30s window is rejected
+	use2Req := httptest.NewRequest("POST", "/login/2fa", strings.NewReader("code="+validCode))
+	use2Req.RemoteAddr = "203.0.113.52:4000"
+	use2Req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	use2Req.AddCookie(cookie2)
+	use2RR := httptest.NewRecorder()
+	srv.login2FAHandler(use2RR, use2Req)
+	if use2RR.Code == http.StatusFound && use2RR.Header().Get("Location") == "/" {
+		t.Fatalf("replayed TOTP code within the same 30s window must be rejected, but succeeded!")
+	}
+}
+
+func TestChunkUploadBoundsAndQuotaEnforcement(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "test.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		MaxUploadSizeMB:  1, // 1 MB max upload size
+		ChunkSizeMB:      1, // 1 MB chunk size
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "uploader", "hash"); err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctx := context.WithValue(context.Background(), "username", "uploader")
+
+	// 1. Negative, zero, or huge TotalChunks / TotalSize values are rejected with 400 (no panic or OOM)
+	badInits := []map[string]interface{}{
+		{"file_name": "a.bin", "total_size": 100, "total_chunks": -1},
+		{"file_name": "a.bin", "total_size": 100, "total_chunks": 0},
+		{"file_name": "a.bin", "total_size": 100, "total_chunks": 2147483647},
+		{"file_name": "a.bin", "total_size": 0, "total_chunks": 1},
+		{"file_name": "a.bin", "total_size": -50, "total_chunks": 1},
+		// Mismatched total_chunks vs total_size (100 bytes with 1MB chunks expects 1 chunk, not 50)
+		{"file_name": "a.bin", "total_size": 100, "total_chunks": 50},
+	}
+	for _, payload := range badInits {
+		b, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(b)).WithContext(ctx)
+		rr := httptest.NewRecorder()
+		srv.chunkUploadInitHandler(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 BadRequest for payload %v, got %d", payload, rr.Code)
+		}
+	}
+
+	// 2. Declare TotalSize = 10 bytes, TotalChunks = 1, but upload 20 bytes -> rejected!
+	initBody, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "mismatch.bin",
+		"total_size":   10,
+		"total_chunks": 1,
+	})
+	initReq := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initBody)).WithContext(ctx)
+	initRR := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR, initReq)
+	if initRR.Code != http.StatusOK {
+		t.Fatalf("init expected 200, got %d: %s", initRR.Code, initRR.Body.String())
+	}
+	var initRes map[string]string
+	_ = json.Unmarshal(initRR.Body.Bytes(), &initRes)
+	uploadID := initRes["upload_id"]
+
+	// Uploading 20 bytes when TotalSize is 10 bytes must be rejected by chunkUploadHandler
+	var overBuf bytes.Buffer
+	mw := multipart.NewWriter(&overBuf)
+	_ = mw.WriteField("upload_id", uploadID)
+	_ = mw.WriteField("chunk_index", "0")
+	part, _ := mw.CreateFormFile("chunk", "chunk0")
+	_, _ = part.Write([]byte("01234567890123456789")) // 20 bytes > 10 bytes TotalSize
+	mw.Close()
+
+	overReq := httptest.NewRequest("POST", "/api/upload/chunk", &overBuf).WithContext(ctx)
+	overReq.Header.Set("Content-Type", mw.FormDataContentType())
+	overRR := httptest.NewRecorder()
+	srv.chunkUploadHandler(overRR, overReq)
+	if overRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when chunk bytes exceed declared TotalSize, got %d", overRR.Code)
+	}
+
+	// Now upload only 5 bytes (< 10 bytes declared) and try to complete -> rejected because actualSize (5) != TotalSize (10)
+	var shortBuf bytes.Buffer
+	mwShort := multipart.NewWriter(&shortBuf)
+	_ = mwShort.WriteField("upload_id", uploadID)
+	_ = mwShort.WriteField("chunk_index", "0")
+	partShort, _ := mwShort.CreateFormFile("chunk", "chunk0")
+	_, _ = partShort.Write([]byte("01234")) // 5 bytes
+	mwShort.Close()
+
+	shortReq := httptest.NewRequest("POST", "/api/upload/chunk", &shortBuf).WithContext(ctx)
+	shortReq.Header.Set("Content-Type", mwShort.FormDataContentType())
+	shortRR := httptest.NewRecorder()
+	srv.chunkUploadHandler(shortRR, shortReq)
+	if shortRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 for 5-byte chunk, got %d: %s", shortRR.Code, shortRR.Body.String())
+	}
+
+	compBody, _ := json.Marshal(map[string]string{"upload_id": uploadID})
+	compReq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(compBody)).WithContext(ctx)
+	compRR := httptest.NewRecorder()
+	srv.chunkUploadCompleteHandler(compRR, compReq)
+	if compRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when assembled size (5) != declared TotalSize (10), got %d", compRR.Code)
+	}
+
+	// 3. Concurrent /api/upload/complete calls for the same session: exactly one succeeds
+	initBody2, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "race.bin",
+		"total_size":   10,
+		"total_chunks": 1,
+		"url_path":     "race-file",
+	})
+	initReq2 := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initBody2)).WithContext(ctx)
+	initRR2 := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR2, initReq2)
+	var initRes2 map[string]string
+	_ = json.Unmarshal(initRR2.Body.Bytes(), &initRes2)
+	raceUploadID := initRes2["upload_id"]
+
+	var validBuf bytes.Buffer
+	mwValid := multipart.NewWriter(&validBuf)
+	_ = mwValid.WriteField("upload_id", raceUploadID)
+	_ = mwValid.WriteField("chunk_index", "0")
+	partValid, _ := mwValid.CreateFormFile("chunk", "chunk0")
+	_, _ = partValid.Write([]byte("0123456789"))
+	mwValid.Close()
+
+	validChunkReq := httptest.NewRequest("POST", "/api/upload/chunk", &validBuf).WithContext(ctx)
+	validChunkReq.Header.Set("Content-Type", mwValid.FormDataContentType())
+	validChunkRR := httptest.NewRecorder()
+	srv.chunkUploadHandler(validChunkRR, validChunkReq)
+	if validChunkRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid chunk, got %d", validChunkRR.Code)
+	}
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for idx := 0; idx < 2; idx++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cb, _ := json.Marshal(map[string]string{"upload_id": raceUploadID})
+			creq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(cb)).WithContext(ctx)
+			crr := httptest.NewRecorder()
+			srv.chunkUploadCompleteHandler(crr, creq)
+			codes[i] = crr.Code
+		}(idx)
+	}
+	wg.Wait()
+
+	successCount := 0
+	for _, c := range codes {
+		if c == http.StatusOK {
+			successCount++
+		}
+	}
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 concurrent complete call to succeed (200 OK), got codes=%v", codes)
+	}
+
+	// 4. Expired upload sessions are cleaned up by cleanupExpiredUploads
+	initBody3, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "abandoned.bin",
+		"total_size":   10,
+		"total_chunks": 1,
+	})
+	initReq3 := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initBody3)).WithContext(ctx)
+	initRR3 := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR3, initReq3)
+	var initRes3 map[string]string
+	_ = json.Unmarshal(initRR3.Body.Bytes(), &initRes3)
+	abandonedID := initRes3["upload_id"]
+
+	srv.cleanupExpiredUploads(time.Now().Add(chunkUploadTTL + time.Minute))
+	srv.chunkMu.RLock()
+	_, stillExists := srv.chunkUploads[abandonedID]
+	srv.chunkMu.RUnlock()
+	if stillExists {
+		t.Fatalf("expected expired upload session %q to be removed by janitor", abandonedID)
+	}
+}
+
+func TestChunkUploadSessionOwnerBinding(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		MaxUploadSizeMB:  10,
+		ChunkSizeMB:      1,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "alice", "hash"); err != nil {
+		t.Fatalf("failed to create alice: %v", err)
+	}
+	if err := db.CreateSubuser(context.Background(), database, "bob", "hash", 10); err != nil {
+		t.Fatalf("failed to create bob: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctxAlice := context.WithValue(context.Background(), "username", "alice")
+	ctxBob := context.WithValue(context.Background(), "username", "bob")
+
+	// Alice initiates a chunked upload
+	initBody, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "alice-report.txt",
+		"total_size":   12,
+		"total_chunks": 1,
+		"url_path":     "alice-report",
+	})
+	initReq := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initBody)).WithContext(ctxAlice)
+	initRR := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR, initReq)
+	if initRR.Code != http.StatusOK {
+		t.Fatalf("alice init failed: %d %s", initRR.Code, initRR.Body.String())
+	}
+	var initRes map[string]string
+	_ = json.Unmarshal(initRR.Body.Bytes(), &initRes)
+	uploadID := initRes["upload_id"]
+
+	// 1. Bob tries to upload a chunk to Alice's upload_id -> must get 404 Not Found
+	var bobChunkBuf bytes.Buffer
+	mwBob := multipart.NewWriter(&bobChunkBuf)
+	_ = mwBob.WriteField("upload_id", uploadID)
+	_ = mwBob.WriteField("chunk_index", "0")
+	partBob, _ := mwBob.CreateFormFile("chunk", "chunk0")
+	_, _ = partBob.Write([]byte("bob-injected"))
+	mwBob.Close()
+
+	bobChunkReq := httptest.NewRequest("POST", "/api/upload/chunk", &bobChunkBuf).WithContext(ctxBob)
+	bobChunkReq.Header.Set("Content-Type", mwBob.FormDataContentType())
+	bobChunkRR := httptest.NewRecorder()
+	srv.chunkUploadHandler(bobChunkRR, bobChunkReq)
+	if bobChunkRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound when bob attempts to upload chunk to alice's session, got %d", bobChunkRR.Code)
+	}
+
+	// 2. Bob tries to complete Alice's upload session early -> must get 404 Not Found (and must NOT delete Alice's session)
+	bobCompBody, _ := json.Marshal(map[string]string{"upload_id": uploadID})
+	bobCompReq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(bobCompBody)).WithContext(ctxBob)
+	bobCompRR := httptest.NewRecorder()
+	srv.chunkUploadCompleteHandler(bobCompRR, bobCompReq)
+	if bobCompRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound when bob attempts to complete alice's session, got %d", bobCompRR.Code)
+	}
+
+	// 3. Alice uploads her own chunk and completes the upload -> succeeds with Alice's content intact
+	var aliceChunkBuf bytes.Buffer
+	mwAlice := multipart.NewWriter(&aliceChunkBuf)
+	_ = mwAlice.WriteField("upload_id", uploadID)
+	_ = mwAlice.WriteField("chunk_index", "0")
+	partAlice, _ := mwAlice.CreateFormFile("chunk", "chunk0")
+	_, _ = partAlice.Write([]byte("alice-secret"))
+	mwAlice.Close()
+
+	aliceChunkReq := httptest.NewRequest("POST", "/api/upload/chunk", &aliceChunkBuf).WithContext(ctxAlice)
+	aliceChunkReq.Header.Set("Content-Type", mwAlice.FormDataContentType())
+	aliceChunkRR := httptest.NewRecorder()
+	srv.chunkUploadHandler(aliceChunkRR, aliceChunkReq)
+	if aliceChunkRR.Code != http.StatusOK {
+		t.Fatalf("alice chunk upload failed: %d %s", aliceChunkRR.Code, aliceChunkRR.Body.String())
+	}
+
+	// Bob tries to complete Alice's session AFTER Alice uploaded her chunk -> still 404 Not Found
+	bobCompReq2 := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(bobCompBody)).WithContext(ctxBob)
+	bobCompRR2 := httptest.NewRecorder()
+	srv.chunkUploadCompleteHandler(bobCompRR2, bobCompReq2)
+	if bobCompRR2.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 NotFound when bob attempts to complete alice's ready session, got %d", bobCompRR2.Code)
+	}
+
+	// Alice completes her upload -> 200 OK
+	aliceCompReq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(bobCompBody)).WithContext(ctxAlice)
+	aliceCompRR := httptest.NewRecorder()
+	srv.chunkUploadCompleteHandler(aliceCompRR, aliceCompReq)
+	if aliceCompRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK when alice completes her own session, got %d: %s", aliceCompRR.Code, aliceCompRR.Body.String())
+	}
+
+	stored, err := db.GetFileByURL(context.Background(), database, "alice-report")
+	if err != nil {
+		t.Fatalf("failed to load alice-report: %v", err)
+	}
+	rc, err := srv.storage.Get(context.Background(), stored.StoragePath)
+	if err != nil {
+		t.Fatalf("failed to read stored file: %v", err)
+	}
+	defer rc.Close()
+	var got bytes.Buffer
+	_, _ = got.ReadFrom(rc)
+	if got.String() != "alice-secret" {
+		t.Fatalf("expected 'alice-secret', got %q", got.String())
+	}
+}
+
+func TestRequestBodySizeLimitsAndLogoValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		MaxUploadSizeMB:  1, // 1 MB max upload
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+
+	// 1. Oversized form/JSON bodies (> 64 KB) on auth/settings endpoints are rejected with 413 RequestEntityTooLarge
+	bigForm := "username=admin&password=" + strings.Repeat("A", 100*1024)
+	loginReq := httptest.NewRequest("POST", "/login", strings.NewReader(bigForm))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR := httptest.NewRecorder()
+	srv.loginHandler(loginRR, loginReq)
+	if loginRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 RequestEntityTooLarge on oversized /login body, got %d", loginRR.Code)
+	}
+
+	bigJSON := `{"file_name":"a.txt","total_size":10,"total_chunks":1,"custom_name":"` + strings.Repeat("B", 100*1024) + `"}`
+	initReq := httptest.NewRequest("POST", "/api/upload/init", strings.NewReader(bigJSON)).WithContext(ctxAdmin)
+	initRR := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(initRR, initReq)
+	if initRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 RequestEntityTooLarge on oversized /api/upload/init body, got %d", initRR.Code)
+	}
+
+	// 2. Oversized multipart file upload (> MaxUploadSizeMB + 1MB overhead) is rejected with 413 before spooling unbounded data
+	var bigUploadBuf bytes.Buffer
+	mwUp := multipart.NewWriter(&bigUploadBuf)
+	partUp, _ := mwUp.CreateFormFile("file", "huge.bin")
+	_, _ = partUp.Write(bytes.Repeat([]byte("X"), (2<<20)+4096)) // > 2 MB (MaxUploadSizeMB=1 + 1MB overhead)
+	mwUp.Close()
+
+	upReq := httptest.NewRequest("POST", "/upload", &bigUploadBuf).WithContext(ctxAdmin)
+	upReq.Header.Set("Content-Type", mwUp.FormDataContentType())
+	upRR := httptest.NewRecorder()
+	srv.uploadHandler(upRR, upReq)
+	if upRR.Code != http.StatusRequestEntityTooLarge && upRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 413 or 400 on oversized /upload body, got %d", upRR.Code)
+	}
+
+	// 3. Logo upload > 1 MB is rejected with 413
+	var bigLogoBuf bytes.Buffer
+	mwLogo := multipart.NewWriter(&bigLogoBuf)
+	partLogo, _ := mwLogo.CreateFormFile("custom_logo_file", "logo.png")
+	_, _ = partLogo.Write([]byte("\x89PNG\r\n\x1a\n"))
+	_, _ = partLogo.Write(bytes.Repeat([]byte("P"), (1<<20)+128*1024))
+	mwLogo.Close()
+
+	bigLogoReq := httptest.NewRequest("POST", "/settings/action/appearance", &bigLogoBuf).WithContext(ctxAdmin)
+	bigLogoReq.Header.Set("Content-Type", mwLogo.FormDataContentType())
+	bigLogoRR := httptest.NewRecorder()
+	srv.settingsActionHandler(bigLogoRR, bigLogoReq)
+	if bigLogoRR.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413 RequestEntityTooLarge on >1MB logo upload, got %d", bigLogoRR.Code)
+	}
+
+	// 4. Logo upload with .png extension but non-PNG magic bytes (e.g. HTML/text) is rejected
+	var fakePngBuf bytes.Buffer
+	mwFake := multipart.NewWriter(&fakePngBuf)
+	partFake, _ := mwFake.CreateFormFile("custom_logo_file", "fake.png")
+	_, _ = partFake.Write([]byte("<html><script>alert(1)</script></html>"))
+	mwFake.Close()
+
+	fakePngReq := httptest.NewRequest("POST", "/settings/action/appearance", &fakePngBuf).WithContext(ctxAdmin)
+	fakePngReq.Header.Set("Content-Type", mwFake.FormDataContentType())
+	fakePngRR := httptest.NewRecorder()
+	srv.settingsActionHandler(fakePngRR, fakePngReq)
+	if !strings.Contains(fakePngRR.Header().Get("Location"), "error=") {
+		t.Fatalf("expected redirect with error when uploading .png with invalid magic bytes, got Location=%q", fakePngRR.Header().Get("Location"))
+	}
+}
 

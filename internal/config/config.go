@@ -1,11 +1,20 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 )
+
+// MinJWTKeyLength is the minimum accepted length (in bytes) of a session signing key
+const MinJWTKeyLength = 32
 
 type Drive struct {
 	ID               string `json:"id"`
@@ -62,7 +71,7 @@ func DefaultConfig() Config {
 		Port:             8080,
 		SSL:              false,
 		ReverseProxy:     false,
-		JWTKey:           "default-secret-key-change-me",
+		JWTKey:           "", // never hard-coded; see EnsureJWTKey
 		StorageType:      "local",
 		LocalStoragePath: "./uploads",
 		Domain:           "localhost",
@@ -78,16 +87,22 @@ func DefaultConfig() Config {
 	}
 }
 
-// Load reads config. If envOnly is true, it only uses environment variables
+// Load reads config from configPath (unless envOnly is true), then applies FL_* environment variable overrides.
 func Load(configPath string, envOnly bool) (*Config, error) {
 	cfg := DefaultConfig()
-	// Try reading config.json
-	file, err := os.ReadFile(configPath)
-	if err == nil {
-		if err := json.Unmarshal(file, &cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse config file: %w", err)
+	cfg.EnvOnly = envOnly
+	if !envOnly && configPath != "" {
+		file, err := os.ReadFile(configPath)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("failed to read config file: %w", err)
+			}
+		} else {
+			if err := json.Unmarshal(file, &cfg); err != nil {
+				return nil, fmt.Errorf("failed to parse config file: %w", err)
+			}
+			cfg.EnvOnly = envOnly
 		}
-		return &cfg, nil
 	}
 	// Override with environment variables
 	if v, ok := os.LookupEnv("FL_DB_TYPE"); ok {
@@ -192,15 +207,82 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes the current configuration back to config.json.
-func (c *Config) Save(configPath string) error {
+// IsValidJWTKey reports whether key meets the minimum length requirement
+func IsValidJWTKey(key string) bool {
+	k := strings.TrimSpace(key)
+	return len(k) >= MinJWTKeyLength
+}
+
+// GenerateJWTKey generates a new cryptographically random 256-bit (32-byte) key, base64url-encoded
+func GenerateJWTKey() (string, error) {
+	b := make([]byte, MinJWTKeyLength)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random JWT key: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func (c *Config) EnsureJWTKey(configPath string) error {
+	if IsValidJWTKey(c.JWTKey) {
+		return nil
+	}
 	if c.EnvOnly {
+		return fmt.Errorf("FL_JWT_KEY must be set to at least %d random bytes", MinJWTKeyLength)
+	}
+	key, err := GenerateJWTKey()
+	if err != nil {
+		return err
+	}
+	c.JWTKey = key
+	if configPath != "" {
+		return c.Save(configPath)
+	}
+	return nil
+}
+
+// Save writes the current configuration atomically to configPath with mode 0600
+func (c *Config) Save(configPath string) error {
+	if c.EnvOnly || configPath == "" {
 		return nil
 	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
-	return os.WriteFile(configPath, data, 0644)
+	dir := filepath.Dir(configPath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return fmt.Errorf("failed to create config directory: %w", err)
+		}
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to set config file permissions: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("failed to sync config file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to close config file: %w", err)
+	}
+	if err := os.Rename(tmpName, configPath); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("failed to replace config file: %w", err)
+	}
+	return nil
 }
-

@@ -16,7 +16,6 @@ import (
 	"fileline/internal/db"
 	"fileline/internal/logger"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/mileusna/useragent"
 )
 
@@ -50,14 +49,14 @@ func detectMediaInfo(filename string) (string, string) {
 		return "image", "image/gif"
 	case ".webp":
 		return "image", "image/webp"
-	case ".svg":
-		return "image", "image/svg+xml"
 	case ".avif":
 		return "image", "image/avif"
 	case ".bmp":
 		return "image", "image/bmp"
 	case ".ico":
 		return "image", "image/x-icon"
+	case ".svg":
+		return "other", "application/octet-stream"
 	case ".mp4", ".m4v":
 		return "video", "video/mp4"
 	case ".webm":
@@ -80,20 +79,55 @@ func detectMediaInfo(filename string) (string, string) {
 		return "audio", "audio/flac"
 	case ".m4a", ".aac":
 		return "audio", "audio/mp4"
+	case ".pdf":
+		return "other", "application/pdf"
 	}
 	if m := mime.TypeByExtension(ext); m != "" {
-		if strings.HasPrefix(m, "image/") {
-			return "image", m
+		baseType, _, err := mime.ParseMediaType(m)
+		if err != nil {
+			baseType = m
 		}
-		if strings.HasPrefix(m, "video/") {
-			return "video", m
+		if strings.HasPrefix(baseType, "image/") && baseType != "image/svg+xml" {
+			return "image", baseType
 		}
-		if strings.HasPrefix(m, "audio/") {
-			return "audio", m
+		if strings.HasPrefix(baseType, "video/") {
+			return "video", baseType
 		}
-		return "other", m
+		if strings.HasPrefix(baseType, "audio/") {
+			return "audio", baseType
+		}
+		return "other", baseType
 	}
 	return "other", "application/octet-stream"
+}
+
+// isSafeInlineMIME reports whether mimeType is on the explicit safe allowlist for inline display
+func isSafeInlineMIME(mimeType string) bool {
+	baseType, _, err := mime.ParseMediaType(mimeType)
+	if err != nil {
+		baseType = strings.ToLower(strings.TrimSpace(mimeType))
+	}
+	switch baseType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp", "image/x-icon", "image/vnd.microsoft.icon":
+		return true
+	case "application/pdf":
+		return true
+	}
+	if strings.HasPrefix(baseType, "video/") || strings.HasPrefix(baseType, "audio/") {
+		return true
+	}
+	return false
+}
+
+// formatContentDisposition builds a safe Content-Disposition header value using mime.FormatMediaType
+func formatContentDisposition(disposition, filename string) string {
+	if filename == "" {
+		filename = "download"
+	}
+	if cd := mime.FormatMediaType(disposition, map[string]string{"filename": filename}); cd != "" {
+		return cd
+	}
+	return disposition
 }
 
 func resolveEmbedColor(owner *db.User, cfg *config.Config) string {
@@ -270,13 +304,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 			s.render404(w)
 			return
 		}
-		token, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-			s.mu.RLock()
-			key := []byte(s.cfg.JWTKey)
-			s.mu.RUnlock()
-			return key, nil
-		})
-		if err != nil || !token.Valid {
+		if _, ok := s.parseJWTUsername(cookie.Value); !ok {
 			s.render404(w)
 			return
 		}
@@ -366,17 +394,21 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		downloadName = f.CustomName
 	}
 	logger.Debug("Serving file: '/f/%s' (id=%d, original_name='%s', size=%s)", urlPath, f.ID, downloadName, logger.FormatBytes(f.Size))
-	if mimeType != "" && mimeType != "application/octet-stream" {
-		w.Header().Set("Content-Type", mimeType)
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
+	h.Set("Cross-Origin-Resource-Policy", "same-site")
+	disposition := "attachment"
+	servedMime := "application/octet-stream"
+	if !isDownload && isSafeInlineMIME(mimeType) {
+		disposition = "inline"
+		servedMime = mimeType
 	}
+	h.Set("Content-Type", servedMime)
 	if f.Size > 0 {
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", f.Size))
+		h.Set("Content-Length", fmt.Sprintf("%d", f.Size))
 	}
-	disposition := "inline"
-	if isDownload {
-		disposition = "attachment"
-	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"`, disposition, downloadName))
+	h.Set("Content-Disposition", formatContentDisposition(disposition, downloadName))
 	io.Copy(w, reader)
 }
 
@@ -444,6 +476,15 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+		if err := r.ParseForm(); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid form submission", http.StatusBadRequest)
+			return
+		}
 		var id int
 		fmt.Sscanf(r.FormValue("id"), "%d", &id)
 		f, err := db.GetFileByID(r.Context(), database, id)
@@ -488,6 +529,15 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
 		return
 	}
 
