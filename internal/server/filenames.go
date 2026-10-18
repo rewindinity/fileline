@@ -62,6 +62,9 @@ func isValidUploadID(id string) bool {
 
 // chunkBaseDir is the directory that holds per-upload chunk directories
 func chunkBaseDir() string {
+	if dir := os.Getenv("FL_CHUNKS_DIR"); dir != "" {
+		return dir
+	}
 	return filepath.Join(os.TempDir(), "fileline_chunks")
 }
 
@@ -99,4 +102,3 @@ func removeChunkUploadDir(uploadID string) error {
 	defer baseRoot.Close()
 	return baseRoot.RemoveAll(uploadID)
 }
-

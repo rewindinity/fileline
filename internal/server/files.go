@@ -149,23 +149,47 @@ func resolveEmbedColor(owner *db.User, cfg *config.Config) string {
 	return "#1d9bf0"
 }
 
-func requestBaseURL(r *http.Request, cfg *config.Config) string {
-	scheme := "http"
-	if r != nil {
-		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-			scheme = strings.Split(proto, ",")[0]
-		} else if r.TLS != nil {
-			scheme = "https"
+func sanitizeRequestHost(raw string) string {
+	h := strings.TrimSpace(raw)
+	if h == "" {
+		return ""
+	}
+	for _, r := range h {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') &&
+			r != '.' && r != '-' && r != ':' && r != '[' && r != ']' {
+			return ""
 		}
 	}
+	return h
+}
+
+func requestBaseURL(r *http.Request, cfg *config.Config) string {
+	scheme := "http"
 	if cfg != nil && (cfg.SSL || cfg.ReverseProxy) {
 		scheme = "https"
+	} else if r != nil && r.TLS != nil {
+		scheme = "https"
+	} else if isTrustedProxyRequest(r, cfg) {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			switch strings.ToLower(strings.TrimSpace(strings.Split(proto, ",")[0])) {
+			case "https":
+				scheme = "https"
+			case "http":
+				scheme = "http"
+			}
+		}
 	}
+
 	host := ""
-	if r != nil && r.Host != "" {
+	if cfg != nil && strings.TrimSpace(cfg.Domain) != "" && cfg.Domain != "localhost" {
+		host = strings.TrimSpace(cfg.Domain)
+		if !strings.Contains(host, ":") && !cfg.ReverseProxy && cfg.Port != 0 && cfg.Port != 80 && cfg.Port != 443 {
+			host = fmt.Sprintf("%s:%d", host, cfg.Port)
+		}
+	} else if r != nil && r.URL != nil && r.URL.Host != "" && sanitizeRequestHost(r.URL.Host) == r.Host {
 		host = r.Host
-	} else if cfg != nil && cfg.Domain != "" {
-		host = cfg.Domain
+	} else if cfg != nil && strings.TrimSpace(cfg.Domain) != "" {
+		host = strings.TrimSpace(cfg.Domain)
 		if !strings.Contains(host, ":") && !cfg.ReverseProxy && cfg.Port != 0 && cfg.Port != 80 && cfg.Port != 443 {
 			host = fmt.Sprintf("%s:%d", host, cfg.Port)
 		}
@@ -298,13 +322,8 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if f.IsPrivate {
-		// Check auth manually
-		cookie, err := r.Cookie("session")
-		if err != nil {
-			s.render404(w)
-			return
-		}
-		if _, ok := s.parseJWTUsername(cookie.Value); !ok {
+		user, ok := s.parseSession(r)
+		if !ok || user == nil || (user.ID != f.UserID && user.Role != "admin") {
 			s.render404(w)
 			return
 		}
@@ -351,6 +370,8 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		displayName, siteName, ogSiteName, embedTitle, embedDesc := buildEmbedStrings(f, owner, mediaType)
 		embedColor := resolveEmbedColor(owner, cfg)
 
+		w.Header().Del("X-Frame-Options")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors *; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self' data:")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		s.renderTemplate(w, r, "embed_file.html", map[string]interface{}{
 			"Config":           cfg,
@@ -497,8 +518,16 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
-		customName := r.FormValue("custom_name")
-		urlPath := r.FormValue("url_path")
+		customName := strings.TrimSpace(r.FormValue("custom_name"))
+		if len(customName) > maxCustomNameLen {
+			http.Error(w, "Custom name too long", http.StatusBadRequest)
+			return
+		}
+		urlPath := strings.TrimSpace(r.FormValue("url_path"))
+		if err := validateURLPath(urlPath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		isPrivate := r.FormValue("is_private") == "on"
 		statsEnabled := r.FormValue("stats_enabled") == "on"
 		resetStats := r.FormValue("reset_stats") == "1" || r.FormValue("action") == "reset_stats"
@@ -513,6 +542,10 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := db.UpdateFile(r.Context(), database, id, customName, urlPath, isPrivate, statsEnabled); err != nil {
+			if isUniqueConstraintError(err) {
+				http.Error(w, "URL path already in use", http.StatusConflict)
+				return
+			}
 			s.internalError(w, r, "Failed to update file in database", err)
 			return
 		}
@@ -650,4 +683,3 @@ func (s *Server) fileStatsAPIHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
-

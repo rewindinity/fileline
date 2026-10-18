@@ -15,6 +15,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/pquerna/otp/totp"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // formatPasskeysDisplay transforms stored JSON passkeys into a display-friendly slice
@@ -60,6 +61,10 @@ func (s *Server) settingsAccountHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	username := r.Context().Value("username").(string)
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      "FileLine",
@@ -96,12 +101,11 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	username := r.Context().Value("username").(string)
 	code := r.FormValue("code")
-	secretAny, ok := s.totpTempStore.Load(username)
+	secret, ok := s.totpTempStore.Load(username)
 	if !ok {
 		http.Redirect(w, r, "/settings/account?error=2FA+session+expired", http.StatusFound)
 		return
 	}
-	secret := secretAny.(string)
 	if !totp.Validate(code, secret) {
 		logger.Action("User '%s' entered invalid 2FA code during setup", username)
 		http.Redirect(w, r, "/settings/account?error=Invalid+code", http.StatusFound)
@@ -117,6 +121,7 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		db.UpdateUserAuthData(r.Context(), database, username, secret, user.WebAuthnData)
 	}
 	s.totpTempStore.Delete(username)
+	s.setJWTCookie(w, username)
 	logger.Action("User '%s' successfully enabled 2FA TOTP", username)
 	http.Redirect(w, r, "/settings/account?success=2FA+Enabled+Successfully", http.StatusFound)
 }
@@ -156,6 +161,7 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, "Failed to disable 2FA in database", err)
 		return
 	}
+	s.setJWTCookie(w, username)
 	logger.Action("User '%s' disabled 2FA TOTP", username)
 	http.Redirect(w, r, "/settings/account?success=2FA+Disabled+Successfully", http.StatusFound)
 }
@@ -167,15 +173,99 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	username := r.Context().Value("username").(string)
-	recoveryCode, recoveryHash, err := generateRecoveryCode()
-	if err != nil {
-		s.internalError(w, r, "Failed to generate recovery code", err)
-		return
+	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+
+	var currentPassword, totpCode string
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		var reqData struct {
+			CurrentPassword string `json:"current_password"`
+			Password        string `json:"password"`
+			TOTPCode        string `json:"totp_code"`
+			Code            string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+		} else {
+			currentPassword = reqData.CurrentPassword
+			if currentPassword == "" {
+				currentPassword = reqData.Password
+			}
+			totpCode = strings.TrimSpace(reqData.TOTPCode)
+			if totpCode == "" {
+				totpCode = strings.TrimSpace(reqData.Code)
+			}
+		}
+	} else {
+		if err := r.ParseForm(); err != nil {
+			if isMaxBytesError(err) {
+				http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Invalid form submission", http.StatusBadRequest)
+			return
+		}
+		currentPassword = r.FormValue("current_password")
+		if currentPassword == "" {
+			currentPassword = r.FormValue("password")
+		}
+		totpCode = strings.TrimSpace(r.FormValue("totp_code"))
+		if totpCode == "" {
+			totpCode = strings.TrimSpace(r.FormValue("code"))
+		}
 	}
 
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
+
+	user, err := db.GetUserByUsername(r.Context(), database, username)
+	if err != nil || user == nil {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Unauthorized"}`))
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	// Require re-authentication via current password or valid TOTP code
+	reauthed := false
+	if currentPassword != "" {
+		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)) == nil {
+			reauthed = true
+		}
+	}
+	if !reauthed && totpCode != "" && user.TOTPSecret != "" {
+		now := time.Now()
+		if step, valid := matchTOTPStep(totpCode, user.TOTPSecret, now); valid {
+			if consumed, dbErr := db.TryConsumeTOTPStep(r.Context(), database, username, step); dbErr == nil && consumed {
+				reauthed = true
+			}
+		}
+	}
+
+	if !reauthed {
+		logger.Action("User '%s' failed re-authentication when attempting to generate a new recovery code", username)
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"error": "Re-authentication required (provide current password or 2FA code)"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=Incorrect+current+password+or+2FA+code", http.StatusFound)
+		return
+	}
+
+	recoveryCode, recoveryHash, err := generateRecoveryCode()
+	if err != nil {
+		s.internalError(w, r, "Failed to generate recovery code", err)
+		return
+	}
 
 	if err := db.UpdateRecoveryCode(r.Context(), database, username, recoveryHash); err != nil {
 		s.internalError(w, r, "Failed to update recovery code in database", err)
@@ -184,7 +274,7 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 
 	logger.Action("User '%s' generated a new recovery code", username)
 
-	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+	if isJSON {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -199,6 +289,10 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) recoveryAckHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	if username, ok := r.Context().Value("username").(string); ok && username != "" {
 		s.recoveryCodeStore.Delete(username)
@@ -213,6 +307,7 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	database := s.db
+	secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
 	s.mu.RUnlock()
 
 	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
@@ -236,6 +331,8 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   300,
 	})
 	w.Header().Set("Content-Type", "application/json")
@@ -251,12 +348,11 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sessionDataAny, ok := s.webAuthnTempStore.Load(cookie.Value)
+	sessionData, ok := s.webAuthnTempStore.LoadAndDelete(cookie.Value)
 	if !ok {
 		http.Error(w, "Session expired", http.StatusBadRequest)
 		return
 	}
-	sessionData := sessionDataAny.(webauthn.SessionData)
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
@@ -272,7 +368,8 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		logger.Action("Failed passkey registration for user '%s' from %s: %v", username, s.clientIP(r), err)
+		http.Error(w, "Invalid passkey registration", http.StatusBadRequest)
 		return
 	}
 	passkeyName := strings.TrimSpace(r.URL.Query().Get("name"))

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,9 +22,9 @@ const (
 	maxConcurrentUploadsPerUser = 5
 	chunkUploadTTL              = time.Hour
 	defaultChunkSizeMB          = 10
-	defaultMaxBodyBytes         = 1 << 20   // 1 MB default limit for non-upload routes
-	maxJSONOrFormBodyBytes      = 64 << 10  // 64 KB limit for small JSON/form routes
-	maxLogoUploadBytes          = 1 << 20   // 1 MB limit for custom logo uploads
+	defaultMaxBodyBytes         = 1 << 20  // 1 MB default limit for non-upload routes
+	maxJSONOrFormBodyBytes      = 64 << 10 // 64 KB limit for small JSON/form routes
+	maxLogoUploadBytes          = 1 << 20  // 1 MB limit for custom logo uploads
 )
 
 // ChunkUpload holds metadata and progress of a chunked file upload
@@ -116,19 +117,33 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid file name", http.StatusBadRequest)
 		return
 	}
-	customName := r.FormValue("custom_name")
-	urlPath := r.FormValue("url_path")
-	if urlPath == "" {
+	customName := strings.TrimSpace(r.FormValue("custom_name"))
+	if len(customName) > maxCustomNameLen {
+		http.Error(w, "Custom name too long", http.StatusBadRequest)
+		return
+	}
+	urlPath := strings.TrimSpace(r.FormValue("url_path"))
+	explicitURLPath := urlPath != ""
+	if explicitURLPath {
+		if err := validateURLPath(urlPath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
 		if customName != "" {
-			urlPath = customName
+			urlPath = slugifyURLPath(customName)
 		} else {
-			urlPath = originalName
+			urlPath = slugifyURLPath(originalName)
 		}
 	}
 
 	isPrivate := r.FormValue("is_private") == "on"
 	statsEnabled := r.FormValue("stats_enabled") == "on"
-	driveID := r.FormValue("drive_id")
+	driveID := strings.TrimSpace(r.FormValue("drive_id"))
+	if !s.validateDriveID(driveID) {
+		http.Error(w, "Invalid storage drive", http.StatusBadRequest)
+		return
+	}
 
 	s.mu.RLock()
 	st := s.getProvider(driveID)
@@ -191,6 +206,19 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
+		if isUniqueConstraintError(err) {
+			if !explicitURLPath {
+				f.URLPath = appendRandomURLPathSuffix(urlPath)
+				if retryErr := db.InsertFile(r.Context(), database, f); retryErr == nil {
+					logger.Action("User '%s' uploaded file '%s' (size: %s, storage: %s, path: %s, private: %t)", username, originalName, logger.FormatBytes(actualSize), storageType, storageKey, isPrivate)
+					http.Redirect(w, r, "/", http.StatusFound)
+					return
+				}
+			}
+			_ = st.Delete(r.Context(), storageKey)
+			http.Error(w, "URL path already in use", http.StatusConflict)
+			return
+		}
 		st.Delete(r.Context(), storageKey) // Rollback
 		s.internalError(w, r, "Failed to save file metadata to database", err)
 		return
@@ -231,6 +259,30 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.FileName = fileName
+	req.CustomName = strings.TrimSpace(req.CustomName)
+	if len(req.CustomName) > maxCustomNameLen {
+		http.Error(w, "Custom name too long", http.StatusBadRequest)
+		return
+	}
+	req.URLPath = strings.TrimSpace(req.URLPath)
+	if req.URLPath != "" {
+		if err := validateURLPath(req.URLPath); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.RLock()
+		initDB := s.db
+		s.mu.RUnlock()
+		if existing, err := db.GetFileByURL(r.Context(), initDB, req.URLPath); err == nil && existing != nil {
+			http.Error(w, "URL path already in use", http.StatusConflict)
+			return
+		}
+	}
+	req.DriveID = strings.TrimSpace(req.DriveID)
+	if !s.validateDriveID(req.DriveID) {
+		http.Error(w, "Invalid storage drive", http.StatusBadRequest)
+		return
+	}
 
 	if req.TotalSize <= 0 {
 		http.Error(w, "Invalid total size", http.StatusBadRequest)
@@ -596,11 +648,12 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	defer assembledFile.Close()
 
 	urlPath := upload.URLPath
-	if urlPath == "" {
+	explicitURLPath := urlPath != ""
+	if !explicitURLPath {
 		if upload.CustomName != "" {
-			urlPath = upload.CustomName
+			urlPath = slugifyURLPath(upload.CustomName)
 		} else {
-			urlPath = upload.OriginalName
+			urlPath = slugifyURLPath(upload.OriginalName)
 		}
 	}
 
@@ -621,6 +674,20 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		UserID:       upload.UserID,
 	}
 	if err := db.InsertFile(r.Context(), database, f); err != nil {
+		if isUniqueConstraintError(err) {
+			if !explicitURLPath {
+				f.URLPath = appendRandomURLPathSuffix(urlPath)
+				if retryErr := db.InsertFile(r.Context(), database, f); retryErr == nil {
+					logger.Action("User '%s' completed chunked upload for '%s' (size: %s, storage: %s, path: %s, upload_id: %s)", user.Username, upload.OriginalName, logger.FormatBytes(actualSize), storageType, storageKey, req.UploadID)
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]bool{"success": true})
+					return
+				}
+			}
+			_ = st.Delete(r.Context(), storageKey)
+			http.Error(w, "URL path already in use", http.StatusConflict)
+			return
+		}
 		st.Delete(r.Context(), storageKey) // Rollback
 		s.internalError(w, r, "Failed to save file metadata to database", err)
 		return
@@ -648,14 +715,10 @@ func (s *Server) cleanupExpiredUploads(now time.Time) {
 	for _, id := range expiredIDs {
 		_ = removeChunkUploadDir(id)
 	}
-	s.login2FAMu.Lock()
-	s.login2FAStore.Range(func(key, value any) bool {
-		if sess, ok := value.(*twoFASession); ok && now.After(sess.ExpiresAt) {
-			s.login2FAStore.Delete(key)
-		}
-		return true
-	})
-	s.login2FAMu.Unlock()
+	s.totpTempStore.Sweep(now)
+	s.webAuthnTempStore.Sweep(now)
+	s.login2FAStore.Sweep(now)
+	s.recoveryCodeStore.Sweep(now)
 }
 
 func (s *Server) runBackgroundJanitor() {

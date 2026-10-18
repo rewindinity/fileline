@@ -914,11 +914,10 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 	if err != nil || adminUser.RecoveryCodeHash == "" {
 		t.Fatalf("expected admin recovery code hash to be set on setup")
 	}
-	adminCodeAny, ok := srv.recoveryCodeStore.Load("admin")
-	if !ok || adminCodeAny.(string) == "" {
+	adminCode, ok := srv.recoveryCodeStore.Load("admin")
+	if !ok || adminCode == "" {
 		t.Fatalf("expected admin plaintext recovery code in recoveryCodeStore after setup")
 	}
-	adminCode := adminCodeAny.(string)
 
 	// Render dashboard once -> modal with recovery code shown, then cleared from store
 	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
@@ -958,13 +957,23 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 		t.Fatalf("expected subuser plaintext recovery code in store on first login")
 	}
 
-	// Regenerate recovery code in Account Security settings
-	regenReq := httptest.NewRequest("POST", "/settings/recovery/generate", nil).WithContext(ctxAdmin)
+	// Regenerate recovery code in Account Security settings without re-authentication -> 403 Forbidden
+	noAuthRegenReq := httptest.NewRequest("POST", "/settings/recovery/generate", nil).WithContext(ctxAdmin)
+	noAuthRegenReq.Header.Set("Accept", "application/json")
+	noAuthRegenRR := httptest.NewRecorder()
+	srv.recoveryGenerateHandler(noAuthRegenRR, noAuthRegenReq)
+	if noAuthRegenRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden on recovery code regenerate without password/TOTP, got %d", noAuthRegenRR.Code)
+	}
+
+	// Regenerate recovery code with current password -> 200 OK
+	regenReq := httptest.NewRequest("POST", "/settings/recovery/generate", strings.NewReader(`{"current_password":"initialPass123"}`)).WithContext(ctxAdmin)
+	regenReq.Header.Set("Content-Type", "application/json")
 	regenReq.Header.Set("Accept", "application/json")
 	regenRR := httptest.NewRecorder()
 	srv.recoveryGenerateHandler(regenRR, regenReq)
 	if regenRR.Code != http.StatusOK {
-		t.Fatalf("expected 200 on recovery code regenerate, got %d", regenRR.Code)
+		t.Fatalf("expected 200 on recovery code regenerate with password, got %d: %s", regenRR.Code, regenRR.Body.String())
 	}
 	var regenData map[string]string
 	json.Unmarshal(regenRR.Body.Bytes(), &regenData)
@@ -973,7 +982,7 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 		t.Fatalf("expected a new distinct recovery code, got %q", newAdminCode)
 	}
 
-	// Password reset using recovery code (and verify it can be reused multiple times)
+	// Password reset using recovery code rotates the code and stores the new one for display upon next login
 	resetForm1 := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass1&confirm_password=resetPass1", newAdminCode))
 	resetReq1 := httptest.NewRequest("POST", "/reset-password", resetForm1)
 	resetReq1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -987,19 +996,37 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 		t.Errorf("expected password to be updated to resetPass1")
 	}
 
-	// Reuse the exact same recovery code a second time!
-	resetForm2 := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass2&confirm_password=resetPass2", newAdminCode))
+	// Verify a fresh recovery code was generated and queued in recoveryCodeStore
+	rotatedAdminCode, ok := srv.recoveryCodeStore.Load("admin")
+	if !ok || rotatedAdminCode == "" || rotatedAdminCode == newAdminCode {
+		t.Fatalf("expected a newly rotated recovery code in recoveryCodeStore after password reset")
+	}
+
+	// Reusing the old recovery code a second time MUST fail (one-time recovery code rotation)
+	reuseForm := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPassReuse&confirm_password=resetPassReuse", newAdminCode))
+	reuseReq := httptest.NewRequest("POST", "/reset-password", reuseForm)
+	reuseReq.RemoteAddr = "203.0.113.200:1234"
+	reuseReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reuseRR := httptest.NewRecorder()
+	srv.resetPasswordHandler(reuseRR, reuseReq)
+	if reuseRR.Code == http.StatusFound {
+		t.Fatalf("expected old recovery code to be rejected after single use, but reset succeeded!")
+	}
+
+	// Using the newly rotated recovery code succeeds
+	resetForm2 := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass2&confirm_password=resetPass2", rotatedAdminCode))
 	resetReq2 := httptest.NewRequest("POST", "/reset-password", resetForm2)
 	resetReq2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resetRR2 := httptest.NewRecorder()
 	srv.resetPasswordHandler(resetRR2, resetReq2)
 	if resetRR2.Code != http.StatusFound {
-		t.Fatalf("expected 302 redirect on second password reset with same recovery code, got %d", resetRR2.Code)
+		t.Fatalf("expected 302 redirect on password reset with newly rotated recovery code, got %d", resetRR2.Code)
 	}
 	adminAfterReset2, _ := db.GetUserByUsername(context.Background(), database, "admin")
 	if bcrypt.CompareHashAndPassword([]byte(adminAfterReset2.PasswordHash), []byte("resetPass2")) != nil {
 		t.Errorf("expected password to be updated to resetPass2")
 	}
+	secondRotatedCode, _ := srv.recoveryCodeStore.Load("admin")
 
 	// Rate limit: 3 failed attempts -> 1 hour block
 	for i := 1; i <= 2; i++ {
@@ -1024,7 +1051,7 @@ func TestRecoveryCodeAndPasswordReset(t *testing.T) {
 	}
 
 	// Even a valid recovery code attempt must now be blocked while within the 1-hour window
-	blockedValidForm := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass3&confirm_password=resetPass3", newAdminCode))
+	blockedValidForm := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=resetPass3&confirm_password=resetPass3", secondRotatedCode))
 	blockedValidReq := httptest.NewRequest("POST", "/reset-password", blockedValidForm)
 	blockedValidReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	blockedValidRR := httptest.NewRecorder()
@@ -2332,3 +2359,1225 @@ func TestRequestBodySizeLimitsAndLogoValidation(t *testing.T) {
 	}
 }
 
+func extractSessionCookie(rr *httptest.ResponseRecorder) *http.Cookie {
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "session" && c.Value != "" && c.MaxAge >= 0 {
+			return c
+		}
+	}
+	return nil
+}
+
+func TestSessionRevocation(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	adminPassHash, _ := bcrypt.GenerateFromPassword([]byte("AdminPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(adminPassHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	subPassHash, _ := bcrypt.GenerateFromPassword([]byte("SubPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateSubuser(context.Background(), database, "bob", string(subPassHash), 100); err != nil {
+		t.Fatalf("failed to create bob: %v", err)
+	}
+
+	srv := New(cfg, database)
+
+	loginUser := func(username, password, remoteIP string) *http.Cookie {
+		t.Helper()
+		form := strings.NewReader("username=" + username + "&password=" + password)
+		req := httptest.NewRequest("POST", "/login", form)
+		req.RemoteAddr = remoteIP
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.loginHandler(rr, req)
+		if rr.Code != http.StatusFound || rr.Header().Get("Location") != "/" {
+			t.Fatalf("login(%s) failed: status=%d loc=%q", username, rr.Code, rr.Header().Get("Location"))
+		}
+		cookie := extractSessionCookie(rr)
+		if cookie == nil {
+			t.Fatalf("login(%s) did not set session cookie", username)
+		}
+		return cookie
+	}
+
+	assertSessionAccepted := func(c *http.Cookie, wantAccepted bool, label string) {
+		t.Helper()
+		req := httptest.NewRequest("GET", "/files", nil)
+		req.AddCookie(c)
+		rr := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rr, req)
+		if wantAccepted {
+			if rr.Code != http.StatusOK {
+				t.Fatalf("%s: expected 200 OK with valid session, got %d (Location=%q)", label, rr.Code, rr.Header().Get("Location"))
+			}
+		} else {
+			if rr.Code != http.StatusFound || rr.Header().Get("Location") != "/login" {
+				t.Fatalf("%s: expected 302 -> /login for revoked/invalid session, got %d (Location=%q)", label, rr.Code, rr.Header().Get("Location"))
+			}
+		}
+	}
+
+	// 1. Logout revokes the token server-side so a stolen copy cannot be reused
+	token1 := loginUser("admin", "AdminPass123!", "198.51.100.1:1000")
+	assertSessionAccepted(token1, true, "before logout")
+
+	logoutReq := httptest.NewRequest("POST", "/logout", nil)
+	logoutReq.AddCookie(token1)
+	logoutRR := httptest.NewRecorder()
+	srv.logoutHandler(logoutRR, logoutReq)
+	assertSessionAccepted(token1, false, "after logout")
+
+	// 2. Password change revokes old sessions while issuing a fresh valid session cookie to the caller
+	token2 := loginUser("admin", "AdminPass123!", "198.51.100.2:1000")
+	assertSessionAccepted(token2, true, "before password change")
+
+	pwForm := strings.NewReader("current_password=AdminPass123!&new_password=AdminPass456!")
+	pwReq := httptest.NewRequest("POST", "/settings/action/password", pwForm)
+	pwReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	pwReq.AddCookie(token2)
+	pwRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(pwRR, pwReq)
+	if pwRR.Code != http.StatusFound {
+		t.Fatalf("password change expected 302, got %d", pwRR.Code)
+	}
+	assertSessionAccepted(token2, false, "old token after password change")
+	rotatedCookie := extractSessionCookie(pwRR)
+	if rotatedCookie == nil {
+		t.Fatalf("expected rotated session cookie after password change")
+	}
+	assertSessionAccepted(rotatedCookie, true, "rotated token after password change")
+
+	// 3. Password reset via recovery code revokes existing sessions
+	recCode, recHash, err := generateRecoveryCode()
+	if err != nil {
+		t.Fatalf("generateRecoveryCode: %v", err)
+	}
+	_ = db.UpdateRecoveryCode(context.Background(), database, "admin", recHash)
+
+	resetForm := strings.NewReader(fmt.Sprintf("username=admin&recovery_code=%s&new_password=AdminPass789!&confirm_password=AdminPass789!", recCode))
+	resetReq := httptest.NewRequest("POST", "/reset-password", resetForm)
+	resetReq.RemoteAddr = "198.51.100.3:1000"
+	resetReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resetRR := httptest.NewRecorder()
+	srv.resetPasswordHandler(resetRR, resetReq)
+	if resetRR.Code != http.StatusFound {
+		t.Fatalf("password reset expected 302, got %d", resetRR.Code)
+	}
+	assertSessionAccepted(rotatedCookie, false, "after password reset")
+
+	// 4. 2FA enable and disable revoke earlier sessions
+	token3 := loginUser("admin", "AdminPass789!", "198.51.100.4:1000")
+	assertSessionAccepted(token3, true, "before 2FA enable")
+
+	genReq := httptest.NewRequest("POST", "/settings/2fa/generate", nil)
+	genReq.AddCookie(token3)
+	genRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(genRR, genReq)
+	var genRes struct {
+		Secret string `json:"secret"`
+	}
+	_ = json.Unmarshal(genRR.Body.Bytes(), &genRes)
+	code, _ := totp.GenerateCode(genRes.Secret, time.Now())
+
+	verReq := httptest.NewRequest("POST", "/settings/2fa/verify", strings.NewReader("code="+code))
+	verReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	verReq.AddCookie(token3)
+	verRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(verRR, verReq)
+	assertSessionAccepted(token3, false, "old token after 2FA enable")
+	after2FACookie := extractSessionCookie(verRR)
+	if after2FACookie == nil {
+		t.Fatalf("expected rotated session cookie after 2FA enable")
+	}
+	assertSessionAccepted(after2FACookie, true, "rotated token after 2FA enable")
+
+	// 5. User deletion revokes the deleted user's session immediately (and a recreated user with the same username cannot inherit an old token with mismatched ver)
+	bobToken := loginUser("bob", "SubPass123!", "198.51.100.5:1000")
+	assertSessionAccepted(bobToken, true, "bob before deletion")
+
+	if err := db.DeleteUser(context.Background(), database, "bob"); err != nil {
+		t.Fatalf("DeleteUser(bob) failed: %v", err)
+	}
+	assertSessionAccepted(bobToken, false, "bob after deletion")
+
+	// 6. Token with wrong issuer or future iat is rejected
+	wrongIssClaims := sessionClaims{
+		Username: "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "wrong-issuer",
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+		},
+	}
+	wrongIssTok, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, wrongIssClaims).SignedString([]byte(srv.cfg.JWTKey))
+	assertSessionAccepted(&http.Cookie{Name: "session", Value: wrongIssTok}, false, "wrong issuer")
+}
+
+func TestPrivateFileAuthorization(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("Pass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	if err := db.CreateSubuser(context.Background(), database, "alice", string(passHash), 100); err != nil {
+		t.Fatalf("failed to create alice: %v", err)
+	}
+	if err := db.CreateSubuser(context.Background(), database, "bob", string(passHash), 100); err != nil {
+		t.Fatalf("failed to create bob: %v", err)
+	}
+
+	aliceUser, _ := db.GetUserByUsername(context.Background(), database, "alice")
+	srv := New(cfg, database)
+
+	if err := srv.storage.Save(context.Background(), "alice-private-key", strings.NewReader("alice-confidential-document")); err != nil {
+		t.Fatalf("failed to save private file: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "secret.txt",
+		URLPath:      "alice-secret",
+		Size:         int64(len("alice-confidential-document")),
+		IsPrivate:    true,
+		StorageType:  "local",
+		StoragePath:  "alice-private-key",
+		UserID:       aliceUser.ID,
+	}); err != nil {
+		t.Fatalf("failed to insert private file: %v", err)
+	}
+
+	mintCookieFor := func(username string) *http.Cookie {
+		rr := httptest.NewRecorder()
+		srv.setJWTCookie(rr, username)
+		return extractSessionCookie(rr)
+	}
+
+	aliceCookie := mintCookieFor("alice")
+	bobCookie := mintCookieFor("bob")
+	adminCookie := mintCookieFor("admin")
+
+	// 1. Unauthenticated request -> 404
+	unauthReq := httptest.NewRequest("GET", "/f/alice-secret", nil)
+	unauthRR := httptest.NewRecorder()
+	srv.serveFileHandler(unauthRR, unauthReq)
+	if unauthRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unauthenticated request to private file, got %d", unauthRR.Code)
+	}
+
+	// 2. Authenticated non-owner subuser (Bob) -> 404
+	bobReq := httptest.NewRequest("GET", "/f/alice-secret", nil)
+	bobReq.AddCookie(bobCookie)
+	bobRR := httptest.NewRecorder()
+	srv.serveFileHandler(bobRR, bobReq)
+	if bobRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when bob requests alice's private file, got %d", bobRR.Code)
+	}
+	if strings.Contains(bobRR.Body.String(), "alice-confidential-document") {
+		t.Fatalf("private file content leaked to non-owner bob!")
+	}
+
+	// 3. Owner (Alice) -> 200 OK with content
+	aliceReq := httptest.NewRequest("GET", "/f/alice-secret", nil)
+	aliceReq.AddCookie(aliceCookie)
+	aliceRR := httptest.NewRecorder()
+	srv.serveFileHandler(aliceRR, aliceReq)
+	if aliceRR.Code != http.StatusOK || aliceRR.Body.String() != "alice-confidential-document" {
+		t.Fatalf("expected 200 OK with private file content for owner alice, got %d (%q)", aliceRR.Code, aliceRR.Body.String())
+	}
+
+	// 4. Admin -> 200 OK with content
+	adminReq := httptest.NewRequest("GET", "/f/alice-secret", nil)
+	adminReq.AddCookie(adminCookie)
+	adminRR := httptest.NewRecorder()
+	srv.serveFileHandler(adminRR, adminReq)
+	if adminRR.Code != http.StatusOK || adminRR.Body.String() != "alice-confidential-document" {
+		t.Fatalf("expected 200 OK with private file content for admin, got %d (%q)", adminRR.Code, adminRR.Body.String())
+	}
+
+	// 5. After Alice logs out, her revoked token can no longer read her private file -> 404
+	_ = db.IncrementSessionVersion(context.Background(), database, "alice")
+	revokedReq := httptest.NewRequest("GET", "/f/alice-secret", nil)
+	revokedReq.AddCookie(aliceCookie)
+	revokedRR := httptest.NewRecorder()
+	srv.serveFileHandler(revokedRR, revokedReq)
+	if revokedRR.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when accessing private file with revoked session token, got %d", revokedRR.Code)
+	}
+}
+
+func TestRecoveryGenerateWithTOTP(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("AdminPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: "FileLine", AccountName: "admin"})
+	if err != nil {
+		t.Fatalf("totp.Generate: %v", err)
+	}
+	_ = db.UpdateUserAuthData(context.Background(), database, "admin", key.Secret(), "[]")
+
+	srv := New(cfg, database)
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+
+	// Wrong password and wrong TOTP -> 403 Forbidden
+	badReq := httptest.NewRequest("POST", "/settings/recovery/generate", strings.NewReader(`{"current_password":"wrong","totp_code":"000000"}`)).WithContext(ctxAdmin)
+	badReq.Header.Set("Content-Type", "application/json")
+	badReq.Header.Set("Accept", "application/json")
+	badRR := httptest.NewRecorder()
+	srv.recoveryGenerateHandler(badRR, badReq)
+	if badRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on wrong password/TOTP, got %d", badRR.Code)
+	}
+
+	// Valid TOTP code -> 200 OK
+	validCode, _ := totp.GenerateCode(key.Secret(), time.Now())
+	okReq := httptest.NewRequest("POST", "/settings/recovery/generate", strings.NewReader(fmt.Sprintf(`{"totp_code":%q}`, validCode))).WithContext(ctxAdmin)
+	okReq.Header.Set("Content-Type", "application/json")
+	okReq.Header.Set("Accept", "application/json")
+	okRR := httptest.NewRecorder()
+	srv.recoveryGenerateHandler(okRR, okReq)
+	if okRR.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK when re-authenticating with valid TOTP, got %d: %s", okRR.Code, okRR.Body.String())
+	}
+}
+
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		ReverseProxy:     true, // enables HSTS
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	_ = db.UpdateUserEmbedConfig(context.Background(), database, "admin", db.EmbedConfig{
+		Enabled:   true,
+		SiteName:  "FileLine",
+		ShowTitle: true,
+	})
+	adminUser, _ := db.GetUserByUsername(context.Background(), database, "admin")
+
+	srv := New(cfg, database)
+	_ = srv.storage.Save(context.Background(), "imgkey", strings.NewReader("\x89PNG\r\n\x1a\n"))
+	_ = db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "pic.png",
+		URLPath:      "pic",
+		Size:         8,
+		StorageType:  "local",
+		StoragePath:  "imgkey",
+		UserID:       adminUser.ID,
+	})
+
+	// 1. Standard application route (/login) has strict security headers and clickjacking protection
+	loginReq := httptest.NewRequest("GET", "/login", nil)
+	loginRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(loginRR, loginReq)
+	h := loginRR.Header()
+	if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want 'nosniff'", got)
+	}
+	if got := h.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want 'DENY'", got)
+	}
+	if got := h.Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Errorf("Referrer-Policy = %q, want 'strict-origin-when-cross-origin'", got)
+	}
+	if got := h.Get("Permissions-Policy"); got != "camera=(), microphone=(), geolocation=()" {
+		t.Errorf("Permissions-Policy = %q, want 'camera=(), microphone=(), geolocation=()'", got)
+	}
+	if got := h.Get("Cross-Origin-Opener-Policy"); got != "same-origin" {
+		t.Errorf("Cross-Origin-Opener-Policy = %q, want 'same-origin'", got)
+	}
+	if got := h.Get("Strict-Transport-Security"); got != "max-age=63072000; includeSubDomains" {
+		t.Errorf("Strict-Transport-Security = %q, want 'max-age=63072000; includeSubDomains'", got)
+	}
+	csp := h.Get("Content-Security-Policy")
+	for _, directive := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'", "form-action 'self'"} {
+		if !strings.Contains(csp, directive) {
+			t.Errorf("CSP on /login missing directive %q: got %q", directive, csp)
+		}
+	}
+
+	// 2. Raw file delivery (/f/pic?raw=1) overrides CSP with the strict sandbox CSP
+	rawReq := httptest.NewRequest("GET", "/f/pic?raw=1", nil)
+	rawRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rawRR, rawReq)
+	rawCSP := rawRR.Header().Get("Content-Security-Policy")
+	if !strings.HasPrefix(rawCSP, "sandbox;") {
+		t.Errorf("expected /f/pic?raw=1 to retain sandbox CSP, got %q", rawCSP)
+	}
+
+	// 3. Embed viewer page (/f/pic without ?raw=1 when embed is enabled) allows frame-ancestors *
+	embedReq := httptest.NewRequest("GET", "/f/pic", nil)
+	embedRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(embedRR, embedReq)
+	embedCSP := embedRR.Header().Get("Content-Security-Policy")
+	if !strings.Contains(embedCSP, "frame-ancestors *") {
+		t.Errorf("expected embed viewer page CSP to include 'frame-ancestors *', got %q", embedCSP)
+	}
+	if got := embedRR.Header().Get("X-Frame-Options"); got != "" {
+		t.Errorf("expected X-Frame-Options to be omitted on embed viewer page, got %q", got)
+	}
+}
+
+func TestCSRFCrossOriginProtectionAndCookieSecurity(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		Domain:           "files.example.com",
+		Port:             443,
+		ReverseProxy:     true,
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("AdminPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: "FileLine", AccountName: "admin"})
+	if err != nil {
+		t.Fatalf("totp.Generate: %v", err)
+	}
+	_ = db.UpdateUserAuthData(context.Background(), database, "admin", key.Secret(), "[]")
+
+	srv := New(cfg, database)
+
+	// 1. Cross-site POST request (Sec-Fetch-Site: cross-site or mismatched Origin) is blocked with 403 Forbidden
+	csrfReq := httptest.NewRequest("POST", "https://files.example.com/login", strings.NewReader("username=admin&password=AdminPass123!"))
+	csrfReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	csrfReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	csrfReq.Header.Set("Origin", "https://evil.example.net")
+	csrfRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(csrfRR, csrfReq)
+	if csrfRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for cross-origin POST, got %d", csrfRR.Code)
+	}
+
+	// Same-site cross-origin subdomain POST (e.g. Origin: https://sub.example.com to Host: files.example.com) is also blocked
+	subOriginReq := httptest.NewRequest("POST", "https://files.example.com/login", strings.NewReader("username=admin&password=AdminPass123!"))
+	subOriginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	subOriginReq.Header.Set("Sec-Fetch-Site", "same-site")
+	subOriginReq.Header.Set("Origin", "https://sub.example.com")
+	subOriginRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(subOriginRR, subOriginReq)
+	if subOriginRR.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden for cross-origin subdomain POST, got %d", subOriginRR.Code)
+	}
+
+	// 2. State-changing routes reject GET with 405 Method Not Allowed
+	getLogoutReq := httptest.NewRequest("GET", "/logout", nil)
+	getLogoutRR := httptest.NewRecorder()
+	srv.logoutHandler(getLogoutRR, getLogoutReq)
+	if getLogoutRR.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET /logout to return 405 Method Not Allowed, got %d", getLogoutRR.Code)
+	}
+
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+	get2FAReq := httptest.NewRequest("GET", "/settings/2fa/generate", nil).WithContext(ctxAdmin)
+	get2FARR := httptest.NewRecorder()
+	srv.totpGenerateHandler(get2FARR, get2FAReq)
+	if get2FARR.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET /settings/2fa/generate to return 405 Method Not Allowed, got %d", get2FARR.Code)
+	}
+
+	getAckReq := httptest.NewRequest("GET", "/settings/recovery/ack", nil).WithContext(ctxAdmin)
+	getAckRR := httptest.NewRecorder()
+	srv.recoveryAckHandler(getAckRR, getAckReq)
+	if getAckRR.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET /settings/recovery/ack to return 405 Method Not Allowed, got %d", getAckRR.Code)
+	}
+
+	// 3. Auxiliary cookies (2fa_session, wa_login_session, wa_session) have Secure=true and SameSite=Strict
+	loginReq := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=AdminPass123!"))
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRR := httptest.NewRecorder()
+	srv.loginHandler(loginRR, loginReq)
+	var twoFACookie *http.Cookie
+	for _, c := range loginRR.Result().Cookies() {
+		if c.Name == "2fa_session" {
+			twoFACookie = c
+		}
+	}
+	if twoFACookie == nil {
+		t.Fatalf("expected 2fa_session cookie to be set")
+	}
+	if !twoFACookie.Secure || !twoFACookie.HttpOnly || twoFACookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("2fa_session cookie flags invalid: Secure=%v HttpOnly=%v SameSite=%v", twoFACookie.Secure, twoFACookie.HttpOnly, twoFACookie.SameSite)
+	}
+
+	waLoginReq := httptest.NewRequest("GET", "/webauthn/login/begin", nil)
+	waLoginRR := httptest.NewRecorder()
+	srv.webAuthnLoginBegin(waLoginRR, waLoginReq)
+	var waLoginCookie *http.Cookie
+	for _, c := range waLoginRR.Result().Cookies() {
+		if c.Name == "wa_login_session" {
+			waLoginCookie = c
+		}
+	}
+	if waLoginCookie == nil {
+		t.Fatalf("expected wa_login_session cookie to be set")
+	}
+	if !waLoginCookie.Secure || !waLoginCookie.HttpOnly || waLoginCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("wa_login_session cookie flags invalid: Secure=%v HttpOnly=%v SameSite=%v", waLoginCookie.Secure, waLoginCookie.HttpOnly, waLoginCookie.SameSite)
+	}
+
+	waRegReq := httptest.NewRequest("GET", "/webauthn/register/begin", nil).WithContext(ctxAdmin)
+	waRegRR := httptest.NewRecorder()
+	srv.webAuthnRegisterBegin(waRegRR, waRegReq)
+	var waRegCookie *http.Cookie
+	for _, c := range waRegRR.Result().Cookies() {
+		if c.Name == "wa_session" {
+			waRegCookie = c
+		}
+	}
+	if waRegCookie == nil {
+		t.Fatalf("expected wa_session cookie to be set")
+	}
+	if !waRegCookie.Secure || !waRegCookie.HttpOnly || waRegCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("wa_session cookie flags invalid: Secure=%v HttpOnly=%v SameSite=%v", waRegCookie.Secure, waRegCookie.HttpOnly, waRegCookie.SameSite)
+	}
+}
+
+func TestSecretsProtectionAtRestAndInUI(t *testing.T) {
+	t.Setenv("FL_DATA_KEY", "test-master-encryption-key-for-totp-at-rest")
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		PostgresURL:      "postgres://pguser:SuperSecretPgPass!@db.internal:5432/fileline?sslmode=require",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		S3AccessKey:      "AKIA_PRIMARY",
+		S3SecretKey:      "PRIMARY_S3_SUPER_SECRET_KEY_VALUE",
+		JWTKey:           "JWT_SIGNING_SECRET_KEY_32_BYTES_MINIMUM_XYZ",
+		Drives: []config.Drive{
+			{
+				ID:          "s3_backup",
+				Name:        "Backup S3",
+				Type:        "s3",
+				Enabled:     true,
+				S3Endpoint:  "s3.example.com",
+				S3Region:    "us-east-1",
+				S3Bucket:    "backups",
+				S3AccessKey: "AKIA_DRIVE_1",
+				S3SecretKey: "DRIVE_1_SUPER_SECRET_KEY_VALUE",
+				S3UseSSL:    true,
+			},
+		},
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		t.Fatalf("cfg.Save: %v", err)
+	}
+	st, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("os.Stat(config.json): %v", err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected config.json mode 0600, got %04o", perm)
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("AdminPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	// 1. TOTP secret is encrypted with AES-GCM at rest in the database and transparently decrypted on load
+	plainTOTP := "JBSWY3DPEHPK3PXP"
+	if err := db.UpdateUserAuthData(context.Background(), database, "admin", plainTOTP, "[]"); err != nil {
+		t.Fatalf("UpdateUserAuthData: %v", err)
+	}
+	var rawStoredTOTP string
+	if err := database.QueryRow("SELECT totp_secret FROM users WHERE username = 'admin'").Scan(&rawStoredTOTP); err != nil {
+		t.Fatalf("SELECT totp_secret: %v", err)
+	}
+	if rawStoredTOTP == plainTOTP || strings.Contains(rawStoredTOTP, plainTOTP) {
+		t.Fatalf("expected totp_secret in DB to be encrypted, but found plaintext %q", rawStoredTOTP)
+	}
+	if !strings.HasPrefix(rawStoredTOTP, "enc:v1:") {
+		t.Fatalf("expected encrypted totp_secret prefix 'enc:v1:', got %q", rawStoredTOTP)
+	}
+	loadedUser, err := db.GetUserByUsername(context.Background(), database, "admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	if loadedUser.TOTPSecret != plainTOTP {
+		t.Fatalf("expected decrypted TOTPSecret %q, got %q", plainTOTP, loadedUser.TOTPSecret)
+	}
+	loadedByID, err := db.GetUserByID(context.Background(), database, loadedUser.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if loadedByID.TOTPSecret != plainTOTP {
+		t.Fatalf("expected GetUserByID decrypted TOTPSecret %q, got %q", plainTOTP, loadedByID.TOTPSecret)
+	}
+
+	// 2. /settings/storage and /settings HTML never leak S3SecretKey, drive S3SecretKey, JWTKey, or PostgresURL
+	srv := New(cfg, database)
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+
+	storageReq := httptest.NewRequest("GET", "/settings/storage", nil).WithContext(ctxAdmin)
+	storageRR := httptest.NewRecorder()
+	srv.settingsStorageHandler(storageRR, storageReq)
+	if storageRR.Code != http.StatusOK {
+		t.Fatalf("GET /settings/storage status = %d", storageRR.Code)
+	}
+	body := storageRR.Body.String()
+	for _, secret := range []string{
+		"PRIMARY_S3_SUPER_SECRET_KEY_VALUE",
+		"DRIVE_1_SUPER_SECRET_KEY_VALUE",
+		"JWT_SIGNING_SECRET_KEY_32_BYTES_MINIMUM_XYZ",
+		"SuperSecretPgPass!",
+	} {
+		if strings.Contains(body, secret) {
+			t.Errorf("secret %q leaked into /settings/storage HTML response", secret)
+		}
+	}
+	if !strings.Contains(body, `s3_secret_set`) {
+		t.Errorf("expected sanitized DrivesJSON to include s3_secret_set")
+	}
+	if strings.Contains(body, `s3_secret_key": "`) || strings.Contains(body, `s3_secret_key\":\"`) {
+		t.Errorf("expected DrivesJSON not to include any s3_secret_key field")
+	}
+
+	// 3. Submitting storage settings with blank drive s3_secret_key preserves existing drive secret
+	submittedDrives := `[{"id":"s3_backup","name":"Backup S3 Renamed","type":"s3","enabled":true,"s3_endpoint":"s3.example.com","s3_region":"us-east-1","s3_bucket":"backups","s3_access_key":"AKIA_DRIVE_1","s3_secret_key":"","s3_use_ssl":true}]`
+	form := "storage_type=local&local_path=" + tempDir + "&max_upload_size_mb=512&chunk_threshold_mb=50&chunk_size_mb=10&drives_json=" + submittedDrives
+	saveReq := httptest.NewRequest("POST", "/settings/action/storage", strings.NewReader(form)).WithContext(ctxAdmin)
+	saveReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	saveRR := httptest.NewRecorder()
+	srv.settingsActionHandler(saveRR, saveReq)
+	if saveRR.Code != http.StatusFound {
+		t.Fatalf("POST /settings/action/storage status = %d", saveRR.Code)
+	}
+	if len(srv.cfg.Drives) != 1 || srv.cfg.Drives[0].S3SecretKey != "DRIVE_1_SUPER_SECRET_KEY_VALUE" {
+		t.Fatalf("expected existing drive S3SecretKey to be preserved when submitted blank, got %+v", srv.cfg.Drives)
+	}
+	if srv.cfg.Drives[0].Name != "Backup S3 Renamed" {
+		t.Fatalf("expected drive Name to update, got %q", srv.cfg.Drives[0].Name)
+	}
+}
+
+func TestTTLStoreBoundsAndWebAuthnRateLimit(t *testing.T) {
+	// 1. Generic ttlStore enforces TTL expiration on Load/LoadAndDelete and evicts oldest entries when max capacity is exceeded
+	store := newTTLStore[string, int](50*time.Millisecond, 3)
+	store.Store("k1", 1)
+	time.Sleep(5 * time.Millisecond)
+	store.Store("k2", 2)
+	time.Sleep(5 * time.Millisecond)
+	store.Store("k3", 3)
+	if store.Len() != 3 {
+		t.Fatalf("expected store len 3, got %d", store.Len())
+	}
+
+	// Storing a 4th item evicts the oldest entry ("k1")
+	store.Store("k4", 4)
+	if store.Len() != 3 {
+		t.Fatalf("expected store len capped at 3 after eviction, got %d", store.Len())
+	}
+	if _, ok := store.Load("k1"); ok {
+		t.Fatalf("expected oldest key 'k1' to be evicted when max capacity reached")
+	}
+	if v, ok := store.Load("k4"); !ok || v != 4 {
+		t.Fatalf("expected 'k4' to remain in store with value 4, got %v (ok=%v)", v, ok)
+	}
+
+	// Wait for TTL to expire -> Load and LoadAndDelete return false and prune expired entries
+	time.Sleep(60 * time.Millisecond)
+	if _, ok := store.Load("k2"); ok {
+		t.Fatalf("expected 'k2' to expire after TTL")
+	}
+	if _, ok := store.LoadAndDelete("k3"); ok {
+		t.Fatalf("expected 'k3' to expire after TTL on LoadAndDelete")
+	}
+	store.Sweep(time.Now())
+	if store.Len() != 0 {
+		t.Fatalf("expected store len 0 after Sweep of expired entries, got %d", store.Len())
+	}
+
+	// 2. /webauthn/login/begin is rate-limited per IP and webAuthnTempStore stays bounded
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	// First 19 requests (up to loginMaxAttempts*2 - 1) from the same IP are allowed by the limiter
+	for i := 1; i <= 19; i++ {
+		req := httptest.NewRequest("GET", "/webauthn/login/begin?username=admin", nil)
+		req.RemoteAddr = "198.51.100.77:12345"
+		rr := httptest.NewRecorder()
+		srv.webAuthnLoginBegin(rr, req)
+		if rr.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d: unexpected 429 TooManyRequests", i)
+		}
+	}
+	// 20th request (loginMaxAttempts*2) from the same IP is blocked with 429 TooManyRequests before allocating any session state
+	req20 := httptest.NewRequest("GET", "/webauthn/login/begin?username=admin", nil)
+	req20.RemoteAddr = "198.51.100.77:12345"
+	rr20 := httptest.NewRecorder()
+	srv.webAuthnLoginBegin(rr20, req20)
+	if rr20.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 20th /webauthn/login/begin request to be rate-limited with 429, got %d", rr20.Code)
+	}
+}
+
+func TestInputValidationAndPasswordPolicy(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		MaxUploadSizeMB:  10,
+		Theme:            "dark",
+		DefaultLanguage:  "en",
+		Accent:           "indigo",
+		CustomAccentHex:  "#5865f2",
+		EnvOnly:          true,
+		Drives: []config.Drive{
+			{ID: "drive_enabled", Name: "Enabled Drive", Type: "local", LocalStoragePath: tempDir, Enabled: true},
+			{ID: "drive_disabled", Name: "Disabled Drive", Type: "local", LocalStoragePath: tempDir, Enabled: false},
+		},
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+
+	adminPass := "StrongAdminPass99!"
+	passHash, _ := bcrypt.GenerateFromPassword([]byte(adminPass), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	ctxAdmin := context.WithValue(context.Background(), "username", "admin")
+
+	// 1. Password policy: empty, <8 chars, >72 bytes, or common breached passwords rejected on password change
+	badPasswords := []string{
+		"",
+		"short1!",
+		"password",
+		"12345678",
+		"qwerty123",
+		strings.Repeat("A", 73),
+	}
+	for _, bad := range badPasswords {
+		form := fmt.Sprintf("current_password=%s&new_password=%s", adminPass, bad)
+		req := httptest.NewRequest("POST", "/settings/action/password", strings.NewReader(form)).WithContext(ctxAdmin)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.settingsActionHandler(rr, req)
+		loc := rr.Header().Get("Location")
+		if rr.Code != http.StatusFound || !strings.Contains(loc, "error=") {
+			t.Errorf("password change with invalid new_password %q: expected 302 with error=, got %d (Location=%q)", bad, rr.Code, loc)
+		}
+	}
+	// Verify admin password was NOT overwritten by any of the bad passwords
+	adminAfter, _ := db.GetUserByUsername(context.Background(), database, "admin")
+	if bcrypt.CompareHashAndPassword([]byte(adminAfter.PasswordHash), []byte(adminPass)) != nil {
+		t.Fatalf("admin password hash was unexpectedly modified by invalid password change request")
+	}
+
+	// 2. Subuser creation validates username format, password policy, and rejects negative quota
+	badUserForms := []string{
+		"new_username=ab&new_password=ValidPassword99!&new_quota=5",
+		"new_username=bad+space&new_password=ValidPassword99!&new_quota=5",
+		"new_username=%3Cscript%3E&new_password=ValidPassword99!&new_quota=5",
+		"new_username=valid_user&new_password=password123&new_quota=5",
+		"new_username=valid_user&new_password=short&new_quota=5",
+		"new_username=valid_user&new_password=ValidPassword99!&new_quota=-10",
+	}
+	for _, form := range badUserForms {
+		req := httptest.NewRequest("POST", "/settings/users/add", strings.NewReader(form)).WithContext(ctxAdmin)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.addUserHandler(rr, req)
+		loc := rr.Header().Get("Location")
+		if rr.Code != http.StatusFound || !strings.Contains(loc, "error=") {
+			t.Errorf("addUserHandler(%s): expected 302 with error=, got %d (Location=%q)", form, rr.Code, loc)
+		}
+	}
+	if _, err := db.GetUserByUsername(context.Background(), database, "valid_user"); err == nil {
+		t.Errorf("expected invalid subuser creation requests not to create 'valid_user'")
+	}
+
+	// 3. Appearance & Embed settings validate theme, language, and hex color format
+	badThemeReq := httptest.NewRequest("POST", "/settings/action/appearance", strings.NewReader("theme=neon-pink&language=xx-invalid&accent=custom&custom_accent_hex=javascript:alert(1)")).WithContext(ctxAdmin)
+	badThemeReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	badThemeRR := httptest.NewRecorder()
+	srv.settingsActionHandler(badThemeRR, badThemeReq)
+	if srv.cfg.Theme != "dark" || srv.cfg.DefaultLanguage != "en" || srv.cfg.CustomAccentHex != "#5865f2" {
+		t.Errorf("expected invalid theme/language/custom_accent_hex to be ignored, got Theme=%q DefaultLanguage=%q Hex=%q",
+			srv.cfg.Theme, srv.cfg.DefaultLanguage, srv.cfg.CustomAccentHex)
+	}
+
+	// 4. Upload and edit validate url_path, drive_id, and return 409 Conflict on duplicate url_path
+	// 4a. Unconfigured or disabled drive_id rejected on chunk upload init
+	for _, badDrive := range []string{"nonexistent_drive", "drive_disabled"} {
+		body, _ := json.Marshal(map[string]interface{}{
+			"file_name":    "doc.txt",
+			"total_size":   4,
+			"total_chunks": 1,
+			"drive_id":     badDrive,
+		})
+		req := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(body)).WithContext(ctxAdmin)
+		rr := httptest.NewRecorder()
+		srv.chunkUploadInitHandler(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for drive_id=%q, got %d", badDrive, rr.Code)
+		}
+	}
+
+	// 4b. Invalid url_path (slashes, spaces, traversal, query chars) rejected on chunk upload init
+	for _, badURLPath := range []string{"a/b", "..", ".", "bad space", "foo?bar=1", "foo#bar"} {
+		body, _ := json.Marshal(map[string]interface{}{
+			"file_name":    "doc.txt",
+			"total_size":   4,
+			"total_chunks": 1,
+			"url_path":     badURLPath,
+		})
+		req := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(body)).WithContext(ctxAdmin)
+		rr := httptest.NewRecorder()
+		srv.chunkUploadInitHandler(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for invalid url_path=%q, got %d", badURLPath, rr.Code)
+		}
+	}
+
+	// 4c. Duplicate url_path returns 409 Conflict on upload and edit
+	if err := srv.storage.Save(context.Background(), "firstkey", strings.NewReader("hello")); err != nil {
+		t.Fatalf("save firstkey: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		UserID:       adminAfter.ID,
+		OriginalName: "first.txt",
+		URLPath:      "taken-slug",
+		Size:         5,
+		StorageType:  "local",
+		StoragePath:  "firstkey",
+	}); err != nil {
+		t.Fatalf("insert first file: %v", err)
+	}
+	if err := srv.storage.Save(context.Background(), "secondkey", strings.NewReader("world")); err != nil {
+		t.Fatalf("save secondkey: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		UserID:       adminAfter.ID,
+		OriginalName: "second.txt",
+		URLPath:      "second-slug",
+		Size:         5,
+		StorageType:  "local",
+		StoragePath:  "secondkey",
+	}); err != nil {
+		t.Fatalf("insert second file: %v", err)
+	}
+	secondFile, _ := db.GetFileByURL(context.Background(), database, "second-slug")
+
+	// Chunk upload init with already-taken url_path -> 409 Conflict
+	dupInitBody, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "third.txt",
+		"total_size":   5,
+		"total_chunks": 1,
+		"url_path":     "taken-slug",
+	})
+	dupInitReq := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(dupInitBody)).WithContext(ctxAdmin)
+	dupInitRR := httptest.NewRecorder()
+	srv.chunkUploadInitHandler(dupInitRR, dupInitReq)
+	if dupInitRR.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict for duplicate url_path on chunkUploadInit, got %d", dupInitRR.Code)
+	}
+
+	// Editing secondFile to use "taken-slug" -> 409 Conflict
+	editDupForm := fmt.Sprintf("id=%d&custom_name=Second+File&url_path=taken-slug", secondFile.ID)
+	editDupReq := httptest.NewRequest("POST", "/edit", strings.NewReader(editDupForm)).WithContext(ctxAdmin)
+	editDupReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	editDupRR := httptest.NewRecorder()
+	srv.editFileHandler(editDupRR, editDupReq)
+	if editDupRR.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict when editing file to duplicate url_path, got %d", editDupRR.Code)
+	}
+
+	// Editing secondFile with invalid url_path -> 400 BadRequest
+	editBadForm := fmt.Sprintf("id=%d&custom_name=Second+File&url_path=../bad/slug", secondFile.ID)
+	editBadReq := httptest.NewRequest("POST", "/edit", strings.NewReader(editBadForm)).WithContext(ctxAdmin)
+	editBadReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	editBadRR := httptest.NewRecorder()
+	srv.editFileHandler(editBadRR, editBadReq)
+	if editBadRR.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 BadRequest when editing file with invalid url_path, got %d", editBadRR.Code)
+	}
+}
+
+func TestSecurityAuditLoggingInProductionAndLogInjection(t *testing.T) {
+	var stdoutBuf, stderrBuf bytes.Buffer
+	logger.SetOutput(&stdoutBuf, &stderrBuf)
+	logger.SetDebug(false) // production mode (debug OFF)
+	defer func() {
+		logger.ResetOutput()
+		logger.SetDebug(false)
+	}()
+
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		Debug:     false,
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("CorrectPassword123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	stdoutBuf.Reset()
+
+	// Failed login with CR/LF log-injection attempt in username when Debug is false
+	injectedUser := "attacker\r\n2026/10/17 00:00:00 [INFO] [AUDIT] [ACTION] Forged log entry"
+	form := urlValuesEncode(map[string]string{
+		"username": injectedUser,
+		"password": "WrongPassword",
+	})
+	req := httptest.NewRequest("POST", "/login", strings.NewReader(form))
+	req.RemoteAddr = "198.51.100.77:54321"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.loginHandler(rr, req)
+
+	out := strings.TrimSpace(stdoutBuf.String())
+	if out == "" {
+		t.Fatalf("expected failed login security event to be logged even when debug=false, got empty log")
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected CR/LF in username to be escaped into a single log line, got %d lines:\n%s", len(lines), out)
+	}
+	if !strings.Contains(lines[0], `attacker\r\n`) {
+		t.Errorf("expected escaped \\r\\n in audit log, got: %s", lines[0])
+	}
+	if !strings.Contains(lines[0], `"category":"audit"`) {
+		t.Errorf("expected structured slog JSON with category=audit, got: %s", lines[0])
+	}
+	if strings.Contains(lines[0], "WrongPassword") {
+		t.Errorf("password must never be logged in audit trail: %s", lines[0])
+	}
+}
+
+func urlValuesEncode(m map[string]string) string {
+	var parts []string
+	for k, v := range m {
+		parts = append(parts, k+"="+strings.ReplaceAll(strings.ReplaceAll(v, "\r", "%0D"), "\n", "%0A"))
+	}
+	return strings.Join(parts, "&")
+}
+
+func TestTrustedProxyClientIPAndHostHeaderProtection(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        ":memory:",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		Domain:           "files.example.com",
+		Port:             8080,
+		ReverseProxy:     true,
+		TrustedProxies:   []string{"10.0.0.0/8", "127.0.0.1/32"},
+		EnvOnly:          true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("CorrectPassword123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("failed to create admin: %v", err)
+	}
+	_ = db.UpdateUserEmbedConfig(context.Background(), database, "admin", db.EmbedConfig{
+		Enabled:   true,
+		SiteName:  "FileLine",
+		ShowTitle: true,
+	})
+	adminUser, _ := db.GetUserByUsername(context.Background(), database, "admin")
+
+	srv := New(cfg, database)
+	_ = srv.storage.Save(context.Background(), "imgkey", strings.NewReader("\x89PNG\r\n\x1a\n"))
+	_ = db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "clip.png",
+		URLPath:      "clip",
+		Size:         8,
+		StorageType:  "local",
+		StoragePath:  "imgkey",
+		UserID:       adminUser.ID,
+	})
+
+	// 1. Spoofed leftmost X-Forwarded-For from a trusted proxy:
+	//    Client spoofs "X-Forwarded-For: 1.2.3.4", proxy (10.0.0.2) appends real client IP "198.51.100.44, 10.0.0.5".
+	//    clientIP MUST return the rightmost untrusted hop ("198.51.100.44"), never the attacker-controlled leftmost "1.2.3.4".
+	rTrusted := httptest.NewRequest("GET", "/", nil)
+	rTrusted.RemoteAddr = "10.0.0.2:43210"
+	rTrusted.Header.Set("X-Forwarded-For", "1.2.3.4, 198.51.100.44, 10.0.0.5")
+	if got := srv.clientIP(rTrusted); got != "198.51.100.44" {
+		t.Fatalf("clientIP with trusted proxy and spoofed leftmost XFF = %q, want rightmost untrusted hop '198.51.100.44'", got)
+	}
+
+	// 2. Direct connection from an UNTRUSTED peer (not in TrustedProxies CIDR):
+	//    X-Forwarded-For and X-Real-IP MUST be ignored even when ReverseProxy is true.
+	rUntrusted := httptest.NewRequest("GET", "/", nil)
+	rUntrusted.RemoteAddr = "203.0.113.99:55555"
+	rUntrusted.Header.Set("X-Forwarded-For", "1.2.3.4")
+	rUntrusted.Header.Set("X-Real-IP", "5.6.7.8")
+	if got := srv.clientIP(rUntrusted); got != "203.0.113.99" {
+		t.Fatalf("clientIP from untrusted peer = %q, want direct peer IP '203.0.113.99'", got)
+	}
+
+	// 3. Rate limiter cannot be bypassed by rotating spoofed leftmost X-Forwarded-For values behind a trusted proxy
+	for i := 1; i <= loginMaxAttempts; i++ {
+		req := httptest.NewRequest("POST", "/login", strings.NewReader("username=admin&password=WrongPassword"))
+		req.RemoteAddr = "10.0.0.2:40000"
+		// Attacker rotates leftmost XFF on every request, while proxy appends real client IP 198.51.100.88
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d, 198.51.100.88", i))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		srv.loginHandler(rr, req)
+		if i == loginMaxAttempts && rr.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected 429 on %dth failed attempt despite rotating leftmost X-Forwarded-For, got %d", i, rr.Code)
+		}
+	}
+
+	// 4. Host-header & X-Forwarded-Proto poisoning protection on embed / oEmbed URLs:
+	//    Attacker sends Host: evil.attacker.com and X-Forwarded-Proto: javascript; response URLs must use canonical Domain (https://files.example.com).
+	embedReq := httptest.NewRequest("GET", "/f/clip", nil)
+	embedReq.Host = "evil.attacker.com"
+	embedReq.Header.Set("X-Forwarded-Host", "evil.attacker.com")
+	embedReq.Header.Set("X-Forwarded-Proto", "http")
+	embedRR := httptest.NewRecorder()
+	srv.serveFileHandler(embedRR, embedReq)
+	if embedRR.Code != http.StatusOK {
+		t.Fatalf("GET /f/clip status = %d", embedRR.Code)
+	}
+	body := embedRR.Body.String()
+	if strings.Contains(body, "evil.attacker.com") {
+		t.Fatalf("Host header poisoning succeeded: evil.attacker.com appeared in embed HTML:\n%s", body)
+	}
+	if !strings.Contains(body, "https://files.example.com/f/clip?raw=1") {
+		t.Errorf("expected canonical https://files.example.com/f/clip?raw=1 in embed HTML, got:\n%s", body)
+	}
+
+	oembedReq := httptest.NewRequest("GET", "/oembed?f=clip", nil)
+	oembedReq.Host = "evil.attacker.com"
+	oembedRR := httptest.NewRecorder()
+	srv.oembedHandler(oembedRR, oembedReq)
+	if strings.Contains(oembedRR.Body.String(), "evil.attacker.com") {
+		t.Fatalf("Host header poisoning succeeded in /oembed response: %s", oembedRR.Body.String())
+	}
+	if !strings.Contains(oembedRR.Body.String(), "https://files.example.com") {
+		t.Errorf("expected canonical https://files.example.com in /oembed response, got: %s", oembedRR.Body.String())
+	}
+}
+
+func TestWebAuthnCredentialPersistenceAndErrorSanitization(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+		EnvOnly:   true,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("failed to migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "wauser", "hash"); err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	credID := []byte("cred-id-sec20")
+	initialPasskeys := []auth.Passkey{
+		{
+			Name: "Hardware Key",
+			Credential: webauthn.Credential{
+				ID: credID,
+				Authenticator: webauthn.Authenticator{
+					SignCount:    1,
+					CloneWarning: false,
+				},
+			},
+		},
+	}
+	initialJSON, _ := json.Marshal(initialPasskeys)
+	if err := db.UpdateUserAuthData(context.Background(), database, "wauser", "", string(initialJSON)); err != nil {
+		t.Fatalf("UpdateUserAuthData: %v", err)
+	}
+	dbUser, _ := db.GetUserByUsername(context.Background(), database, "wauser")
+
+	// 1. updateUserPasskeyCredential persists updated SignCount, CloneWarning, and Flags while preserving passkey Name
+	updatedCred := &webauthn.Credential{
+		ID: credID,
+		Flags: webauthn.CredentialFlags{
+			BackupEligible: true,
+			BackupState:    true,
+		},
+		Authenticator: webauthn.Authenticator{
+			SignCount:    42,
+			CloneWarning: false,
+		},
+	}
+	if err := updateUserPasskeyCredential(context.Background(), database, dbUser, updatedCred); err != nil {
+		t.Fatalf("updateUserPasskeyCredential failed: %v", err)
+	}
+
+	reloadedUser, err := db.GetUserByUsername(context.Background(), database, "wauser")
+	if err != nil {
+		t.Fatalf("GetUserByUsername: %v", err)
+	}
+	var savedPasskeys []auth.Passkey
+	if err := json.Unmarshal([]byte(reloadedUser.WebAuthnData), &savedPasskeys); err != nil {
+		t.Fatalf("Unmarshal WebAuthnData: %v", err)
+	}
+	if len(savedPasskeys) != 1 {
+		t.Fatalf("expected 1 passkey, got %d", len(savedPasskeys))
+	}
+	if savedPasskeys[0].Name != "Hardware Key" {
+		t.Errorf("expected passkey name 'Hardware Key' preserved, got %q", savedPasskeys[0].Name)
+	}
+	if savedPasskeys[0].Credential.Authenticator.SignCount != 42 {
+		t.Errorf("expected persisted SignCount 42, got %d", savedPasskeys[0].Credential.Authenticator.SignCount)
+	}
+	if !savedPasskeys[0].Credential.Flags.BackupEligible || !savedPasskeys[0].Credential.Flags.BackupState {
+		t.Errorf("expected persisted BackupEligible/BackupState flags to be true, got %+v", savedPasskeys[0].Credential.Flags)
+	}
+
+	// 2. 20: webAuthnLoginFinish deletes the challenge session on the first finish attempt so it cannot be replayed
+	srv := New(cfg, database)
+	srv.webAuthnTempStore.Store("login-sess-1", webauthn.SessionData{Challenge: "ch-1"})
+
+	loginFinReq := httptest.NewRequest("POST", "/webauthn/login/finish", strings.NewReader(`{"invalid":"assertion"}`))
+	loginFinReq.AddCookie(&http.Cookie{Name: "wa_login_session", Value: "login-sess-1"})
+	loginFinRR := httptest.NewRecorder()
+	srv.webAuthnLoginFinish(loginFinRR, loginFinReq)
+	if loginFinRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 BadRequest on invalid WebAuthn login finish, got %d", loginFinRR.Code)
+	}
+	if _, stillExists := srv.webAuthnTempStore.Load("login-sess-1"); stillExists {
+		t.Fatalf("expected wa_login_session to be deleted on finish attempt to prevent replay")
+	}
+
+	// 3. webAuthnRegisterFinish returns a generic message and does not leak internal protocol/CBOR parsing errors to the client
+	srv.webAuthnTempStore.Store("reg-sess-1", webauthn.SessionData{Challenge: "ch-reg"})
+	ctxUser := context.WithValue(context.Background(), "username", "wauser")
+	regFinReq := httptest.NewRequest("POST", "/webauthn/register/finish", strings.NewReader(`{"id":"bad","rawId":"!!!not-base64!!!"}`)).WithContext(ctxUser)
+	regFinReq.AddCookie(&http.Cookie{Name: "wa_session", Value: "reg-sess-1"})
+	regFinRR := httptest.NewRecorder()
+	srv.webAuthnRegisterFinish(regFinRR, regFinReq)
+	if regFinRR.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 BadRequest on invalid WebAuthn registration finish, got %d", regFinRR.Code)
+	}
+	respBody := strings.TrimSpace(regFinRR.Body.String())
+	if respBody != "Invalid passkey registration" {
+		t.Errorf("expected generic error 'Invalid passkey registration', got %q (internal error leaked)", respBody)
+	}
+}

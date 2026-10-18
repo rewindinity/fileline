@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,11 +19,38 @@ import (
 	"fileline/internal/translations"
 )
 
+func runHealthCheck(cfg *config.Config) int {
+	port := 8080
+	if cfg != nil && cfg.Port > 0 {
+		port = cfg.Port
+	}
+	scheme := "http"
+	if cfg != nil && cfg.SSL {
+		scheme = "https"
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("%s://127.0.0.1:%d/health", scheme, port))
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
+}
+
 func main() {
 	envOnly := flag.Bool("env-only", false, "Use only environment variables for configuration")
 	debug := flag.Bool("debug", false, "Enable debug mode with detailed HTTP and audit logs")
+	healthCheck := flag.Bool("healthcheck", false, "Probe local /health endpoint and exit (for container HEALTHCHECK)")
 	flag.BoolVar(debug, "d", false, "Enable debug mode (shorthand)")
 	flag.Parse()
+
+	if *healthCheck {
+		cfg, _ := config.Load("config.json", *envOnly)
+		os.Exit(runHealthCheck(cfg))
+	}
 
 	// Initialize configuration (fail closed on parse/read errors)
 	cfg, err := config.Load("config.json", *envOnly)

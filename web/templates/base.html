@@ -64,10 +64,12 @@
                     <img src="/static/icons/bxs-cog.svg" alt="{{ T .Language "Settings" }}">
                     {{ T .Language "Settings" }}
                 </a>
-                <a href="/logout" class="nav-item" style="color: var(--error);">
-                    <img src="/static/icons/bx-log-out.svg" alt="{{ T .Language "Logout" }}" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
-                    {{ T .Language "Logout" }} ({{.Username}})
-                </a>
+                <form method="POST" action="/logout" style="display: contents;">
+                    <button type="submit" class="nav-item" style="color: var(--error); background: none; border: none; cursor: pointer; font: inherit;">
+                        <img src="/static/icons/bx-log-out.svg" alt="{{ T .Language "Logout" }}" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+                        {{ T .Language "Logout" }} ({{.Username}})
+                    </button>
+                </form>
             </nav>
         </div>
     </header>

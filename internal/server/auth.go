@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -49,11 +50,19 @@ func generateRecoveryCode() (string, string, error) {
 	return code, string(hash), nil
 }
 
-// parseJWTUsername verifies a session JWT using HS256 and returns the username claim.
+const jwtIssuer = "fileline"
+
+type sessionClaims struct {
+	Username string `json:"username"`
+	Ver      *int   `json:"ver,omitempty"`
+	jwt.RegisteredClaims
+}
+
+// parseSessionClaims verifies a session JWT using strict HS256 options and returns the parsed claims.
 // It refuses to validate tokens if the server's JWT key is invalid.
-func (s *Server) parseJWTUsername(tokenStr string) (string, bool) {
+func (s *Server) parseSessionClaims(tokenStr string) (*sessionClaims, bool) {
 	if tokenStr == "" {
-		return "", false
+		return nil, false
 	}
 	s.mu.RLock()
 	var key string
@@ -62,29 +71,96 @@ func (s *Server) parseJWTUsername(tokenStr string) (string, bool) {
 	}
 	s.mu.RUnlock()
 	if !config.IsValidJWTKey(key) {
-		return "", false
+		return nil, false
 	}
-	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
+
+	parserOpts := []jwt.ParserOption{
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	}
+
+	claims := &sessionClaims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return []byte(key), nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
+	}, parserOpts...)
 	if err != nil || token == nil || !token.Valid {
-		return "", false
+		return nil, false
 	}
-	claims, ok := token.Claims.(jwt.MapClaims)
+	// If issuer is present on the token, require it to match "fileline"; tokens minted by writeSessionCookie always set iss="fileline".
+	if claims.Issuer != "" && claims.Issuer != jwtIssuer {
+		return nil, false
+	}
+	if claims.Username == "" {
+		return nil, false
+	}
+	return claims, true
+}
+
+// parseJWTUsername verifies a session JWT using HS256 and returns the username claim.
+// When a database is configured, it also verifies that the user still exists and that the token's session version matches.
+func (s *Server) parseJWTUsername(tokenStr string) (string, bool) {
+	claims, ok := s.parseSessionClaims(tokenStr)
 	if !ok {
 		return "", false
 	}
-	username, ok := claims["username"].(string)
-	if !ok || username == "" {
-		return "", false
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	if database != nil {
+		user, err := db.GetUserByUsername(context.Background(), database, claims.Username)
+		if err != nil || user == nil {
+			return "", false
+		}
+		tokenVer := 0
+		if claims.Ver != nil {
+			tokenVer = *claims.Ver
+		}
+		if tokenVer != user.SessionVersion {
+			return "", false
+		}
 	}
-	return username, true
+	return claims.Username, true
 }
 
-// requireAuth is a middleware requiring an authenticated JWT session
+// parseSession verifies the session cookie from r, loads the user from the database,
+// and checks that the user still exists and the token's session version (`ver`) matches `user.SessionVersion`.
+func (s *Server) parseSession(r *http.Request) (*db.User, bool) {
+	if r == nil {
+		return nil, false
+	}
+	cookie, err := r.Cookie("session")
+	if err != nil || cookie.Value == "" {
+		return nil, false
+	}
+	claims, ok := s.parseSessionClaims(cookie.Value)
+	if !ok {
+		return nil, false
+	}
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	if database == nil {
+		return nil, false
+	}
+	user, err := db.GetUserByUsername(r.Context(), database, claims.Username)
+	if err != nil || user == nil {
+		return nil, false
+	}
+	tokenVer := 0
+	if claims.Ver != nil {
+		tokenVer = *claims.Ver
+	}
+	if tokenVer != user.SessionVersion {
+		return nil, false
+	}
+	return user, true
+}
+
+// requireAuth is a middleware requiring an authenticated, non-revoked JWT session for an existing user
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		configured, err := s.CheckConfigured(r.Context())
@@ -97,17 +173,12 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
 		}
-		cookie, err := r.Cookie("session")
-		if err != nil {
-			http.Redirect(w, r, "/login", http.StatusFound)
-			return
-		}
-		username, ok := s.parseJWTUsername(cookie.Value)
+		user, ok := s.parseSession(r)
 		if !ok {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		ctx := context.WithValue(r.Context(), "username", username)
+		ctx := context.WithValue(r.Context(), "username", user.Username)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
@@ -122,21 +193,43 @@ func (s *Server) setJWTCookie(w http.ResponseWriter, username string) {
 		}
 		key := s.cfg.JWTKey
 		secure := s.cfg.SSL || s.cfg.ReverseProxy
+		database := s.db
 		s.mu.Unlock()
-		s.writeSessionCookie(w, username, key, secure)
+		ver := 0
+		if database != nil {
+			if u, err := db.GetUserByUsername(context.Background(), database, username); err == nil && u != nil {
+				ver = u.SessionVersion
+			}
+		}
+		s.writeSessionCookie(w, username, ver, key, secure)
 		return
 	}
 	key := s.cfg.JWTKey
 	secure := s.cfg.SSL || s.cfg.ReverseProxy
+	database := s.db
 	s.mu.RUnlock()
-	s.writeSessionCookie(w, username, key, secure)
+	ver := 0
+	if database != nil {
+		if u, err := db.GetUserByUsername(context.Background(), database, username); err == nil && u != nil {
+			ver = u.SessionVersion
+		}
+	}
+	s.writeSessionCookie(w, username, ver, key, secure)
 }
 
-func (s *Server) writeSessionCookie(w http.ResponseWriter, username, key string, secure bool) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"username": username,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-	})
+func (s *Server) writeSessionCookie(w http.ResponseWriter, username string, sessionVersion int, key string, secure bool) {
+	now := time.Now()
+	claims := sessionClaims{
+		Username: username,
+		Ver:      &sessionVersion,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    jwtIssuer,
+			Subject:   username,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(key))
 	if err != nil {
 		return
@@ -296,12 +389,23 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 				if port != "" {
 					hostPort = net.JoinHostPort(host, port)
 				}
+				sslMode := strings.TrimSpace(r.FormValue("pg_sslmode"))
+				switch sslMode {
+				case "":
+					sslMode = "require"
+				case "require", "verify-full", "verify-ca", "disable":
+				default:
+					s.renderSetupError(w, dbConfigured, "Invalid database configuration")
+					return
+				}
+				query := url.Values{}
+				query.Set("sslmode", sslMode)
 				pgURL := url.URL{
 					Scheme:   "postgres",
 					User:     url.UserPassword(user, pass),
 					Host:     hostPort,
 					Path:     "/" + strings.TrimPrefix(dbname, "/"),
-					RawQuery: "sslmode=disable",
+					RawQuery: query.Encode(),
 				}
 				candidateCfg.PostgresURL = pgURL.String()
 			default:
@@ -371,6 +475,14 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 		password := r.FormValue("password")
 		if username == "" || password == "" {
 			s.renderSetupError(w, dbConfigured, "Username and password are required")
+			return
+		}
+		if err := validateUsername(username); err != nil {
+			s.renderSetupError(w, dbConfigured, err.Error())
+			return
+		}
+		if err := validatePassword(password); err != nil {
+			s.renderSetupError(w, dbConfigured, err.Error())
 			return
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -574,7 +686,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 				Path:     "/",
 				HttpOnly: true,
 				Secure:   s.cfg.SSL || s.cfg.ReverseProxy,
-				SameSite: http.SameSiteLaxMode,
+				SameSite: http.SameSiteStrictMode,
 				MaxAge:   int(twoFASessionTTL.Seconds()),
 			})
 			logger.Action("User '%s' authenticated with password, 2FA challenge required from %s", username, clientIP)
@@ -702,6 +814,14 @@ func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		if err := validatePassword(newPassword); err != nil {
+			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
+				"Title":  "Reset Password",
+				"Config": s.cfg,
+				"Error":  err.Error(),
+			})
+			return
+		}
 
 		if newPassword != confirmPassword {
 			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
@@ -718,15 +838,22 @@ func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := db.UpdatePassword(r.Context(), database, username, string(newHash)); err != nil {
+		newRecoveryCode, newRecoveryHash, err := generateRecoveryCode()
+		if err != nil {
+			s.internalError(w, r, "Failed to generate new recovery code during password reset", err)
+			return
+		}
+
+		if err := db.ResetPasswordWithRecoveryRotation(r.Context(), database, username, string(newHash), newRecoveryHash); err != nil {
 			s.internalError(w, r, "Failed to update password during recovery", err)
 			return
 		}
 
+		s.recoveryCodeStore.Store(username, newRecoveryCode)
 		lim.reset(userKey)
 		lim.reset(ipKey)
 
-		logger.Action("User '%s' successfully reset their password using recovery code from %s", username, clientIP)
+		logger.Action("User '%s' successfully reset their password using recovery code from %s (recovery code rotated)", username, clientIP)
 		http.Redirect(w, r, "/login?success=Password+updated+successfully", http.StatusFound)
 	}
 }
@@ -870,12 +997,17 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			if exhausted {
 				logger.Info("2FA session exhausted after %d failed attempts for username '%s' from %s", twoFAMaxAttempts, username, clientIP)
+				s.mu.RLock()
+				secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+				s.mu.RUnlock()
 				http.SetCookie(w, &http.Cookie{
 					Name:     "2fa_session",
 					Value:    "",
 					Path:     "/",
 					MaxAge:   -1,
 					HttpOnly: true,
+					Secure:   secure,
+					SameSite: http.SameSiteStrictMode,
 				})
 				http.Redirect(w, r, "/login?error=Too+many+failed+2FA+attempts", http.StatusFound)
 				return
@@ -893,12 +1025,17 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 		// Success
 		lim.reset(rateKey)
 		s.login2FAStore.Delete(sessionID)
+		s.mu.RLock()
+		secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+		s.mu.RUnlock()
 		http.SetCookie(w, &http.Cookie{
 			Name:     "2fa_session",
 			Value:    "",
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: true,
+			Secure:   secure,
+			SameSite: http.SameSiteStrictMode,
 		})
 		s.setJWTCookie(w, username)
 		logger.Action("User '%s' logged in successfully via 2FA TOTP from %s", username, clientIP)
@@ -907,18 +1044,31 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	username := ""
-	if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
-		if u, ok := s.parseJWTUsername(cookie.Value); ok {
-			username = u
+	if user, ok := s.parseSession(r); ok && user != nil {
+		username = user.Username
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		if database != nil {
+			_ = db.IncrementSessionVersion(r.Context(), database, username)
 		}
 	}
+	s.mu.RLock()
+	secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+	s.mu.RUnlock()
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session",
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
 	})
 	if username != "" {
 		logger.Action("User '%s' logged out", username)
@@ -929,6 +1079,16 @@ func (s *Server) logoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	clientIP := s.clientIP(r)
+	lim := s.limiter()
+	beginKey := authRateKey("webauthn-login-begin", clientIP, "*")
+	if _, blocked, retry := lim.recordFailure(beginKey, now, loginMaxAttempts*2, loginWindow, loginWindow); blocked {
+		setRetryAfterHeader(w, retry)
+		http.Error(w, "Too many requests", http.StatusTooManyRequests)
+		return
+	}
+
 	options, sessionData, err := s.webAuthn.BeginDiscoverableLogin()
 	if err != nil {
 		s.internalError(w, r, "WebAuthn BeginDiscoverableLogin failed", err)
@@ -937,15 +1097,49 @@ func (s *Server) webAuthnLoginBegin(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := generateRandomSessionID()
 	s.webAuthnTempStore.Store(sessionID, *sessionData)
+	s.mu.RLock()
+	secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+	s.mu.RUnlock()
 	http.SetCookie(w, &http.Cookie{
 		Name:     "wa_login_session",
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
 		MaxAge:   300,
 	})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(options)
+}
+
+// updateUserPasskeyCredential updates the matching passkey credential (SignCount, Flags, CloneWarning) in the user's stored WebAuthnData
+func updateUserPasskeyCredential(ctx context.Context, database *sql.DB, dbUser *db.User, cred *webauthn.Credential) error {
+	if database == nil || dbUser == nil || cred == nil {
+		return nil
+	}
+	var passkeys []auth.Passkey
+	if dbUser.WebAuthnData != "" {
+		if err := json.Unmarshal([]byte(dbUser.WebAuthnData), &passkeys); err != nil {
+			return err
+		}
+	}
+	updated := false
+	for i := range passkeys {
+		if string(passkeys[i].Credential.ID) == string(cred.ID) {
+			passkeys[i].Credential = *cred
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		return fmt.Errorf("passkey credential not found for user")
+	}
+	credsJSON, err := json.Marshal(passkeys)
+	if err != nil {
+		return err
+	}
+	return db.UpdateUserAuthData(ctx, database, dbUser.Username, dbUser.TOTPSecret, string(credsJSON))
 }
 
 func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
@@ -966,16 +1160,15 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := cookie.Value
-	sessionDataAny, ok := s.webAuthnTempStore.LoadAndDelete(sessionID)
+	sessionData, ok := s.webAuthnTempStore.LoadAndDelete(sessionID)
 	if !ok {
 		http.Error(w, "Session expired", http.StatusBadRequest)
 		return
 	}
-	sessionData := sessionDataAny.(webauthn.SessionData)
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-	var loggedInUsername string
+	var loggedInUser *db.User
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
 		idStr := string(userHandle)
 		var id int
@@ -986,10 +1179,10 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		loggedInUsername = dbUser.Username
+		loggedInUser = dbUser
 		return auth.NewWebAuthnUser(dbUser), nil
 	}
-	_, err = s.webAuthn.FinishDiscoverableLogin(handler, sessionData, r)
+	credential, err := s.webAuthn.FinishDiscoverableLogin(handler, sessionData, r)
 	if err != nil {
 		if isMaxBytesError(err) {
 			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
@@ -1004,7 +1197,30 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid passkey authentication", http.StatusBadRequest)
 		return
 	}
+	if credential != nil && credential.Authenticator.CloneWarning {
+		if loggedInUser != nil && database != nil {
+			_ = updateUserPasskeyCredential(r.Context(), database, loggedInUser, credential)
+		}
+		_, _, _ = lim.recordFailure(waKey, now, loginMaxAttempts, loginWindow, loginWindow)
+		uname := ""
+		if loggedInUser != nil {
+			uname = loggedInUser.Username
+		}
+		logger.Warn("Rejected cloned passkey authenticator for user '%s' from %s (SignCount=%d)", uname, clientIP, credential.Authenticator.SignCount)
+		http.Error(w, "Invalid passkey authentication", http.StatusBadRequest)
+		return
+	}
+	if loggedInUser != nil && credential != nil && database != nil {
+		if err := updateUserPasskeyCredential(r.Context(), database, loggedInUser, credential); err != nil {
+			s.internalError(w, r, "Failed to persist updated WebAuthn credential state", err)
+			return
+		}
+	}
 	lim.reset(waKey)
+	loggedInUsername := ""
+	if loggedInUser != nil {
+		loggedInUsername = loggedInUser.Username
+	}
 	s.setJWTCookie(w, loggedInUsername)
 	logger.Action("User '%s' logged in successfully via Passkey (WebAuthn) from %s", loggedInUsername, clientIP)
 	w.Header().Set("Content-Type", "application/json")

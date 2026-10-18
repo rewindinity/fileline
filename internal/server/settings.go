@@ -36,7 +36,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 	if user.Role == "admin" {
 		allUsers, _ = db.GetAllUsers(r.Context(), database)
 	}
-	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
+	drivesJSONBytes, _ := json.MarshalIndent(cfg.SanitizedDrives(), "", "  ")
 	if string(drivesJSONBytes) == "null" {
 		drivesJSONBytes = []byte("[]")
 	}
@@ -46,7 +46,7 @@ func (s *Server) settingsHandler(w http.ResponseWriter, r *http.Request) {
 		"User":           user,
 		"AllUsers":       allUsers,
 		"Passkeys":       passkeysDisplay,
-		"Config":         cfg,
+		"Config":         cfg.SanitizedView(),
 		"DrivesJSON":     string(drivesJSONBytes),
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
@@ -67,7 +67,7 @@ func (s *Server) settingsAppearanceHandler(w http.ResponseWriter, r *http.Reques
 		"Title":          "Appearance Settings",
 		"Username":       username,
 		"User":           user,
-		"Config":         cfg,
+		"Config":         cfg.SanitizedView(),
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
 	})
@@ -86,7 +86,7 @@ func (s *Server) settingsEmbedHandler(w http.ResponseWriter, r *http.Request) {
 		"Title":          "Media Preview (Embed)",
 		"Username":       username,
 		"User":           user,
-		"Config":         cfg,
+		"Config":         cfg.SanitizedView(),
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
 	})
@@ -100,10 +100,10 @@ func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) 
 	s.mu.RUnlock()
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	if user.Role != "admin" {
-		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found"})
 		return
 	}
-	drivesJSONBytes, _ := json.MarshalIndent(cfg.Drives, "", "  ")
+	drivesJSONBytes, _ := json.MarshalIndent(cfg.SanitizedDrives(), "", "  ")
 	if string(drivesJSONBytes) == "null" {
 		drivesJSONBytes = []byte("[]")
 	}
@@ -113,7 +113,7 @@ func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) 
 		"Title":          "Storage Settings",
 		"Username":       username,
 		"User":           user,
-		"Config":         cfg,
+		"Config":         cfg.SanitizedView(),
 		"DrivesJSON":     string(drivesJSONBytes),
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
@@ -129,7 +129,7 @@ func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request)
 	s.mu.RUnlock()
 	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	if user.Role != "admin" {
-		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found"})
 		return
 	}
 	allUsers, _ := db.GetAllUsers(r.Context(), database)
@@ -159,7 +159,7 @@ func (s *Server) settingsSubusersHandler(w http.ResponseWriter, r *http.Request)
 		"Title":          "Subusers Settings",
 		"Username":       username,
 		"User":           user,
-		"Config":         cfg,
+		"Config":         cfg.SanitizedView(),
 		"AllUsers":       displayUsers,
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
@@ -247,7 +247,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, _ := db.GetUserByUsername(r.Context(), database, username)
 		if user.Role != "admin" {
-			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found"})
 			return
 		}
 		s.mu.Lock()
@@ -289,6 +289,19 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		if drivesJSON != "" {
 			var newDrives []config.Drive
 			if err := json.Unmarshal([]byte(drivesJSON), &newDrives); err == nil {
+				existingSecrets := make(map[string]string, len(s.cfg.Drives))
+				for _, old := range s.cfg.Drives {
+					if old.ID != "" && old.S3SecretKey != "" {
+						existingSecrets[old.ID] = old.S3SecretKey
+					}
+				}
+				for i := range newDrives {
+					if newDrives[i].S3SecretKey == "" {
+						if prev, ok := existingSecrets[newDrives[i].ID]; ok {
+							newDrives[i].S3SecretKey = prev
+						}
+					}
+				}
 				s.cfg.Drives = newDrives
 			} else {
 				logger.Error("Failed to parse drives_json: %v", err)
@@ -316,7 +329,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		if r.FormValue("use_global_accent") == "on" {
 			accent = "global"
 		} else {
-			accent = r.FormValue("accent")
+			accent = strings.TrimSpace(r.FormValue("accent"))
 		}
 		if theme == "" {
 			theme = "global"
@@ -326,6 +339,18 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if language == "" {
 			language = "global"
+		}
+		if !isValidTheme(theme, true) {
+			http.Redirect(w, r, "/settings/appearance?error=Invalid+theme", http.StatusFound)
+			return
+		}
+		if accent != "global" && !isValidHexColor(accent) {
+			http.Redirect(w, r, "/settings/appearance?error=Invalid+accent+color", http.StatusFound)
+			return
+		}
+		if !isValidLanguage(language, true) {
+			http.Redirect(w, r, "/settings/appearance?error=Invalid+language", http.StatusFound)
+			return
 		}
 
 		s.mu.RLock()
@@ -348,9 +373,21 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if user.Role == "admin" {
-			globalTheme := r.FormValue("global_theme")
-			customAccentHex := r.FormValue("custom_accent_hex")
-			globalLanguage := r.FormValue("global_language")
+			globalTheme := strings.TrimSpace(r.FormValue("global_theme"))
+			customAccentHex := strings.TrimSpace(r.FormValue("custom_accent_hex"))
+			globalLanguage := strings.TrimSpace(r.FormValue("global_language"))
+			if globalTheme != "" && !isValidTheme(globalTheme, false) {
+				http.Redirect(w, r, "/settings/appearance?error=Invalid+global+theme", http.StatusFound)
+				return
+			}
+			if customAccentHex != "" && !isValidHexColor(customAccentHex) {
+				http.Redirect(w, r, "/settings/appearance?error=Invalid+global+accent+color", http.StatusFound)
+				return
+			}
+			if globalLanguage != "" && !isValidLanguage(globalLanguage, false) {
+				http.Redirect(w, r, "/settings/appearance?error=Invalid+global+language", http.StatusFound)
+				return
+			}
 			s.mu.Lock()
 			if globalTheme != "" {
 				s.cfg.Theme = globalTheme
@@ -427,7 +464,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		s.mu.RUnlock()
 		user, err := db.GetUserByUsername(r.Context(), database, username)
 		if err != nil || user.Role != "admin" {
-			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found"})
 			return
 		}
 		blockIndexing := r.FormValue("block_indexing") == "on"
@@ -452,8 +489,16 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 		if color == "" {
 			color = "#1d9bf0"
 		}
+		if !isValidHexColor(color) {
+			http.Redirect(w, r, "/settings/embed?error=Invalid+embed+color", http.StatusFound)
+			return
+		}
 		siteName := strings.TrimSpace(r.FormValue("embed_site_name"))
 		customText := strings.TrimSpace(r.FormValue("embed_custom_text"))
+		if len(siteName) > maxCustomNameLen || len(customText) > 500 {
+			http.Redirect(w, r, "/settings/embed?error=Embed+text+exceeds+maximum+length", http.StatusFound)
+			return
+		}
 		embedCfg := db.EmbedConfig{
 			Enabled:        r.FormValue("embed_enabled") == "on",
 			Color:          color,
@@ -477,6 +522,10 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 	if action == "password" {
 		currentPassword := r.FormValue("current_password")
 		newPassword := r.FormValue("new_password")
+		if err := validatePassword(newPassword); err != nil {
+			http.Redirect(w, r, "/settings/account?error="+strings.ReplaceAll(err.Error(), " ", "+"), http.StatusFound)
+			return
+		}
 		s.mu.RLock()
 		database := s.db
 		s.mu.RUnlock()
@@ -499,6 +548,7 @@ func (s *Server) settingsActionHandler(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, "Failed to update password in database", err)
 			return
 		}
+		s.setJWTCookie(w, username)
 		logger.Action("User '%s' successfully changed their account password", username)
 		http.Redirect(w, r, "/settings/account?success=Password+updated+successfully", http.StatusFound)
 		return
@@ -559,19 +609,39 @@ func (s *Server) addUserHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil || user.Role != "admin" {
-		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found"})
 		return
 	}
-	newUsername := r.FormValue("new_username")
+	newUsername := strings.TrimSpace(r.FormValue("new_username"))
 	newPassword := r.FormValue("new_password")
-	var quotaMB int
-	fmt.Sscanf(r.FormValue("new_quota"), "%d", &quotaMB)
-	if newUsername == "" || newPassword == "" {
-		http.Redirect(w, r, "/settings/subusers?error=Invalid+user+data", http.StatusFound)
+	rawQuota := strings.TrimSpace(r.FormValue("new_quota"))
+	quotaMB := 0
+	if rawQuota != "" {
+		parsedQuota, qErr := strconv.Atoi(rawQuota)
+		if qErr != nil || parsedQuota < 0 {
+			http.Redirect(w, r, "/settings/subusers?error=Invalid+storage+quota", http.StatusFound)
+			return
+		}
+		quotaMB = parsedQuota
+	}
+	if err := validateUsername(newUsername); err != nil {
+		http.Redirect(w, r, "/settings/subusers?error="+strings.ReplaceAll(err.Error(), " ", "+"), http.StatusFound)
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err := validatePassword(newPassword); err != nil {
+		http.Redirect(w, r, "/settings/subusers?error="+strings.ReplaceAll(err.Error(), " ", "+"), http.StatusFound)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		s.internalError(w, r, "Failed to hash subuser password", err)
+		return
+	}
 	if err := db.CreateSubuser(r.Context(), database, newUsername, string(hash), quotaMB); err != nil {
+		if isUniqueConstraintError(err) {
+			http.Redirect(w, r, "/settings/subusers?error=Username+already+exists", http.StatusFound)
+			return
+		}
 		s.internalError(w, r, "Failed to create subuser in database", err)
 		return
 	}

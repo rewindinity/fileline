@@ -229,8 +229,8 @@
                             <input type="text" value="${escapeHtml(drive.s3_access_key || '')}" onchange="updateDrive(${idx}, 's3_access_key', this.value)">
                         </div>
                         <div class="form-group">
-                            <label>{{ T $.Language "Secret Key" }} ${drive.s3_secret_key ? '<span class="text-muted">({{ T $.Language "(Set)" }})</span>' : ''}</label>
-                            <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)">
+                            <label>{{ T $.Language "Secret Key" }} ${(drive.s3_secret_set || drive.s3_secret_key) ? '<span class="text-muted">({{ T $.Language "Leave blank to keep current" }})</span>' : ''}</label>
+                            <input type="password" value="${escapeHtml(drive.s3_secret_key || '')}" placeholder="${(drive.s3_secret_set && !drive.s3_secret_key) ? '••••• (set)' : ''}" onchange="updateDrive(${idx}, 's3_secret_key', this.value)" autocomplete="new-password">
                         </div>
                     </div>
                     <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">

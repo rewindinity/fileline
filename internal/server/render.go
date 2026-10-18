@@ -19,12 +19,38 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 	}
 	// Inject language into data if it's a map
 	if m, ok := data.(map[string]interface{}); ok {
-		if _, hasCfg := m["Config"]; !hasCfg {
-			m["Config"] = s.cfg
+		s.mu.RLock()
+		serverCfg := s.cfg
+		s.mu.RUnlock()
+		switch v := m["Config"].(type) {
+		case *config.Config:
+			if v != nil {
+				m["Config"] = v.SanitizedView()
+			} else if serverCfg != nil {
+				m["Config"] = serverCfg.SanitizedView()
+			} else {
+				m["Config"] = config.ConfigView{}
+			}
+		case config.Config:
+			m["Config"] = v.SanitizedView()
+		case config.ConfigView:
+			// Already sanitized
+		case *config.ConfigView:
+			if v != nil {
+				m["Config"] = *v
+			} else {
+				m["Config"] = config.ConfigView{}
+			}
+		default:
+			if serverCfg != nil {
+				m["Config"] = serverCfg.SanitizedView()
+			} else {
+				m["Config"] = config.ConfigView{}
+			}
 		}
 		lang := ""
-		if s.cfg != nil {
-			lang = s.cfg.DefaultLanguage
+		if serverCfg != nil {
+			lang = serverCfg.DefaultLanguage
 		}
 		if lang == "" {
 			lang = "en"
@@ -39,8 +65,8 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 				if user, err := db.GetUserByUsername(r.Context(), s.db, uname); err == nil && user.Language != "" && user.Language != "global" {
 					lang = user.Language
 				}
-				if codeAny, ok := s.recoveryCodeStore.LoadAndDelete(uname); ok {
-					m["NewRecoveryCode"] = codeAny.(string)
+				if code, ok := s.recoveryCodeStore.LoadAndDelete(uname); ok {
+					m["NewRecoveryCode"] = code
 				}
 			}
 		}
@@ -55,13 +81,12 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 
 func (s *Server) render404(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusNotFound)
-	s.renderTemplate(w, nil, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+	s.renderTemplate(w, nil, "404.html", map[string]interface{}{"Title": "Not Found"})
 }
 
 func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, errorMsg string) {
 	s.renderTemplate(w, nil, "setup.html", map[string]interface{}{
 		"Title":        "Setup",
-		"Config":       s.cfg,
 		"DBConfigured": dbConfigured,
 		"RequireToken": s.setupToken != "",
 		"Error":        errorMsg,
@@ -76,6 +101,7 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.Context().Value("username").(string)
 	s.mu.RLock()
 	database := s.db
+	sanitizedDrives := s.cfg.SanitizedDrives()
 	s.mu.RUnlock()
 	user, err := db.GetUserByUsername(r.Context(), database, username)
 	if err != nil {
@@ -93,8 +119,8 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totalUsedBytes, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
-	var enabledDrives []config.Drive
-	for _, d := range s.cfg.Drives {
+	var enabledDrives []config.DriveView
+	for _, d := range sanitizedDrives {
 		if d.Enabled {
 			enabledDrives = append(enabledDrives, d)
 		}
@@ -106,7 +132,6 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		"User":           user,
 		"Files":          files,
 		"TotalUsedBytes": totalUsedBytes,
-		"Config":         s.cfg,
 		"EnabledDrives":  enabledDrives,
 	})
 }

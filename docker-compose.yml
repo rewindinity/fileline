@@ -3,7 +3,26 @@ services:
     image: ghcr.io/rewindinity/fileline:latest
     container_name: fileline
     restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      - TMPDIR=/app/chunks
+      - FL_CHUNKS_DIR=/app/chunks
     ports:
       - "8080:8080"
+    tmpfs:
+      - /tmp:mode=1777,size=512m
     volumes:
-      - ./fileline-data:/app
+      - ./fileline-data:/app/data
+      - ./fileline-uploads:/app/uploads
+      - ./fileline-chunks:/app/chunks
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fileline", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

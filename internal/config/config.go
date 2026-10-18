@@ -32,15 +32,16 @@ type Drive struct {
 
 // Config holds the fileline configuration
 type Config struct {
-	DBType       string `json:"db_type"`
-	SQLiteURL    string `json:"sqlite_url"`
-	PostgresURL  string `json:"postgres_url"`
-	Port         int    `json:"port"`
-	SSL          bool   `json:"ssl"`
-	SSLCertPath  string `json:"ssl_cert_path"`
-	SSLKeyPath   string `json:"ssl_key_path"`
-	ReverseProxy bool   `json:"reverse_proxy"`
-	JWTKey       string `json:"jwt_key"`
+	DBType         string   `json:"db_type"`
+	SQLiteURL      string   `json:"sqlite_url"`
+	PostgresURL    string   `json:"postgres_url"`
+	Port           int      `json:"port"`
+	SSL            bool     `json:"ssl"`
+	SSLCertPath    string   `json:"ssl_cert_path"`
+	SSLKeyPath     string   `json:"ssl_key_path"`
+	ReverseProxy   bool     `json:"reverse_proxy"`
+	TrustedProxies []string `json:"trusted_proxies,omitempty"`
+	JWTKey         string   `json:"jwt_key"`
 	// Legacy fields
 	StorageType      string  `json:"storage_type"` // "local" or "s3"
 	LocalStoragePath string  `json:"local_storage_path"`
@@ -54,6 +55,7 @@ type Config struct {
 	MaxUploadSizeMB  int     `json:"max_upload_size_mb"`
 	ChunkThresholdMB int     `json:"chunk_threshold_mb"`
 	ChunkSizeMB      int     `json:"chunk_size_mb"`
+	ChunksDir        string  `json:"chunks_dir,omitempty"`
 	Domain           string  `json:"domain"` // e.g. "localhost:8080" or "fileline.example.com"
 	Theme            string  `json:"theme"`
 	Accent           string  `json:"accent"`
@@ -135,6 +137,15 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 			cfg.ReverseProxy = proxy
 		}
 	}
+	if v, ok := os.LookupEnv("FL_TRUSTED_PROXIES"); ok {
+		var proxies []string
+		for _, p := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				proxies = append(proxies, trimmed)
+			}
+		}
+		cfg.TrustedProxies = proxies
+	}
 	if v, ok := os.LookupEnv("FL_JWT_KEY"); ok {
 		cfg.JWTKey = v
 	}
@@ -181,6 +192,9 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 		if size, err := strconv.Atoi(v); err == nil {
 			cfg.ChunkSizeMB = size
 		}
+	}
+	if v, ok := os.LookupEnv("FL_CHUNKS_DIR"); ok {
+		cfg.ChunksDir = v
 	}
 	if v, ok := os.LookupEnv("FL_THEME"); ok {
 		cfg.Theme = v
@@ -285,4 +299,108 @@ func (c *Config) Save(configPath string) error {
 		return fmt.Errorf("failed to replace config file: %w", err)
 	}
 	return nil
+}
+
+// DriveView is a sanitized representation of Drive safe for rendering into HTML/JS templates
+type DriveView struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Type             string `json:"type"`
+	Enabled          bool   `json:"enabled"`
+	LocalStoragePath string `json:"local_storage_path"`
+	S3Endpoint       string `json:"s3_endpoint"`
+	S3Region         string `json:"s3_region"`
+	S3Bucket         string `json:"s3_bucket"`
+	S3AccessKey      string `json:"s3_access_key"`
+	S3SecretSet      bool   `json:"s3_secret_set"`
+	S3UseSSL         bool   `json:"s3_use_ssl"`
+}
+
+// ConfigView is a dedicated template view-model containing only non-secret configuration fields
+type ConfigView struct {
+	DBType           string      `json:"db_type"`
+	SQLiteURL        string      `json:"sqlite_url"`
+	Port             int         `json:"port"`
+	SSL              bool        `json:"ssl"`
+	ReverseProxy     bool        `json:"reverse_proxy"`
+	StorageType      string      `json:"storage_type"`
+	LocalStoragePath string      `json:"local_storage_path"`
+	S3Endpoint       string      `json:"s3_endpoint"`
+	S3Region         string      `json:"s3_region"`
+	S3Bucket         string      `json:"s3_bucket"`
+	S3AccessKey      string      `json:"s3_access_key"`
+	S3SecretSet      bool        `json:"s3_secret_set"`
+	S3UseSSL         bool        `json:"s3_use_ssl"`
+	Drives           []DriveView `json:"drives"`
+	MaxUploadSizeMB  int         `json:"max_upload_size_mb"`
+	ChunkThresholdMB int         `json:"chunk_threshold_mb"`
+	ChunkSizeMB      int         `json:"chunk_size_mb"`
+	Domain           string      `json:"domain"`
+	Theme            string      `json:"theme"`
+	Accent           string      `json:"accent"`
+	CustomAccentHex  string      `json:"custom_accent_hex"`
+	CustomLogo       string      `json:"custom_logo"`
+	DefaultLanguage  string      `json:"default_language"`
+	BlockIndexing    bool        `json:"block_indexing"`
+	Debug            bool        `json:"debug"`
+	EnvOnly          bool        `json:"-"`
+}
+
+// SanitizedDrives returns a slice of DriveView with S3SecretKey stripped and S3SecretSet populated
+func (c *Config) SanitizedDrives() []DriveView {
+	if c == nil || len(c.Drives) == 0 {
+		return []DriveView{}
+	}
+	views := make([]DriveView, len(c.Drives))
+	for i, d := range c.Drives {
+		views[i] = DriveView{
+			ID:               d.ID,
+			Name:             d.Name,
+			Type:             d.Type,
+			Enabled:          d.Enabled,
+			LocalStoragePath: d.LocalStoragePath,
+			S3Endpoint:       d.S3Endpoint,
+			S3Region:         d.S3Region,
+			S3Bucket:         d.S3Bucket,
+			S3AccessKey:      d.S3AccessKey,
+			S3SecretSet:      d.S3SecretKey != "",
+			S3UseSSL:         d.S3UseSSL,
+		}
+	}
+	return views
+}
+
+// SanitizedView returns a ConfigView stripped of all secrets (JWTKey, S3SecretKey, PostgresURL, and drive secrets)
+func (c *Config) SanitizedView() ConfigView {
+	if c == nil {
+		return ConfigView{}
+	}
+	return ConfigView{
+		DBType:           c.DBType,
+		SQLiteURL:        c.SQLiteURL,
+		Port:             c.Port,
+		SSL:              c.SSL,
+		ReverseProxy:     c.ReverseProxy,
+		StorageType:      c.StorageType,
+		LocalStoragePath: c.LocalStoragePath,
+		S3Endpoint:       c.S3Endpoint,
+		S3Region:         c.S3Region,
+		S3Bucket:         c.S3Bucket,
+		S3AccessKey:      c.S3AccessKey,
+		S3SecretSet:      c.S3SecretKey != "",
+		S3UseSSL:         c.S3UseSSL,
+		Drives:           c.SanitizedDrives(),
+		MaxUploadSizeMB:  c.MaxUploadSizeMB,
+		ChunkThresholdMB: c.ChunkThresholdMB,
+		ChunkSizeMB:      c.ChunkSizeMB,
+		Domain:           c.Domain,
+		Theme:            c.Theme,
+		Accent:           c.Accent,
+		CustomAccentHex:  c.CustomAccentHex,
+		CustomLogo:       c.CustomLogo,
+		DefaultLanguage:  c.DefaultLanguage,
+		BlockIndexing:    c.BlockIndexing,
+		Debug:            c.Debug,
+		EnvOnly:          c.EnvOnly,
+	}
 }

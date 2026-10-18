@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,12 +39,12 @@ type Server struct {
 	setupToken    string
 	tmpls         map[string]*template.Template
 	webAuthn      *webauthn.WebAuthn
-	// Temporary session stores
-	totpTempStore     sync.Map // username -> string (secret)
-	webAuthnTempStore sync.Map // sessionID -> webauthn.SessionData
-	login2FAStore     sync.Map // sessionID -> *twoFASession
+	// Temporary session stores (bounded with TTL and oldest-first eviction)
+	totpTempStore     ttlStore[string, string]               // username -> string (secret)
+	webAuthnTempStore ttlStore[string, webauthn.SessionData] // sessionID -> webauthn.SessionData
+	login2FAStore     ttlStore[string, any]                  // sessionID -> *twoFASession (or string in legacy tests)
 	login2FAMu        sync.Mutex
-	recoveryCodeStore sync.Map // username -> string (newly generated recovery code to display)
+	recoveryCodeStore ttlStore[string, string] // username -> string (newly generated recovery code to display)
 	authLimiter       *authRateLimiter
 	chunkMu           sync.RWMutex
 	chunkUploads      map[string]*ChunkUpload
@@ -61,11 +63,15 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		}
 	}
 	s := &Server{
-		db:           database,
-		cfg:          cfg,
-		authLimiter:  newAuthRateLimiter(),
-		chunkUploads: make(map[string]*ChunkUpload),
-		stopCh:       make(chan struct{}),
+		db:                database,
+		cfg:               cfg,
+		totpTempStore:     newTTLStore[string, string](totpSetupSessionTTL, defaultTTLStoreMaxEntries),
+		webAuthnTempStore: newTTLStore[string, webauthn.SessionData](webAuthnSessionTTL, defaultTTLStoreMaxEntries),
+		login2FAStore:     newTTLStore[string, any](twoFASessionTTL, defaultTTLStoreMaxEntries),
+		recoveryCodeStore: newTTLStore[string, string](recoveryDisplayTTL, defaultTTLStoreMaxEntries),
+		authLimiter:       newAuthRateLimiter(),
+		chunkUploads:      make(map[string]*ChunkUpload),
+		stopCh:            make(chan struct{}),
 	}
 	go s.runBackgroundJanitor()
 	if database != nil {
@@ -218,7 +224,47 @@ func (s *Server) routes() http.Handler {
 	// Main Dashboard route (render.go)
 	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
 
-	return s.recoveryMiddleware(s.loggingMiddleware(s.indexingProtectionMiddleware(s.requestBodyLimitMiddleware(mux))))
+	cop := http.NewCrossOriginProtection()
+	s.mu.RLock()
+	if s.cfg != nil && s.cfg.Domain != "" {
+		schema := "http"
+		if s.cfg.SSL || s.cfg.ReverseProxy {
+			schema = "https"
+		}
+		domain := s.cfg.Domain
+		if !strings.Contains(domain, ":") && !s.cfg.ReverseProxy {
+			if (schema == "http" && s.cfg.Port != 80 && s.cfg.Port > 0) || (schema == "https" && s.cfg.Port != 443 && s.cfg.Port > 0) {
+				domain = fmt.Sprintf("%s:%d", domain, s.cfg.Port)
+			}
+		}
+		_ = cop.AddTrustedOrigin(fmt.Sprintf("%s://%s", schema, domain))
+	}
+	s.mu.RUnlock()
+
+	return s.recoveryMiddleware(s.loggingMiddleware(s.securityHeadersMiddleware(s.indexingProtectionMiddleware(s.requestBodyLimitMiddleware(cop.Handler(mux))))))
+}
+
+const defaultAppCSP = "default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self' data:"
+
+// securityHeadersMiddleware applies standard security headers (CSP, X-Frame-Options, nosniff, HSTS, Referrer-Policy, Permissions-Policy, COOP) to all responses.
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.RLock()
+		hsts := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+		s.mu.RUnlock()
+
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		h.Set("Content-Security-Policy", defaultAppCSP)
+		if hsts {
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // requestBodyLimitMiddleware applies a 1 MB default request body limit to all routes that are not file/chunk upload routes
@@ -381,15 +427,112 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
 
+var defaultTrustedProxyPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("fc00::/7"),
+}
+
+func parsePeerAddr(raw string) (netip.Addr, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return netip.Addr{}, false
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	s = strings.TrimPrefix(strings.TrimSuffix(s, "]"), "[")
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return addr.Unmap(), true
+	}
+	return netip.Addr{}, false
+}
+
+func trustedProxyPrefixes(configured []string) []netip.Prefix {
+	if len(configured) == 0 {
+		return defaultTrustedProxyPrefixes
+	}
+	var prefixes []netip.Prefix
+	for _, entry := range configured {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(entry); err == nil {
+			prefixes = append(prefixes, p)
+			continue
+		}
+		if addr, err := netip.ParseAddr(entry); err == nil {
+			addr = addr.Unmap()
+			prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+		}
+	}
+	return prefixes
+}
+
+func isAddrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
+	addr = addr.Unmap()
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// isTrustedProxyRequest reports whether ReverseProxy is enabled and the direct TCP peer (r.RemoteAddr)
+// belongs to the configured TrustedProxies CIDR list (or private/loopback ranges by default).
+func isTrustedProxyRequest(r *http.Request, cfg *config.Config) bool {
+	if r == nil || cfg == nil || !cfg.ReverseProxy {
+		return false
+	}
+	peerAddr, ok := parsePeerAddr(r.RemoteAddr)
+	if !ok {
+		return false
+	}
+	return isAddrInPrefixes(peerAddr, trustedProxyPrefixes(cfg.TrustedProxies))
+}
+
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.ReverseProxy {
+	if r == nil {
+		return ""
+	}
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+
+	if isTrustedProxyRequest(r, cfg) {
+		prefixes := trustedProxyPrefixes(cfg.TrustedProxies)
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			parts := strings.Split(xff, ",")
-			return strings.TrimSpace(parts[0])
+			var validHops []string
+			for _, part := range parts {
+				if addr, ok := parsePeerAddr(part); ok {
+					validHops = append(validHops, addr.String())
+				}
+			}
+			// Walk right-to-left and return the rightmost untrusted hop
+			for i := len(validHops) - 1; i >= 0; i-- {
+				addr, _ := netip.ParseAddr(validHops[i])
+				if !isAddrInPrefixes(addr, prefixes) {
+					return validHops[i]
+				}
+			}
+			if len(validHops) > 0 {
+				return validHops[0]
+			}
 		}
 		if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-			return strings.TrimSpace(xrip)
+			if addr, ok := parsePeerAddr(xrip); ok {
+				return addr.String()
+			}
 		}
+	}
+	if addr, ok := parsePeerAddr(r.RemoteAddr); ok {
+		return addr.String()
 	}
 	return r.RemoteAddr
 }

@@ -59,6 +59,10 @@
         <!-- Recovery Code -->
         <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 0.5rem;">{{ T .Language "Recovery Code" }}</h3>
         <p class="text-muted" style="margin-bottom: 1rem; font-size: 0.9rem;">{{ T .Language "Use your recovery code to reset your password if you forget it. Generating a new recovery code will replace your previous code." }}</p>
+        <div class="form-group" style="max-width: 360px; margin-bottom: 1rem;">
+            <label for="recovery_current_password">{{ T .Language "Current Password" }}</label>
+            <input type="password" id="recovery_current_password" name="current_password" autocomplete="current-password">
+        </div>
         <button type="button" id="generateRecoveryBtn" class="btn btn-primary" onclick="generateNewRecoveryCode()">
             <i class="bx bx-refresh"></i>
             {{ T .Language "Generate New Recovery Code" }}
@@ -361,20 +365,32 @@
 
     // Recovery Code Generation & Copy Handlers
     async function generateNewRecoveryCode() {
+        const pwInput = document.getElementById('recovery_current_password');
+        const currentPassword = pwInput ? pwInput.value : '';
         try {
             const res = await fetch('/settings/recovery/generate', {
                 method: 'POST',
-                headers: { 'Accept': 'application/json' }
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ current_password: currentPassword })
             });
             if (!res.ok) {
-                throw new Error('{{ T .Language "Failed to generate recovery code" }}');
+                let errMsg = '{{ T .Language "Failed to generate recovery code" }}';
+                try {
+                    const errData = await res.json();
+                    if (errData && errData.error) errMsg = errData.error;
+                } catch (_) {}
+                throw new Error(errMsg);
             }
             const data = await res.json();
+            if (pwInput) pwInput.value = '';
             document.getElementById('generatedRecoveryCodeText').innerText = data.recovery_code;
             document.getElementById('recoveryCodeArea').style.display = 'block';
         } catch (err) {
             console.error('Failed to generate recovery code:', err);
-            showAlertModal('{{ T .Language "Error" }}', '{{ T .Language "Failed to generate recovery code" }}');
+            showAlertModal('{{ T .Language "Error" }}', err.message || '{{ T .Language "Failed to generate recovery code" }}');
         }
     }
 
