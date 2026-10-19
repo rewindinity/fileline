@@ -200,17 +200,20 @@ func isValidLogoMagicBytes(ext string, blob []byte) bool {
 	case ".jpg", ".jpeg":
 		return len(blob) >= 3 && blob[0] == 0xff && blob[1] == 0xd8 && blob[2] == 0xff
 	case ".svg":
-		sample := blob
-		if len(sample) > 4096 {
-			sample = sample[:4096]
-		}
-		trimmed := strings.TrimSpace(strings.ToLower(string(sample)))
+		trimmed := strings.TrimSpace(strings.ToLower(string(blob)))
 		if !strings.Contains(trimmed, "<svg") {
 			return false
 		}
-		// Reject SVG logos containing script tags or inline event handlers
-		if strings.Contains(trimmed, "<script") || strings.Contains(trimmed, "javascript:") || strings.Contains(trimmed, "onload=") || strings.Contains(trimmed, "onerror=") {
-			return false
+		// Reject SVG logos containing script tags, foreignObject, animations, or inline event handlers
+		forbidden := []string{
+			"<script", "</script", "javascript:", "onload", "onerror",
+			"onclick", "onmouseover", "onfocus", "onblur", "onpointer",
+			"<animate", "<set", "<foreignobject", "<use", "<handler",
+		}
+		for _, f := range forbidden {
+			if strings.Contains(trimmed, f) {
+				return false
+			}
 		}
 		return true
 	default:

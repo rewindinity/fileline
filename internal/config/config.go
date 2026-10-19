@@ -28,20 +28,23 @@ type Drive struct {
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
+	AllowInsecureS3  bool   `json:"allow_insecure_s3_dev"`
 }
 
 // Config holds the fileline configuration
 type Config struct {
-	DBType         string   `json:"db_type"`
-	SQLiteURL      string   `json:"sqlite_url"`
-	PostgresURL    string   `json:"postgres_url"`
-	Port           int      `json:"port"`
-	SSL            bool     `json:"ssl"`
-	SSLCertPath    string   `json:"ssl_cert_path"`
-	SSLKeyPath     string   `json:"ssl_key_path"`
-	ReverseProxy   bool     `json:"reverse_proxy"`
-	TrustedProxies []string `json:"trusted_proxies,omitempty"`
-	JWTKey         string   `json:"jwt_key"`
+	DBType            string   `json:"db_type"`
+	SQLiteURL         string   `json:"sqlite_url"`
+	PostgresURL       string   `json:"postgres_url"`
+	Port              int      `json:"port"`
+	SSL               bool     `json:"ssl"`
+	AllowInsecureHTTP bool     `json:"allow_insecure_http_dev"`
+	SSLCertPath       string   `json:"ssl_cert_path"`
+	SSLKeyPath        string   `json:"ssl_key_path"`
+	ReverseProxy      bool     `json:"reverse_proxy"`
+	TrustedProxies    []string `json:"trusted_proxies,omitempty"`
+	JWTKey            string   `json:"jwt_key"`
+	DataKey           string   `json:"data_key,omitempty"`
 	// Legacy fields
 	StorageType      string  `json:"storage_type"` // "local" or "s3"
 	LocalStoragePath string  `json:"local_storage_path"`
@@ -51,6 +54,7 @@ type Config struct {
 	S3AccessKey      string  `json:"s3_access_key"`
 	S3SecretKey      string  `json:"s3_secret_key"`
 	S3UseSSL         bool    `json:"s3_use_ssl"`
+	AllowInsecureS3  bool    `json:"allow_insecure_s3_dev"`
 	Drives           []Drive `json:"drives"`
 	MaxUploadSizeMB  int     `json:"max_upload_size_mb"`
 	ChunkThresholdMB int     `json:"chunk_threshold_mb"`
@@ -76,6 +80,7 @@ func DefaultConfig() Config {
 		SSL:              false,
 		ReverseProxy:     false,
 		JWTKey:           "", // never hard-coded; see EnsureJWTKey
+		DataKey:          "", // never hard-coded; see EnsureDataKey
 		StorageType:      "local",
 		LocalStoragePath: "./uploads",
 		Domain:           "localhost",
@@ -94,13 +99,34 @@ func DefaultConfig() Config {
 }
 
 // Load reads config from configPath (unless envOnly is true), then applies FL_* environment variable overrides.
+// If config.json does not exist and envOnly is false, it is automatically generated with secure random keys.
 func Load(configPath string, envOnly bool) (*Config, error) {
+	if v, ok := os.LookupEnv("FL_ENV_ONLY"); ok {
+		if b, err := strconv.ParseBool(v); err == nil && b {
+			envOnly = true
+		}
+	}
 	cfg := DefaultConfig()
 	cfg.EnvOnly = envOnly
 	if !envOnly && configPath != "" {
 		file, err := os.ReadFile(configPath)
 		if err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Generate config with random secrets; database settings are skipped (db_type: "")
+				jwtKey, genErr := GenerateJWTKey()
+				if genErr != nil {
+					return nil, fmt.Errorf("failed to generate random JWT key: %w", genErr)
+				}
+				dataKey, genErr := GenerateDataKey()
+				if genErr != nil {
+					return nil, fmt.Errorf("failed to generate random data key: %w", genErr)
+				}
+				cfg.JWTKey = jwtKey
+				cfg.DataKey = dataKey
+				if saveErr := cfg.Save(configPath); saveErr != nil {
+					return nil, fmt.Errorf("failed to save generated config file: %w", saveErr)
+				}
+			} else {
 				return nil, fmt.Errorf("failed to read config file: %w", err)
 			}
 		} else {
@@ -108,9 +134,19 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
 			cfg.EnvOnly = envOnly
+			// Ensure secrets are populated in existing config files
+			if err := cfg.EnsureJWTKey(configPath); err != nil {
+				return nil, err
+			}
+			if err := cfg.EnsureDataKey(configPath); err != nil {
+				return nil, err
+			}
 		}
 	}
 	// Override with environment variables
+	if v, ok := os.LookupEnv("FL_DATA_KEY"); ok && strings.TrimSpace(v) != "" {
+		cfg.DataKey = strings.TrimSpace(v)
+	}
 	if v, ok := os.LookupEnv("FL_DB_TYPE"); ok {
 		cfg.DBType = v
 	}
@@ -128,6 +164,11 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	if v, ok := os.LookupEnv("FL_SSL"); ok {
 		if ssl, err := strconv.ParseBool(v); err == nil {
 			cfg.SSL = ssl
+		}
+	}
+	if v, ok := os.LookupEnv("FL_ALLOW_INSECURE_HTTP"); ok {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.AllowInsecureHTTP = enabled
 		}
 	}
 	if v, ok := os.LookupEnv("FL_SSL_CERT_PATH"); ok {
@@ -177,6 +218,11 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	if v, ok := os.LookupEnv("FL_S3_USE_SSL"); ok {
 		if ssl, err := strconv.ParseBool(v); err == nil {
 			cfg.S3UseSSL = ssl
+		}
+	}
+	if v, ok := os.LookupEnv("FL_ALLOW_INSECURE_S3"); ok {
+		if enabled, err := strconv.ParseBool(v); err == nil {
+			cfg.AllowInsecureS3 = enabled
 		}
 	}
 	if v, ok := os.LookupEnv("FL_DOMAIN"); ok {
@@ -276,6 +322,38 @@ func (c *Config) EnsureJWTKey(configPath string) error {
 	return nil
 }
 
+// MinDataKeyLength is the minimum accepted length (in bytes) of a data encryption key
+const MinDataKeyLength = 32
+
+// GenerateDataKey generates a new cryptographically random 256-bit (32-byte) key, base64url-encoded
+func GenerateDataKey() (string, error) {
+	b := make([]byte, MinDataKeyLength)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate random data key: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// EnsureDataKey verifies that DataKey is present. If not configured and not in EnvOnly mode,
+// a random 256-bit key is generated and persisted to configPath.
+func (c *Config) EnsureDataKey(configPath string) error {
+	if strings.TrimSpace(c.DataKey) != "" {
+		return nil
+	}
+	if c.EnvOnly {
+		return nil
+	}
+	key, err := GenerateDataKey()
+	if err != nil {
+		return err
+	}
+	c.DataKey = key
+	if configPath != "" {
+		return c.Save(configPath)
+	}
+	return nil
+}
+
 // Save writes the current configuration atomically to configPath with mode 0600
 func (c *Config) Save(configPath string) error {
 	if c.EnvOnly || configPath == "" {
@@ -340,34 +418,36 @@ type DriveView struct {
 
 // ConfigView is a dedicated template view-model containing only non-secret configuration fields
 type ConfigView struct {
-	DBType           string      `json:"db_type"`
-	SQLiteURL        string      `json:"sqlite_url"`
-	Port             int         `json:"port"`
-	SSL              bool        `json:"ssl"`
-	ReverseProxy     bool        `json:"reverse_proxy"`
-	StorageType      string      `json:"storage_type"`
-	LocalStoragePath string      `json:"local_storage_path"`
-	S3Endpoint       string      `json:"s3_endpoint"`
-	S3Region         string      `json:"s3_region"`
-	S3Bucket         string      `json:"s3_bucket"`
-	S3AccessKey      string      `json:"s3_access_key"`
-	S3SecretSet      bool        `json:"s3_secret_set"`
-	S3UseSSL         bool        `json:"s3_use_ssl"`
-	Drives           []DriveView `json:"drives"`
-	MaxUploadSizeMB  int         `json:"max_upload_size_mb"`
-	ChunkThresholdMB int         `json:"chunk_threshold_mb"`
-	ChunkSizeMB      int         `json:"chunk_size_mb"`
-	Domain           string      `json:"domain"`
-	Theme            string      `json:"theme"`
-	Accent           string      `json:"accent"`
-	CustomAccentHex  string      `json:"custom_accent_hex"`
-	CustomLogo       string      `json:"custom_logo"`
-	DefaultLanguage  string      `json:"default_language"`
-	BlockIndexing    bool        `json:"block_indexing"`
-	Debug            bool        `json:"debug"`
-	GzipEnabled      bool        `json:"gzip_enabled"`
-	MinifyResponses  bool        `json:"minify_responses"`
-	EnvOnly          bool        `json:"-"`
+	DBType            string      `json:"db_type"`
+	SQLiteURL         string      `json:"sqlite_url"`
+	Port              int         `json:"port"`
+	SSL               bool        `json:"ssl"`
+	AllowInsecureHTTP bool        `json:"allow_insecure_http_dev"`
+	ReverseProxy      bool        `json:"reverse_proxy"`
+	StorageType       string      `json:"storage_type"`
+	LocalStoragePath  string      `json:"local_storage_path"`
+	S3Endpoint        string      `json:"s3_endpoint"`
+	S3Region          string      `json:"s3_region"`
+	S3Bucket          string      `json:"s3_bucket"`
+	S3AccessKey       string      `json:"s3_access_key"`
+	S3SecretSet       bool        `json:"s3_secret_set"`
+	S3UseSSL          bool        `json:"s3_use_ssl"`
+	AllowInsecureS3   bool        `json:"allow_insecure_s3_dev"`
+	Drives            []DriveView `json:"drives"`
+	MaxUploadSizeMB   int         `json:"max_upload_size_mb"`
+	ChunkThresholdMB  int         `json:"chunk_threshold_mb"`
+	ChunkSizeMB       int         `json:"chunk_size_mb"`
+	Domain            string      `json:"domain"`
+	Theme             string      `json:"theme"`
+	Accent            string      `json:"accent"`
+	CustomAccentHex   string      `json:"custom_accent_hex"`
+	CustomLogo        string      `json:"custom_logo"`
+	DefaultLanguage   string      `json:"default_language"`
+	BlockIndexing     bool        `json:"block_indexing"`
+	Debug             bool        `json:"debug"`
+	GzipEnabled       bool        `json:"gzip_enabled"`
+	MinifyResponses   bool        `json:"minify_responses"`
+	EnvOnly           bool        `json:"-"`
 }
 
 // SanitizedDrives returns a slice of DriveView with S3SecretKey stripped and S3SecretSet populated
@@ -400,33 +480,35 @@ func (c *Config) SanitizedView() ConfigView {
 		return ConfigView{}
 	}
 	return ConfigView{
-		DBType:           c.DBType,
-		SQLiteURL:        c.SQLiteURL,
-		Port:             c.Port,
-		SSL:              c.SSL,
-		ReverseProxy:     c.ReverseProxy,
-		StorageType:      c.StorageType,
-		LocalStoragePath: c.LocalStoragePath,
-		S3Endpoint:       c.S3Endpoint,
-		S3Region:         c.S3Region,
-		S3Bucket:         c.S3Bucket,
-		S3AccessKey:      c.S3AccessKey,
-		S3SecretSet:      c.S3SecretKey != "",
-		S3UseSSL:         c.S3UseSSL,
-		Drives:           c.SanitizedDrives(),
-		MaxUploadSizeMB:  c.MaxUploadSizeMB,
-		ChunkThresholdMB: c.ChunkThresholdMB,
-		ChunkSizeMB:      c.ChunkSizeMB,
-		Domain:           c.Domain,
-		Theme:            c.Theme,
-		Accent:           c.Accent,
-		CustomAccentHex:  c.CustomAccentHex,
-		CustomLogo:       c.CustomLogo,
-		DefaultLanguage:  c.DefaultLanguage,
-		BlockIndexing:    c.BlockIndexing,
-		Debug:            c.Debug,
-		GzipEnabled:      c.GzipEnabled,
-		MinifyResponses:  c.MinifyResponses,
-		EnvOnly:          c.EnvOnly,
+		DBType:            c.DBType,
+		SQLiteURL:         c.SQLiteURL,
+		Port:              c.Port,
+		SSL:               c.SSL,
+		AllowInsecureHTTP: c.AllowInsecureHTTP,
+		ReverseProxy:      c.ReverseProxy,
+		StorageType:       c.StorageType,
+		LocalStoragePath:  c.LocalStoragePath,
+		S3Endpoint:        c.S3Endpoint,
+		S3Region:          c.S3Region,
+		S3Bucket:          c.S3Bucket,
+		S3AccessKey:       c.S3AccessKey,
+		S3SecretSet:       c.S3SecretKey != "",
+		S3UseSSL:          c.S3UseSSL,
+		AllowInsecureS3:   c.AllowInsecureS3,
+		Drives:            c.SanitizedDrives(),
+		MaxUploadSizeMB:   c.MaxUploadSizeMB,
+		ChunkThresholdMB:  c.ChunkThresholdMB,
+		ChunkSizeMB:       c.ChunkSizeMB,
+		Domain:            c.Domain,
+		Theme:             c.Theme,
+		Accent:            c.Accent,
+		CustomAccentHex:   c.CustomAccentHex,
+		CustomLogo:        c.CustomLogo,
+		DefaultLanguage:   c.DefaultLanguage,
+		BlockIndexing:     c.BlockIndexing,
+		Debug:             c.Debug,
+		GzipEnabled:       c.GzipEnabled,
+		MinifyResponses:   c.MinifyResponses,
+		EnvOnly:           c.EnvOnly,
 	}
 }

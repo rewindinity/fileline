@@ -9,7 +9,64 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+type blockingReader struct {
+	started chan<- struct{}
+	release <-chan struct{}
+	sent    bool
+}
+
+func (r *blockingReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		close(r.started)
+		<-r.release
+		p[0] = 'x'
+		return 1, io.EOF
+	}
+	return 0, io.EOF
+}
+
+func TestLocalStagedCommitWaitsForActiveWriter(t *testing.T) {
+	p, err := NewLocalProvider(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalProvider failed: %v", err)
+	}
+	ctx := context.Background()
+	staged, err := p.CreateStaged(ctx, "UPLOAD_WAIT_123", "OBJECT_WAIT_123", 1, 1)
+	if err != nil {
+		t.Fatalf("CreateStaged failed: %v", err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	writeDone := make(chan error, 1)
+	go func() {
+		_, writeErr := staged.WriteChunk(ctx, 0, 0, &blockingReader{started: started, release: release}, 1)
+		writeDone <- writeErr
+	}()
+	<-started
+
+	commitDone := make(chan error, 1)
+	go func() {
+		commitDone <- staged.Commit(ctx, "OBJECT_WAIT_123", 1)
+	}()
+	select {
+	case err := <-commitDone:
+		t.Fatalf("commit completed while writer was active: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-writeDone; err != nil {
+		t.Fatalf("WriteChunk failed: %v", err)
+	}
+	if err := <-commitDone; err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+}
 
 func TestLocalProvider_SaveGetDelete(t *testing.T) {
 	base := t.TempDir()
@@ -169,17 +226,17 @@ func TestLocalProvider_StagedChunkUploadAndCommit(t *testing.T) {
 	}
 
 	// Write chunks out of order: chunk 1, then chunk 0, then chunk 2
-	n1, err := staged.WriteChunk(1, chunkSize, bytes.NewReader(chunk1), chunkSize)
+	n1, err := staged.WriteChunk(ctx, 1, chunkSize, bytes.NewReader(chunk1), chunkSize)
 	if err != nil || n1 != int64(len(chunk1)) {
 		t.Fatalf("WriteChunk(1) failed: n=%d err=%v", n1, err)
 	}
 
-	n0, err := staged.WriteChunk(0, 0, bytes.NewReader(chunk0), chunkSize)
+	n0, err := staged.WriteChunk(ctx, 0, 0, bytes.NewReader(chunk0), chunkSize)
 	if err != nil || n0 != int64(len(chunk0)) {
 		t.Fatalf("WriteChunk(0) failed: n=%d err=%v", n0, err)
 	}
 
-	n2, err := staged.WriteChunk(2, chunkSize*2, bytes.NewReader(chunk2), chunkSize)
+	n2, err := staged.WriteChunk(ctx, 2, chunkSize*2, bytes.NewReader(chunk2), chunkSize)
 	if err != nil || n2 != int64(len(chunk2)) {
 		t.Fatalf("WriteChunk(2) failed: n=%d err=%v", n2, err)
 	}
@@ -220,7 +277,7 @@ func TestLocalProvider_StagedChunkUploadAndCommit(t *testing.T) {
 	if _, err := os.Stat(abortTempPath); err != nil {
 		t.Fatalf("expected temp file to exist: %v", err)
 	}
-	if err := abortStaged.Abort(); err != nil {
+	if err := abortStaged.Abort(ctx); err != nil {
 		t.Fatalf("Abort failed: %v", err)
 	}
 	if _, err := os.Stat(abortTempPath); !errors.Is(err, os.ErrNotExist) {

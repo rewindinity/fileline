@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -370,6 +371,9 @@ func (s *Server) Start() error {
 		logger.Info("Server listening on https://localhost:%d", s.cfg.Port)
 		return s.httpServer.ListenAndServeTLS(s.cfg.SSLCertPath, s.cfg.SSLKeyPath)
 	}
+	if !s.cfg.ReverseProxy && !s.cfg.AllowInsecureHTTP && !s.cfg.Debug && s.cfg.Domain != "localhost" && s.cfg.Domain != "127.0.0.1" {
+		return fmt.Errorf("refusing to serve HTTP without TLS; configure SSL, ReverseProxy, or the development-only AllowInsecureHTTP option")
+	}
 	logger.Info("Server listening on http://localhost:%d", s.cfg.Port)
 	return s.httpServer.ListenAndServe()
 }
@@ -532,7 +536,10 @@ func (s *Server) EnableSetupToken() string {
 	s.setupMu.Lock()
 	defer s.setupMu.Unlock()
 	if s.setupToken == "" {
-		s.setupToken = newUploadID()
+		s.setupToken = strings.TrimSpace(os.Getenv("FL_SETUP_TOKEN"))
+		if s.setupToken == "" {
+			s.setupToken = newUploadID()
+		}
 	}
 	return s.setupToken
 }
@@ -617,15 +624,6 @@ func (rw *responseWriter) Unwrap() http.ResponseWriter {
 	return rw.ResponseWriter
 }
 
-var defaultTrustedProxyPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("::1/128"),
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("fc00::/7"),
-}
-
 func parsePeerAddr(raw string) (netip.Addr, bool) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -642,9 +640,6 @@ func parsePeerAddr(raw string) (netip.Addr, bool) {
 }
 
 func trustedProxyPrefixes(configured []string) []netip.Prefix {
-	if len(configured) == 0 {
-		return defaultTrustedProxyPrefixes
-	}
 	var prefixes []netip.Prefix
 	for _, entry := range configured {
 		entry = strings.TrimSpace(entry)
@@ -674,7 +669,7 @@ func isAddrInPrefixes(addr netip.Addr, prefixes []netip.Prefix) bool {
 }
 
 // isTrustedProxyRequest reports whether ReverseProxy is enabled and the direct TCP peer (r.RemoteAddr)
-// belongs to the configured TrustedProxies CIDR list (or private/loopback ranges by default).
+// belongs to the explicitly configured TrustedProxies CIDR list.
 func isTrustedProxyRequest(r *http.Request, cfg *config.Config) bool {
 	if r == nil || cfg == nil || !cfg.ReverseProxy {
 		return false
@@ -743,13 +738,17 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 				}
 			}
 			if username == "" && !holder.checked {
-				if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
-					if u, ok := s.parseJWTUsername(cookie.Value); ok {
-						username = u
+				path := r.URL.Path
+				isStaticOrProbe := strings.HasPrefix(path, "/static/") || path == "/logo" || path == "/favicon.ico" || path == "/health" || path == "/robots.txt"
+				if !isStaticOrProbe {
+					if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
+						if claims, ok := s.parseSessionClaims(cookie.Value); ok {
+							username = claims.Username
+						}
 					}
 				}
 			}
-			logger.HTTP(r.Method, r.URL.RequestURI(), rw.statusCode, duration, s.clientIP(r), username)
+			logger.HTTP(r.Method, r.URL.Path, rw.statusCode, duration, s.clientIP(r), username)
 		}()
 
 		next.ServeHTTP(rw, r)

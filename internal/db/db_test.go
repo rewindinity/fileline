@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -895,4 +896,58 @@ func BenchmarkParseDBTime(b *testing.B) {
 			}
 		}
 	})
+}
+
+func TestTOTPEncryptionDecryption(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXP"
+	encrypted, err := EncryptTOTPSecret(secret)
+	if err != nil {
+		t.Fatalf("EncryptTOTPSecret failed: %v", err)
+	}
+	if !strings.HasPrefix(encrypted, totpEncryptedPrefix) {
+		t.Fatalf("expected encrypted prefix %s, got: %s", totpEncryptedPrefix, encrypted)
+	}
+	decrypted, err := DecryptTOTPSecret(encrypted)
+	if err != nil {
+		t.Fatalf("DecryptTOTPSecret failed: %v", err)
+	}
+	if decrypted != secret {
+		t.Fatalf("expected %s, got %s", secret, decrypted)
+	}
+
+	// Legacy unencrypted secret should be returned as-is
+	legacy, err := DecryptTOTPSecret(secret)
+	if err != nil || legacy != secret {
+		t.Fatalf("expected legacy secret %s, got %s, err: %v", secret, legacy, err)
+	}
+}
+
+func TestSetDataKey(t *testing.T) {
+	SetDataKey("custom-configured-data-key-1234567890123456")
+	secret := "MYSECRETBASE32KEY"
+	encrypted, err := EncryptTOTPSecret(secret)
+	if err != nil {
+		t.Fatalf("EncryptTOTPSecret failed: %v", err)
+	}
+	decrypted, err := DecryptTOTPSecret(encrypted)
+	if err != nil {
+		t.Fatalf("DecryptTOTPSecret failed: %v", err)
+	}
+	if decrypted != secret {
+		t.Fatalf("expected %s, got %s", secret, decrypted)
+	}
+
+	// Change key -> decryption of old cipher text must fail
+	SetDataKey("different-key-1234567890123456789012345678")
+	_, err = DecryptTOTPSecret(encrypted)
+	if err == nil {
+		t.Fatalf("expected decryption failure with different key, got nil")
+	}
+
+	// Restore original key -> decryption succeeds again
+	SetDataKey("custom-configured-data-key-1234567890123456")
+	restored, err := DecryptTOTPSecret(encrypted)
+	if err != nil || restored != secret {
+		t.Fatalf("expected successful decryption after restoring key, got %q, err: %v", restored, err)
+	}
 }

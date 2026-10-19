@@ -17,36 +17,57 @@ import (
 const totpEncryptedPrefix = "enc:v1:"
 
 var (
+	configuredDataKeyMu sync.RWMutex
+	configuredDataKey   string
 	fallbackDataKeyOnce sync.Once
 	fallbackDataKey     [32]byte
 )
 
-// resolveDataKey returns a 32-byte AES-256 key derived from FL_DATA_KEY when set,
-// or a process-local random 256-bit key when FL_DATA_KEY is not configured.
-func resolveDataKey() [32]byte {
+// SetDataKey sets the in-memory data encryption key loaded from configuration.
+func SetDataKey(k string) {
+	configuredDataKeyMu.Lock()
+	defer configuredDataKeyMu.Unlock()
+	configuredDataKey = strings.TrimSpace(k)
+}
+
+func resolveDataKey() ([32]byte, error) {
 	raw := strings.TrimSpace(os.Getenv("FL_DATA_KEY"))
+	if raw == "" {
+		configuredDataKeyMu.RLock()
+		raw = configuredDataKey
+		configuredDataKeyMu.RUnlock()
+	}
 	if raw != "" {
 		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
 			var k [32]byte
 			copy(k[:], decoded)
-			return k
+			return k, nil
 		}
 		if decoded, err := base64.RawURLEncoding.DecodeString(raw); err == nil && len(decoded) == 32 {
 			var k [32]byte
 			copy(k[:], decoded)
-			return k
+			return k, nil
 		}
 		if decoded, err := hex.DecodeString(raw); err == nil && len(decoded) == 32 {
 			var k [32]byte
 			copy(k[:], decoded)
-			return k
+			return k, nil
 		}
-		return sha256.Sum256([]byte("fileline-totp-key-v1:" + raw))
+		return sha256.Sum256([]byte("fileline-totp-key-v1:" + raw)), nil
 	}
+
 	fallbackDataKeyOnce.Do(func() {
-		_, _ = io.ReadFull(rand.Reader, fallbackDataKey[:])
+		keyPath := "data/data.key"
+		if data, err := os.ReadFile(keyPath); err == nil && len(data) == 32 {
+			copy(fallbackDataKey[:], data)
+			return
+		}
+		if _, err := io.ReadFull(rand.Reader, fallbackDataKey[:]); err == nil {
+			_ = os.MkdirAll("data", 0o750)
+			_ = os.WriteFile(keyPath, fallbackDataKey[:], 0o600)
+		}
 	})
-	return fallbackDataKey
+	return fallbackDataKey, nil
 }
 
 // EncryptTOTPSecret encrypts a plaintext TOTP secret using AES-256-GCM.
@@ -54,7 +75,10 @@ func EncryptTOTPSecret(plaintext string) (string, error) {
 	if plaintext == "" || strings.HasPrefix(plaintext, totpEncryptedPrefix) {
 		return plaintext, nil
 	}
-	key := resolveDataKey()
+	key, err := resolveDataKey()
+	if err != nil {
+		return "", err
+	}
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err
@@ -84,7 +108,10 @@ func DecryptTOTPSecret(stored string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid encrypted TOTP secret encoding: %w", err)
 	}
-	key := resolveDataKey()
+	key, err := resolveDataKey()
+	if err != nil {
+		return "", err
+	}
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return "", err

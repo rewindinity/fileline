@@ -362,6 +362,7 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Too many concurrent upload sessions", http.StatusTooManyRequests)
 		return
 	}
+	s.chunkMu.Unlock()
 
 	uploadID := newUploadID()
 	storageKey := newStorageKey()
@@ -372,7 +373,6 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 
 	staged, err := s.createStagedUpload(r.Context(), st, uploadID, storageKey, req.TotalSize, chunkSize)
 	if err != nil {
-		s.chunkMu.Unlock()
 		s.internalError(w, r, "Failed to initialize staged upload", err)
 		return
 	}
@@ -395,6 +395,8 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:    now,
 		Staged:       staged,
 	}
+
+	s.chunkMu.Lock()
 	s.chunkUploads[uploadID] = upload
 	s.chunkMu.Unlock()
 
@@ -546,7 +548,7 @@ streamChunk:
 	upload.mu.Unlock()
 
 	offset := int64(chunkIndex) * upload.ChunkSize
-	written, copyErr := upload.Staged.WriteChunk(chunkIndex, offset, chunkReader, chunkLimit)
+	written, copyErr := upload.Staged.WriteChunk(r.Context(), chunkIndex, offset, chunkReader, chunkLimit)
 	if copyErr != nil {
 		if isMaxBytesError(copyErr) {
 			http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
@@ -656,7 +658,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 
 	if upload.BytesReceived != upload.TotalSize {
 		if upload.Staged != nil {
-			_ = upload.Staged.Abort()
+			_ = upload.Staged.Abort(r.Context())
 		}
 		http.Error(w, "Assembled file size does not match declared total size", http.StatusBadRequest)
 		return
@@ -664,7 +666,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 
 	if maxSize > 0 && actualSize > maxSize {
 		if upload.Staged != nil {
-			_ = upload.Staged.Abort()
+			_ = upload.Staged.Abort(r.Context())
 		}
 		http.Error(w, "Assembled file exceeds maximum allowed size", http.StatusBadRequest)
 		return
@@ -674,7 +676,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
 		if total+actualSize > int64(user.StorageQuotaMB)*1024*1024 {
 			if upload.Staged != nil {
-				_ = upload.Staged.Abort()
+				_ = upload.Staged.Abort(r.Context())
 			}
 			logger.Action("User '%s' chunked upload complete rejected: quota exceeded for file '%s' (%s)", user.Username, upload.OriginalName, logger.FormatBytes(actualSize))
 			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
@@ -749,7 +751,7 @@ func (s *Server) cleanupExpiredUploads(now time.Time) {
 	s.chunkMu.Unlock()
 	for _, u := range expiredUploads {
 		if u.Staged != nil {
-			_ = u.Staged.Abort()
+			_ = u.Staged.Abort(context.Background())
 		}
 		_ = removeChunkUploadDir(u.ID)
 	}

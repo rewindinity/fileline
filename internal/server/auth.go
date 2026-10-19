@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,7 +32,9 @@ import (
 // Helper for random session identifiers
 func generateRandomSessionID() string {
 	b := make([]byte, 16)
-	rand.Read(b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		return rand.Text()
+	}
 	return hex.EncodeToString(b)
 }
 
@@ -267,14 +270,23 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) setJWTCookie(w http.ResponseWriter, username string) {
-	s.mu.Lock()
-	if !config.IsValidJWTKey(s.cfg.JWTKey) {
-		_ = s.cfg.EnsureJWTKey("config.json")
-	}
+	s.mu.RLock()
 	key := s.cfg.JWTKey
 	secure := s.cfg.SSL || s.cfg.ReverseProxy
 	database := s.db
-	s.mu.Unlock()
+	needsEnsure := !config.IsValidJWTKey(key)
+	s.mu.RUnlock()
+
+	if needsEnsure {
+		s.mu.Lock()
+		if !config.IsValidJWTKey(s.cfg.JWTKey) {
+			_ = s.cfg.EnsureJWTKey("config.json")
+		}
+		key = s.cfg.JWTKey
+		secure = s.cfg.SSL || s.cfg.ReverseProxy
+		database = s.db
+		s.mu.Unlock()
+	}
 
 	ver := 0
 	if database != nil {
@@ -400,7 +412,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			"Config":       &cfgCopy,
 			"DBConfigured": dbConfigured,
 			"RequireToken": requireToken,
-			"SetupToken":   r.URL.Query().Get("token"),
+			"SetupToken":   "",
 		})
 		return
 	}
@@ -419,9 +431,6 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 		// Verify one-time setup token when enabled (constant-time comparison)
 		if requireToken {
 			supplied := strings.TrimSpace(r.FormValue("setup_token"))
-			if supplied == "" {
-				supplied = strings.TrimSpace(r.URL.Query().Get("token"))
-			}
 			if subtle.ConstantTimeCompare([]byte(supplied), []byte(s.setupToken)) != 1 {
 				logger.Action("Rejected setup attempt from %s: invalid setup token", s.clientIP(r))
 				w.WriteHeader(http.StatusForbidden)
@@ -647,9 +656,20 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		clientIP := s.clientIP(r)
 		lim := s.limiter()
 		userKey := authRateKey("login", clientIP, username)
+		accountKey := authRateKey("login-account", "", username)
 		ipKey := authRateKey("login-ip", clientIP, "*")
 
 		if blocked, retry := lim.check(userKey, now); blocked {
+			setRetryAfterHeader(w, retry)
+			w.WriteHeader(http.StatusTooManyRequests)
+			s.renderTemplate(w, r, "login.html", map[string]interface{}{
+				"Title":  "Login",
+				"Config": s.cfg,
+				"Error":  "Too many failed login attempts. Please try again later.",
+			})
+			return
+		}
+		if blocked, retry := lim.check(accountKey, now); blocked {
 			setRetryAfterHeader(w, retry)
 			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
@@ -678,9 +698,13 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 			// Run a dummy bcrypt comparison so response timing does not reveal whether the username exists.
 			_ = bcrypt.CompareHashAndPassword(getDummyPasswordHash(), []byte(password))
 			_, blockedUser, retryUser := lim.recordFailure(userKey, now, loginMaxAttempts, loginWindow, loginWindow)
+			_, blockedAccount, retryAccount := lim.recordFailure(accountKey, now, loginMaxAttempts*2, loginWindow, loginWindow)
 			_, blockedIP, retryIP := lim.recordFailure(ipKey, now, loginMaxAttempts*2, loginWindow, loginWindow)
-			if blockedUser || blockedIP {
+			if blockedUser || blockedAccount || blockedIP {
 				retry := retryUser
+				if retryAccount > retry {
+					retry = retryAccount
+				}
 				if retryIP > retry {
 					retry = retryIP
 				}
@@ -704,9 +728,13 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 			_, blockedUser, retryUser := lim.recordFailure(userKey, now, loginMaxAttempts, loginWindow, loginWindow)
+			_, blockedAccount, retryAccount := lim.recordFailure(accountKey, now, loginMaxAttempts*2, loginWindow, loginWindow)
 			_, blockedIP, retryIP := lim.recordFailure(ipKey, now, loginMaxAttempts*2, loginWindow, loginWindow)
-			if blockedUser || blockedIP {
+			if blockedUser || blockedAccount || blockedIP {
 				retry := retryUser
+				if retryAccount > retry {
+					retry = retryAccount
+				}
 				if retryIP > retry {
 					retry = retryIP
 				}
@@ -730,6 +758,7 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		lim.reset(userKey)
+		lim.reset(accountKey)
 		lim.reset(ipKey)
 
 		// Generate recovery code on first login if not yet generated (e.g. for subusers)

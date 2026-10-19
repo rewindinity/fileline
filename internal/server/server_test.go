@@ -4511,7 +4511,7 @@ func BenchmarkPerf06_ChunkWriteAtDirectVsThreePhaseAssembly(b *testing.B) {
 			}
 			for c := 0; c < numChunks; c++ {
 				offset := int64(c) * chunkSize
-				_, err := staged.WriteChunk(c, offset, bytes.NewReader(chunkData), chunkSize)
+				_, err := staged.WriteChunk(context.Background(), c, offset, bytes.NewReader(chunkData), chunkSize)
 				if err != nil {
 					b.Fatalf("WriteChunk: %v", err)
 				}
@@ -4964,6 +4964,19 @@ func TestEmbeddedAssetsAndStaticServing(t *testing.T) {
 	if !strings.Contains(logoRR.Body.String(), "<svg") {
 		t.Errorf("GET /logo body did not contain '<svg'")
 	}
+	if csp := logoRR.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") {
+		t.Errorf("GET /logo missing sandbox CSP, got: %q", csp)
+	}
+
+	// Verify path traversal in custom logo is neutralized
+	srv.cfg.CustomLogo = "../../../../etc/passwd"
+	traversalReq := httptest.NewRequest("GET", "/logo", nil)
+	traversalRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(traversalRR, traversalReq)
+	if !strings.Contains(traversalRR.Body.String(), "<svg") {
+		t.Errorf("expected fallback to default logo on path traversal, got: %s", traversalRR.Body.String())
+	}
+	srv.cfg.CustomLogo = "/static/logo.svg"
 
 	faviconReq := httptest.NewRequest("GET", "/favicon.ico", nil)
 	faviconRR := httptest.NewRecorder()

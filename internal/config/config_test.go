@@ -7,7 +7,8 @@ import (
 )
 
 func TestLoadConfig_Default(t *testing.T) {
-	cfg, err := Load("non_existent_config.json", false)
+	tmpPath := filepath.Join(t.TempDir(), "config.json")
+	cfg, err := Load(tmpPath, false)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -22,6 +23,40 @@ func TestLoadConfig_Default(t *testing.T) {
 	}
 	if !cfg.MinifyResponses {
 		t.Errorf("expected default MinifyResponses true, got false")
+	}
+	// Verify auto-generated config has random secrets and correct 0600 file mode
+	if !IsValidJWTKey(cfg.JWTKey) {
+		t.Errorf("expected auto-generated JWT key, got %q", cfg.JWTKey)
+	}
+	if cfg.DataKey == "" {
+		t.Errorf("expected auto-generated DataKey, got empty")
+	}
+	info, statErr := os.Stat(tmpPath)
+	if statErr != nil {
+		t.Fatalf("expected generated config file to exist: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("expected 0600 permissions, got %04o", perm)
+	}
+}
+
+func TestLoadConfig_EnvOnly(t *testing.T) {
+	tmpPath := filepath.Join(t.TempDir(), "should_not_exist.json")
+	t.Setenv("FL_JWT_KEY", "0123456789abcdef0123456789abcdef-valid-secret")
+	t.Setenv("FL_DATA_KEY", "0123456789abcdef0123456789abcdef-valid-data-key")
+
+	cfg, err := Load(tmpPath, true)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Fatalf("expected file %s not to be created in EnvOnly mode", tmpPath)
+	}
+	if cfg.JWTKey != "0123456789abcdef0123456789abcdef-valid-secret" {
+		t.Errorf("expected JWTKey from env, got %s", cfg.JWTKey)
+	}
+	if cfg.DataKey != "0123456789abcdef0123456789abcdef-valid-data-key" {
+		t.Errorf("expected DataKey from env, got %s", cfg.DataKey)
 	}
 }
 
@@ -169,5 +204,31 @@ func TestEnsureJWTKey_EnvOnlyRefusesWeakKey(t *testing.T) {
 	cfg.JWTKey = "0123456789abcdef0123456789abcdef-valid-secret"
 	if err := cfg.EnsureJWTKey(""); err != nil {
 		t.Errorf("expected valid FL_JWT_KEY in EnvOnly mode to succeed, got %v", err)
+	}
+}
+
+func TestEnsureDataKey_GeneratesAndPersists(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.json")
+
+	cfg := DefaultConfig()
+	if cfg.DataKey != "" {
+		t.Fatalf("expected DefaultConfig().DataKey to be empty, got %q", cfg.DataKey)
+	}
+
+	if err := cfg.EnsureDataKey(cfgPath); err != nil {
+		t.Fatalf("EnsureDataKey failed: %v", err)
+	}
+	if cfg.DataKey == "" {
+		t.Fatalf("expected DataKey to be generated")
+	}
+
+	// Verify persistence
+	loaded, err := Load(cfgPath, false)
+	if err != nil {
+		t.Fatalf("failed to load saved config: %v", err)
+	}
+	if loaded.DataKey != cfg.DataKey {
+		t.Errorf("expected loaded DataKey %q to equal saved DataKey %q", loaded.DataKey, cfg.DataKey)
 	}
 }

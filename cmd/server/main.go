@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,30 +43,56 @@ func runHealthCheck(cfg *config.Config) int {
 }
 
 func main() {
-	envOnly := flag.Bool("env-only", false, "Use only environment variables for configuration")
+	var envOnly bool
+	flag.BoolVar(&envOnly, "envonly", false, "Use only environment variables for configuration")
+	flag.BoolVar(&envOnly, "env-only", false, "Use only environment variables for configuration (alias)")
+
+	configPath := "config.json"
+	if v, ok := os.LookupEnv("FL_CONFIG_PATH"); ok && strings.TrimSpace(v) != "" {
+		configPath = strings.TrimSpace(v)
+	}
+	flag.StringVar(&configPath, "config", configPath, "Path to configuration file")
+	flag.StringVar(&configPath, "c", configPath, "Path to configuration file (shorthand)")
+
 	debug := flag.Bool("debug", false, "Enable debug mode with detailed HTTP and audit logs")
 	healthCheck := flag.Bool("healthcheck", false, "Probe local /health endpoint and exit (for container HEALTHCHECK)")
 	flag.BoolVar(debug, "d", false, "Enable debug mode (shorthand)")
 	flag.Parse()
 
+	if v, ok := os.LookupEnv("FL_ENV_ONLY"); ok {
+		if b, err := strconv.ParseBool(v); err == nil && b {
+			envOnly = true
+		}
+	}
+
 	if *healthCheck {
-		cfg, _ := config.Load("config.json", *envOnly)
+		cfg, _ := config.Load(configPath, envOnly)
 		os.Exit(runHealthCheck(cfg))
 	}
 
 	// Initialize configuration (fail closed on parse/read errors)
-	cfg, err := config.Load("config.json", *envOnly)
+	cfg, err := config.Load(configPath, envOnly)
 	if err != nil {
 		logger.Error("Failed to load configuration: %v", err)
 		os.Exit(1)
 	}
-	if err := cfg.EnsureJWTKey("config.json"); err != nil {
+	if cfg.DataKey != "" {
+		db.SetDataKey(cfg.DataKey)
+	}
+	if err := cfg.EnsureJWTKey(configPath); err != nil {
 		logger.Error("Invalid JWT signing key configuration: %v", err)
+		os.Exit(1)
+	}
+	if err := cfg.EnsureDataKey(configPath); err != nil {
+		logger.Error("Invalid data encryption key configuration: %v", err)
 		os.Exit(1)
 	}
 
 	if *debug {
 		cfg.Debug = true
+	}
+	if os.Getenv("FL_DATA_KEY") == "" && cfg.DataKey == "" {
+		logger.Debug("FL_DATA_KEY not set; using persistent key in data directory")
 	}
 	logger.SetDebug(cfg.Debug)
 

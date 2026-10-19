@@ -52,6 +52,17 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 			} else {
 				m["Config"] = config.ConfigView{}
 			}
+			if user, ok := m["User"].(*db.User); ok && user != nil {
+				safeUser := *user
+				safeUser.PasswordHash = ""
+				safeUser.RecoveryCodeHash = ""
+				safeUser.WebAuthnData = ""
+				safeUser.SessionVersion = 0
+				if user.TOTPSecret != "" {
+					safeUser.TOTPSecret = "configured"
+				}
+				m["User"] = &safeUser
+			}
 		case config.Config:
 			m["Config"] = v.SanitizedView()
 		case config.ConfigView:
@@ -217,11 +228,21 @@ func (s *Server) logoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'")
+
 	if customLogo == "" || customLogo == "/static/logo.svg" {
 		http.ServeFileFS(w, r, web.Static(), "logo.svg")
 		return
 	}
-	logoPath := filepath.Join("data", customLogo)
+
+	cleanLogo := filepath.Base(filepath.Clean(customLogo))
+	if cleanLogo == "." || cleanLogo == "/" || strings.Contains(cleanLogo, "..") {
+		http.ServeFileFS(w, r, web.Static(), "logo.svg")
+		return
+	}
+
+	logoPath := filepath.Join("data", cleanLogo)
 	if _, err := os.Stat(logoPath); err == nil {
 		http.ServeFile(w, r, logoPath)
 	} else {

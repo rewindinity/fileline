@@ -4,7 +4,6 @@ services:
     container_name: fileline
     restart: unless-stopped
     user: "65532:65532"
-    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -12,6 +11,7 @@ services:
     environment:
       - TMPDIR=/app/chunks
       - FL_CHUNKS_DIR=/app/chunks
+      - FL_ALLOW_INSECURE_HTTP=true
     ports:
       - "8080:8080"
     tmpfs:
