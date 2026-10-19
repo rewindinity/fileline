@@ -2,16 +2,21 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,11 +26,13 @@ import (
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/logger"
+	"fileline/internal/storage"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+	"modernc.org/sqlite"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -3579,5 +3586,1755 @@ func TestWebAuthnCredentialPersistenceAndErrorSanitization(t *testing.T) {
 	respBody := strings.TrimSpace(regFinRR.Body.String())
 	if respBody != "Invalid passkey registration" {
 		t.Errorf("expected generic error 'Invalid passkey registration', got %q (internal error leaked)", respBody)
+	}
+}
+
+func TestPerf01_ServerTimeoutsAndDeadlineExtension(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "test.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		MaxUploadSizeMB:  100,
+		ChunkSizeMB:      10,
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+
+	if srv.httpServer.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.httpServer.ReadHeaderTimeout)
+	}
+	if srv.httpServer.ReadTimeout != 30*time.Second {
+		t.Errorf("ReadTimeout = %v, want 30s", srv.httpServer.ReadTimeout)
+	}
+	if srv.httpServer.WriteTimeout != 30*time.Second {
+		t.Errorf("WriteTimeout = %v, want 30s", srv.httpServer.WriteTimeout)
+	}
+	if srv.httpServer.IdleTimeout != 120*time.Second {
+		t.Errorf("IdleTimeout = %v, want 120s", srv.httpServer.IdleTimeout)
+	}
+	if srv.httpServer.MaxHeaderBytes != 64<<10 {
+		t.Errorf("MaxHeaderBytes = %d, want %d", srv.httpServer.MaxHeaderBytes, 64<<10)
+	}
+
+	// Verify transferBudget bounds
+	if got := transferBudget(1024); got != minTransferDeadline {
+		t.Errorf("transferBudget(1KB) = %v, want %v", got, minTransferDeadline)
+	}
+	// 1 GiB at 256 KiB/s = 4096s
+	if got := transferBudget(1 << 30); got != 4096*time.Second {
+		t.Errorf("transferBudget(1GiB) = %v, want 4096s", got)
+	}
+	if got := transferBudget(100 << 30); got != maxTransferDeadline {
+		t.Errorf("transferBudget(100GiB) = %v, want %v", got, maxTransferDeadline)
+	}
+
+	// Verify that a real HTTP server with a very short WriteTimeout (50ms) still completes
+	// a multi-100ms download on /f/ because serveFileHandler extends the write deadline via ResponseController.
+	payload := bytes.Repeat([]byte("ABCDEFGH"), 16<<10) // 128 KiB
+	if err := srv.storage.Save(context.Background(), "PERF01KEY", bytes.NewReader(payload)); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("CreateAdmin failed: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "movie.mp4",
+		URLPath:      "movie",
+		Size:         int64(len(payload)),
+		StorageType:  "local",
+		StoragePath:  "PERF01KEY",
+		UserID:       1,
+	}); err != nil {
+		t.Fatalf("InsertFile failed: %v", err)
+	}
+
+	ts := httptest.NewUnstartedServer(srv.routes())
+	ts.Config.WriteTimeout = 50 * time.Millisecond
+	ts.Config.ReadTimeout = 50 * time.Millisecond
+	ts.Start()
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/f/movie?raw=1")
+	if err != nil {
+		t.Fatalf("GET /f/movie failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read slowly across 120ms (> 50ms WriteTimeout) to prove ResponseController extended the deadline
+	time.Sleep(120 * time.Millisecond)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("io.ReadAll failed after WriteTimeout window: %v", err)
+	}
+	if len(body) != len(payload) {
+		t.Fatalf("received %d bytes, want %d", len(body), len(payload))
+	}
+}
+
+func TestPerf02_RangeConditionalCacheAndHead(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "test.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("CreateAdmin failed: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+
+	content := []byte("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	pubKey := "PUBKEY123456"
+	privKey := "PRIVKEY123456"
+	if err := srv.storage.Save(context.Background(), pubKey, bytes.NewReader(content)); err != nil {
+		t.Fatalf("Save public failed: %v", err)
+	}
+	if err := srv.storage.Save(context.Background(), privKey, bytes.NewReader(content)); err != nil {
+		t.Fatalf("Save private failed: %v", err)
+	}
+
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "video.mp4",
+		URLPath:      "video",
+		Size:         int64(len(content)),
+		IsPrivate:    false,
+		StatsEnabled: true,
+		StorageType:  "local",
+		StoragePath:  pubKey,
+		UserID:       1,
+	}); err != nil {
+		t.Fatalf("InsertFile public failed: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "secret.mp4",
+		URLPath:      "secret-video",
+		Size:         int64(len(content)),
+		IsPrivate:    true,
+		StatsEnabled: false,
+		StorageType:  "local",
+		StoragePath:  privKey,
+		UserID:       1,
+	}); err != nil {
+		t.Fatalf("InsertFile private failed: %v", err)
+	}
+
+	pubFile, err := db.GetFileByURL(context.Background(), database, "video")
+	if err != nil {
+		t.Fatalf("GetFileByURL failed: %v", err)
+	}
+
+	// 1. HEAD request: returns headers (Accept-Ranges, ETag, Cache-Control, Content-Length), 0 body bytes, and does NOT count as a read
+	headReq := httptest.NewRequest(http.MethodHead, "/f/video", nil)
+	headRR := httptest.NewRecorder()
+	srv.serveFileHandler(headRR, headReq)
+	if headRR.Code != http.StatusOK {
+		t.Fatalf("HEAD /f/video status = %d, want 200", headRR.Code)
+	}
+	if headRR.Body.Len() != 0 {
+		t.Errorf("HEAD /f/video body len = %d, want 0", headRR.Body.Len())
+	}
+	if got := headRR.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("Accept-Ranges = %q, want 'bytes'", got)
+	}
+	wantETag := `"` + pubKey + `"`
+	if got := headRR.Header().Get("ETag"); got != wantETag {
+		t.Errorf("ETag = %q, want %q", got, wantETag)
+	}
+	if got := headRR.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("Cache-Control = %q, want 'public, max-age=3600'", got)
+	}
+	if got := headRR.Header().Get("Last-Modified"); got == "" {
+		t.Errorf("expected Last-Modified header to be set")
+	}
+	if got := headRR.Header().Get("Content-Length"); got != fmt.Sprintf("%d", len(content)) {
+		t.Errorf("Content-Length = %q, want %d", got, len(content))
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	stAfterHead, _ := db.GetFileStats(context.Background(), database, pubFile.ID)
+	if stAfterHead.TotalReads != 0 {
+		t.Errorf("expected HEAD request not to increment read count, got %d", stAfterHead.TotalReads)
+	}
+
+	// 2. Range request (bytes=10-19): returns 206 Partial Content, Content-Range, and exact slice
+	rangeReq := httptest.NewRequest(http.MethodGet, "/f/video", nil)
+	rangeReq.Header.Set("Range", "bytes=10-19")
+	rangeRR := httptest.NewRecorder()
+	srv.serveFileHandler(rangeRR, rangeReq)
+	if rangeRR.Code != http.StatusPartialContent {
+		t.Fatalf("Range GET status = %d, want 206", rangeRR.Code)
+	}
+	wantContentRange := fmt.Sprintf("bytes 10-19/%d", len(content))
+	if got := rangeRR.Header().Get("Content-Range"); got != wantContentRange {
+		t.Errorf("Content-Range = %q, want %q", got, wantContentRange)
+	}
+	if got := rangeRR.Body.String(); got != string(content[10:20]) {
+		t.Errorf("Range body = %q, want %q", got, string(content[10:20]))
+	}
+
+	// 3. Conditional request with If-None-Match matching ETag -> 304 Not Modified, empty body
+	condReq := httptest.NewRequest(http.MethodGet, "/f/video", nil)
+	condReq.Header.Set("If-None-Match", wantETag)
+	condRR := httptest.NewRecorder()
+	srv.serveFileHandler(condRR, condReq)
+	if condRR.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match GET status = %d, want 304", condRR.Code)
+	}
+	if condRR.Body.Len() != 0 {
+		t.Errorf("304 body len = %d, want 0", condRR.Body.Len())
+	}
+
+	// 4. Conditional request with If-Modified-Since -> 304 Not Modified
+	imsReq := httptest.NewRequest(http.MethodGet, "/f/video", nil)
+	imsReq.Header.Set("If-Modified-Since", pubFile.UploadedAt.UTC().Add(time.Minute).Format(http.TimeFormat))
+	imsRR := httptest.NewRecorder()
+	srv.serveFileHandler(imsRR, imsReq)
+	if imsRR.Code != http.StatusNotModified {
+		t.Fatalf("If-Modified-Since GET status = %d, want 304", imsRR.Code)
+	}
+
+	// 5. Private file Cache-Control must be "private, no-store"
+	cookieRR := httptest.NewRecorder()
+	srv.setJWTCookie(cookieRR, "admin")
+	adminToken := extractSessionCookie(cookieRR)
+	privReq := httptest.NewRequest(http.MethodGet, "/f/secret-video", nil)
+	privReq.AddCookie(adminToken)
+	privRR := httptest.NewRecorder()
+	srv.serveFileHandler(privRR, privReq)
+	if privRR.Code != http.StatusOK {
+		t.Fatalf("Private GET status = %d, want 200", privRR.Code)
+	}
+	if got := privRR.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("Private Cache-Control = %q, want 'private, no-store'", got)
+	}
+}
+
+func BenchmarkServeFile_SeekRangeVsFull(b *testing.B) {
+	tempDir := b.TempDir()
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "bench.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		b.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		b.Fatalf("Migrate failed: %v", err)
+	}
+
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		b.Fatalf("CreateAdmin failed: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+
+	// Create a 16 MiB media file on disk
+	const fileSize = 16 << 20
+	payload := make([]byte, fileSize)
+	if err := srv.storage.Save(context.Background(), "BENCHMEDIAKEY", bytes.NewReader(payload)); err != nil {
+		b.Fatalf("Save failed: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "bench.mp4",
+		URLPath:      "bench",
+		Size:         fileSize,
+		IsPrivate:    false,
+		StatsEnabled: false,
+		StorageType:  "local",
+		StoragePath:  "BENCHMEDIAKEY",
+		UserID:       1,
+	}); err != nil {
+		b.Fatalf("InsertFile failed: %v", err)
+	}
+
+	b.Run("FullStream16MB", func(b *testing.B) {
+		b.SetBytes(fileSize)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/f/bench", nil)
+			rr := httptest.NewRecorder()
+			srv.serveFileHandler(rr, req)
+			if rr.Code != http.StatusOK {
+				b.Fatalf("status = %d", rr.Code)
+			}
+		}
+	})
+
+	b.Run("RangeSeek64KB", func(b *testing.B) {
+		const chunk = 65536
+		b.SetBytes(chunk)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/f/bench", nil)
+			req.Header.Set("Range", "bytes=8388608-8454143")
+			rr := httptest.NewRecorder()
+			srv.serveFileHandler(rr, req)
+			if rr.Code != http.StatusPartialContent {
+				b.Fatalf("status = %d, want 206", rr.Code)
+			}
+		}
+	})
+
+	b.Run("Conditional304", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			req := httptest.NewRequest(http.MethodGet, "/f/bench", nil)
+			req.Header.Set("If-None-Match", `"BENCHMEDIAKEY"`)
+			rr := httptest.NewRecorder()
+			srv.serveFileHandler(rr, req)
+			if rr.Code != http.StatusNotModified {
+				b.Fatalf("status = %d, want 304", rr.Code)
+			}
+		}
+	})
+
+	b.Run("HeadNoBody", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			req := httptest.NewRequest(http.MethodHead, "/f/bench", nil)
+			rr := httptest.NewRecorder()
+			srv.serveFileHandler(rr, req)
+			if rr.Code != http.StatusOK || rr.Body.Len() != 0 {
+				b.Fatalf("status = %d, body = %d", rr.Code, rr.Body.Len())
+			}
+		}
+	})
+}
+
+func TestPerf04_BoundedReadBatcherAndShutdownDrain(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "perf04.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		t.Fatalf("CreateAdmin failed: %v", err)
+	}
+
+	srv := New(cfg, database)
+	payload := []byte("burst-test-payload")
+	if err := srv.storage.Save(context.Background(), "BURSTKEY", bytes.NewReader(payload)); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	if err := db.InsertFile(context.Background(), database, &db.File{
+		OriginalName: "burst.png",
+		URLPath:      "burst",
+		Size:         int64(len(payload)),
+		IsPrivate:    false,
+		StatsEnabled: true,
+		StorageType:  "local",
+		StoragePath:  "BURSTKEY",
+		UserID:       1,
+	}); err != nil {
+		t.Fatalf("InsertFile failed: %v", err)
+	}
+	f, err := db.GetFileByURL(context.Background(), database, "burst")
+	if err != nil {
+		t.Fatalf("GetFileByURL failed: %v", err)
+	}
+
+	// Fire 200 concurrent GET requests to /f/burst
+	const hits = 200
+	var wg sync.WaitGroup
+	wg.Add(hits)
+	for i := 0; i < hits; i++ {
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/f/burst", nil)
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+			rr := httptest.NewRecorder()
+			srv.serveFileHandler(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Errorf("status = %d, want 200", rr.Code)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Shutdown drains s.reads and flushes remaining batch before returning
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	if got := srv.DroppedReads(); got != 0 {
+		t.Errorf("DroppedReads = %d, want 0", got)
+	}
+	st, err := db.GetFileStats(context.Background(), database, f.ID)
+	if err != nil {
+		t.Fatalf("GetFileStats failed: %v", err)
+	}
+	if st.TotalReads != hits {
+		t.Fatalf("TotalReads after burst + Shutdown drain = %d, want %d (0 SQLITE_BUSY drops)", st.TotalReads, hits)
+	}
+}
+
+type perf05CountingDriver struct {
+	driver.Driver
+	mu      sync.Mutex
+	queries []string
+}
+
+func (d *perf05CountingDriver) Open(name string) (driver.Conn, error) {
+	conn, err := d.Driver.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &perf05CountingConn{parent: conn, drv: d}, nil
+}
+
+func (d *perf05CountingDriver) record(q string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.queries = append(d.queries, q)
+}
+
+func (d *perf05CountingDriver) reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.queries = nil
+}
+
+func (d *perf05CountingDriver) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.queries)
+}
+
+func (d *perf05CountingDriver) all() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	res := make([]string, len(d.queries))
+	copy(res, d.queries)
+	return res
+}
+
+type perf05CountingConn struct {
+	parent driver.Conn
+	drv    *perf05CountingDriver
+}
+
+func (c *perf05CountingConn) Prepare(query string) (driver.Stmt, error) {
+	stmt, err := c.parent.Prepare(query)
+	if err != nil {
+		return nil, err
+	}
+	return &perf05CountingStmt{Stmt: stmt, drv: c.drv, query: query}, nil
+}
+
+func (c *perf05CountingConn) Close() error {
+	return c.parent.Close()
+}
+
+func (c *perf05CountingConn) Begin() (driver.Tx, error) {
+	return c.parent.Begin()
+}
+
+func (c *perf05CountingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if btx, ok := c.parent.(driver.ConnBeginTx); ok {
+		return btx.BeginTx(ctx, opts)
+	}
+	return c.parent.Begin()
+}
+
+func (c *perf05CountingConn) Ping(ctx context.Context) error {
+	if p, ok := c.parent.(driver.Pinger); ok {
+		return p.Ping(ctx)
+	}
+	return nil
+}
+
+func (c *perf05CountingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	c.drv.record(query)
+	if qc, ok := c.parent.(driver.QueryerContext); ok {
+		return qc.QueryContext(ctx, query, args)
+	}
+	dargs := make([]driver.Value, len(args))
+	for i, a := range args {
+		dargs[i] = a.Value
+	}
+	return c.parent.(driver.Queryer).Query(query, dargs)
+}
+
+func (c *perf05CountingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	c.drv.record(query)
+	if ec, ok := c.parent.(driver.ExecerContext); ok {
+		return ec.ExecContext(ctx, query, args)
+	}
+	dargs := make([]driver.Value, len(args))
+	for i, a := range args {
+		dargs[i] = a.Value
+	}
+	return c.parent.(driver.Execer).Exec(query, dargs)
+}
+
+type perf05CountingStmt struct {
+	driver.Stmt
+	drv   *perf05CountingDriver
+	query string
+}
+
+func (s *perf05CountingStmt) Query(args []driver.Value) (driver.Rows, error) {
+	s.drv.record(s.query)
+	return s.Stmt.Query(args)
+}
+
+func (s *perf05CountingStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	s.drv.record(s.query)
+	if sqc, ok := s.Stmt.(driver.StmtQueryContext); ok {
+		return sqc.QueryContext(ctx, args)
+	}
+	dargs := make([]driver.Value, len(args))
+	for i, a := range args {
+		dargs[i] = a.Value
+	}
+	return s.Stmt.Query(dargs)
+}
+
+func (s *perf05CountingStmt) Exec(args []driver.Value) (driver.Result, error) {
+	s.drv.record(s.query)
+	return s.Stmt.Exec(args)
+}
+
+func (s *perf05CountingStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	s.drv.record(s.query)
+	if sec, ok := s.Stmt.(driver.StmtExecContext); ok {
+		return sec.ExecContext(ctx, args)
+	}
+	dargs := make([]driver.Value, len(args))
+	for i, a := range args {
+		dargs[i] = a.Value
+	}
+	return s.Stmt.Exec(dargs)
+}
+
+var (
+	perf05DriverInstance = &perf05CountingDriver{Driver: &sqlite.Driver{}}
+	perf05DriverOnce     sync.Once
+)
+
+func initPerf05Driver() {
+	perf05DriverOnce.Do(func() {
+		sql.Register("sqlite-perf05", perf05DriverInstance)
+	})
+}
+
+func TestPerf05_AuthenticatedRequestQueryCount(t *testing.T) {
+	initPerf05Driver()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "perf05.db")
+	database, err := sql.Open("sqlite-perf05", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("StrongPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        dbPath,
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+
+	// Prime srv.CheckConfigured so s.configured is atomic true
+	configured, err := srv.CheckConfigured(context.Background())
+	if err != nil || !configured {
+		t.Fatalf("CheckConfigured failed: %v", err)
+	}
+
+	cookieRR := httptest.NewRecorder()
+	srv.setJWTCookie(cookieRR, "admin")
+	cookie := extractSessionCookie(cookieRR)
+	if cookie == nil {
+		t.Fatalf("failed to mint session cookie")
+	}
+
+	// Reset recorded queries prior to authenticated request
+	perf05DriverInstance.reset()
+
+	// 1. Authenticated request to /settings/appearance (uses requireAuth, currentUser in handler, currentUser in renderTemplate)
+	req := httptest.NewRequest(http.MethodGet, "/settings/appearance", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /settings/appearance status = %d, want 200", rr.Code)
+	}
+
+	queries := perf05DriverInstance.all()
+	// Baseline was 4 queries:
+	// 1: SELECT COUNT(*) FROM users WHERE role='admin'
+	// 2: GetUserByUsername in requireAuth (checking session_version)
+	// 3: GetUserByUsername in settingsAppearanceHandler
+	// 4: GetUserByUsername in renderTemplate (reading language)
+	// With PERF-05: s.configured atomic check (0 queries) + context user cached (0 queries for handler and template)
+	// Exactly 1 query must be executed!
+	if len(queries) != 1 {
+		t.Fatalf("PERF-05: expected exactly 1 DB query per authenticated request, got %d: %v", len(queries), queries)
+	}
+
+	for _, q := range queries {
+		if strings.Contains(strings.ToUpper(q), "COUNT(*)") {
+			t.Errorf("PERF-05: redundant CheckConfigured query leaked: %s", q)
+		}
+		if !strings.Contains(strings.ToUpper(q), "FROM USERS WHERE USERNAME") {
+			t.Errorf("PERF-05: unexpected query during authenticated request: %s", q)
+		}
+	}
+
+	// 2. Second request confirms stable 1-query performance
+	perf05DriverInstance.reset()
+	rr2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr2, req)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second GET /settings/appearance status = %d", rr2.Code)
+	}
+	if got := perf05DriverInstance.count(); got != 1 {
+		t.Fatalf("PERF-05: second request executed %d queries, want 1", got)
+	}
+}
+
+func BenchmarkPerf05_AuthContextVsRedundantLookups(b *testing.B) {
+	tempDir := b.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "bench.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		b.Fatalf("InitDB: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		b.Fatalf("Migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "admin", "hash"); err != nil {
+		b.Fatalf("CreateAdmin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+	_, _ = srv.CheckConfigured(context.Background())
+
+	user, _ := db.GetUserByUsername(context.Background(), database, "admin")
+	baseCtx := context.Background()
+
+	b.Run("CachedContextUser", func(b *testing.B) {
+		req := httptest.NewRequest("GET", "/settings", nil).WithContext(withUser(baseCtx, user))
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			u, err := srv.currentUser(req)
+			if err != nil || u == nil {
+				b.Fatalf("currentUser failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("RedundantDBLookupBaseline", func(b *testing.B) {
+		ctx := context.Background()
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			// Simulate baseline: 1 configured check + 2 user lookups
+			hasAdmin, _ := db.HasAdmin(ctx, database)
+			if !hasAdmin {
+				b.Fatal("not configured")
+			}
+			u1, _ := db.GetUserByUsername(ctx, database, "admin")
+			u2, _ := db.GetUserByUsername(ctx, database, "admin")
+			if u1 == nil || u2 == nil {
+				b.Fatal("nil user")
+			}
+		}
+	})
+}
+
+func TestPerf06_ChunkedUploadZeroCopyAndDirectStreaming(t *testing.T) {
+	tempDir := t.TempDir()
+	uploadsDir := filepath.Join(tempDir, "uploads")
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "perf06.db"),
+		StorageType:      "local",
+		LocalStoragePath: uploadsDir,
+		MaxUploadSizeMB:  50,
+		ChunkSizeMB:      1, // 1 MB chunk size
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if err := db.CreateAdmin(context.Background(), database, "uploader", "hash"); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+
+	cookieRR := httptest.NewRecorder()
+	srv.setJWTCookie(cookieRR, "uploader")
+	cookie := extractSessionCookie(cookieRR)
+	if cookie == nil {
+		t.Fatalf("failed to mint cookie")
+	}
+
+	const chunkSize = int64(1 << 20) // 1 MiB
+	const numChunks = 3
+	const totalSize = chunkSize * numChunks
+
+	chunkData := [][]byte{
+		bytes.Repeat([]byte("A"), int(chunkSize)),
+		bytes.Repeat([]byte("B"), int(chunkSize)),
+		bytes.Repeat([]byte("C"), int(chunkSize)),
+	}
+
+	// 1. Initialize chunked upload
+	initPayload, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "stream_test.bin",
+		"total_size":   totalSize,
+		"total_chunks": numChunks,
+		"url_path":     "stream-test",
+	})
+	initReq := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initPayload))
+	initReq.AddCookie(cookie)
+	initReq.Header.Set("Content-Type", "application/json")
+	initRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(initRR, initReq)
+	if initRR.Code != http.StatusOK {
+		t.Fatalf("init status = %d: %s", initRR.Code, initRR.Body.String())
+	}
+
+	var initResp map[string]string
+	if err := json.Unmarshal(initRR.Body.Bytes(), &initResp); err != nil {
+		t.Fatalf("unmarshal init response: %v", err)
+	}
+	uploadID := initResp["upload_id"]
+	if uploadID == "" {
+		t.Fatalf("empty upload_id")
+	}
+
+	// Staged file MUST be preallocated directly inside uploadsDir with totalSize
+	stagedPath := filepath.Join(uploadsDir, ".tmp_upload_"+uploadID)
+	stagedInfo, err := os.Stat(stagedPath)
+	if err != nil {
+		t.Fatalf("expected staged file %q to be preallocated: %v", stagedPath, err)
+	}
+	if stagedInfo.Size() != totalSize {
+		t.Fatalf("staged file preallocated size = %d, want %d", stagedInfo.Size(), totalSize)
+	}
+
+	// 2. Upload chunks directly via multipart streaming
+	for i := 0; i < numChunks; i++ {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		_ = mw.WriteField("upload_id", uploadID)
+		_ = mw.WriteField("chunk_index", fmt.Sprintf("%d", i))
+		part, err := mw.CreateFormFile("chunk", fmt.Sprintf("chunk-%d", i))
+		if err != nil {
+			t.Fatalf("CreateFormFile: %v", err)
+		}
+		_, _ = part.Write(chunkData[i])
+		mw.Close()
+
+		chunkReq := httptest.NewRequest("POST", "/api/upload/chunk", &buf)
+		chunkReq.AddCookie(cookie)
+		chunkReq.Header.Set("Content-Type", mw.FormDataContentType())
+		chunkRR := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(chunkRR, chunkReq)
+		if chunkRR.Code != http.StatusOK {
+			t.Fatalf("chunk %d upload status = %d: %s", i, chunkRR.Code, chunkRR.Body.String())
+		}
+
+		// Verify that no intermediate chunk files '0', '1', '2' exist under chunkBaseDir
+		chunkLegacyDir := filepath.Join(chunkBaseDir(), uploadID)
+		if _, err := os.Stat(chunkLegacyDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("PERF-06: unexpected chunk directory %q created under chunkBaseDir (should write directly to staged file)", chunkLegacyDir)
+		}
+	}
+
+	// 3. Complete chunked upload
+	compPayload, _ := json.Marshal(map[string]string{"upload_id": uploadID})
+	compReq := httptest.NewRequest("POST", "/api/upload/complete", bytes.NewReader(compPayload))
+	compReq.AddCookie(cookie)
+	compReq.Header.Set("Content-Type", "application/json")
+	compRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(compRR, compReq)
+	if compRR.Code != http.StatusOK {
+		t.Fatalf("complete status = %d: %s", compRR.Code, compRR.Body.String())
+	}
+
+	// 4. Staged temp file MUST have been atomically renamed (no longer exists under .tmp_upload_*)
+	if _, err := os.Stat(stagedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PERF-06: staged temp file %q still exists after completion (expected O(1) rename)", stagedPath)
+	}
+
+	// 5. Verify database metadata and content in storage
+	dbFile, err := db.GetFileByURL(context.Background(), database, "stream-test")
+	if err != nil {
+		t.Fatalf("GetFileByURL: %v", err)
+	}
+	if dbFile.Size != totalSize {
+		t.Fatalf("dbFile.Size = %d, want %d", dbFile.Size, totalSize)
+	}
+
+	finalPath := filepath.Join(uploadsDir, dbFile.StoragePath)
+	storedBytes, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("ReadFile final storage path %q: %v", finalPath, err)
+	}
+	if int64(len(storedBytes)) != totalSize {
+		t.Fatalf("storedBytes len = %d, want %d", len(storedBytes), totalSize)
+	}
+	if !bytes.Equal(storedBytes[0:chunkSize], chunkData[0]) ||
+		!bytes.Equal(storedBytes[chunkSize:2*chunkSize], chunkData[1]) ||
+		!bytes.Equal(storedBytes[2*chunkSize:3*chunkSize], chunkData[2]) {
+		t.Fatalf("stored file content does not match concatenated chunk bytes")
+	}
+
+	// 6. Verify janitor cleanup on abandoned/aborted staged uploads
+	initPayload2, _ := json.Marshal(map[string]interface{}{
+		"file_name":    "abandoned.bin",
+		"total_size":   chunkSize,
+		"total_chunks": 1,
+		"url_path":     "abandoned",
+	})
+	initReq2 := httptest.NewRequest("POST", "/api/upload/init", bytes.NewReader(initPayload2))
+	initReq2.AddCookie(cookie)
+	initReq2.Header.Set("Content-Type", "application/json")
+	initRR2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(initRR2, initReq2)
+	var initResp2 map[string]string
+	_ = json.Unmarshal(initRR2.Body.Bytes(), &initResp2)
+	abandonedID := initResp2["upload_id"]
+	abandonedStagedPath := filepath.Join(uploadsDir, ".tmp_upload_"+abandonedID)
+	if _, err := os.Stat(abandonedStagedPath); err != nil {
+		t.Fatalf("abandoned staged file %q was not created: %v", abandonedStagedPath, err)
+	}
+
+	// Run janitor cleanup with expired timestamp
+	srv.cleanupExpiredUploads(time.Now().Add(2 * time.Hour))
+	if _, err := os.Stat(abandonedStagedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("PERF-06: expired staged file %q was not removed by janitor abort", abandonedStagedPath)
+	}
+}
+
+func BenchmarkPerf06_ChunkWriteAtDirectVsThreePhaseAssembly(b *testing.B) {
+	const chunkSize = 1 << 20 // 1 MiB
+	const numChunks = 4
+	const totalSize = int64(chunkSize * numChunks)
+	chunkData := bytes.Repeat([]byte("X"), chunkSize)
+
+	b.Run("DirectWriteAtStreaming", func(b *testing.B) {
+		tempDir := b.TempDir()
+		prov, err := storage.NewLocalProvider(tempDir)
+		if err != nil {
+			b.Fatalf("NewLocalProvider: %v", err)
+		}
+		b.SetBytes(totalSize)
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			uploadID := fmt.Sprintf("bench-dir-%d", i)
+			storageKey := fmt.Sprintf("bench-key-%d", i)
+
+			staged, err := prov.CreateStaged(context.Background(), uploadID, storageKey, totalSize, chunkSize)
+			if err != nil {
+				b.Fatalf("CreateStaged: %v", err)
+			}
+			for c := 0; c < numChunks; c++ {
+				offset := int64(c) * chunkSize
+				_, err := staged.WriteChunk(c, offset, bytes.NewReader(chunkData), chunkSize)
+				if err != nil {
+					b.Fatalf("WriteChunk: %v", err)
+				}
+			}
+			if err := staged.Commit(context.Background(), storageKey, totalSize); err != nil {
+				b.Fatalf("Commit: %v", err)
+			}
+		}
+	})
+
+	b.Run("ThreePhaseAssemblyBaseline", func(b *testing.B) {
+		tempDir := b.TempDir()
+		b.SetBytes(totalSize)
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			uploadID := fmt.Sprintf("bench-base-%d", i)
+			storageKey := fmt.Sprintf("bench-key-%d", i)
+			chunkDir := filepath.Join(tempDir, uploadID)
+			_ = os.MkdirAll(chunkDir, 0o750)
+
+			// Phase 1: Write chunk files
+			for c := 0; c < numChunks; c++ {
+				cf, _ := os.OpenFile(filepath.Join(chunkDir, fmt.Sprintf("%d", c)), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+				_, _ = io.Copy(cf, bytes.NewReader(chunkData))
+				_ = cf.Close()
+			}
+
+			// Phase 2: Assemble chunk files into "assembled"
+			asmPath := filepath.Join(chunkDir, "assembled")
+			asmFile, _ := os.OpenFile(asmPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+			for c := 0; c < numChunks; c++ {
+				cf, _ := os.Open(filepath.Join(chunkDir, fmt.Sprintf("%d", c)))
+				_, _ = io.Copy(asmFile, cf)
+				_ = cf.Close()
+			}
+			_ = asmFile.Close()
+
+			// Phase 3: Copy "assembled" into target destination
+			targetPath := filepath.Join(tempDir, storageKey)
+			targetFile, _ := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+			asmRead, _ := os.Open(asmPath)
+			_, _ = io.Copy(targetFile, asmRead)
+			_ = asmRead.Close()
+			_ = targetFile.Close()
+
+			_ = os.RemoveAll(chunkDir)
+		}
+	})
+}
+
+func TestPerf07_SubusersPageQueryCount(t *testing.T) {
+	initPerf05Driver()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "perf07_subusers.db")
+	database, err := sql.Open("sqlite-perf05", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("StrongPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+
+	for i := 1; i <= 5; i++ {
+		uname := fmt.Sprintf("subuser_%d", i)
+		if err := db.CreateSubuser(context.Background(), database, uname, string(passHash), 100); err != nil {
+			t.Fatalf("CreateSubuser failed: %v", err)
+		}
+	}
+
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        dbPath,
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+	_, _ = srv.CheckConfigured(context.Background())
+
+	cookieRR := httptest.NewRecorder()
+	srv.setJWTCookie(cookieRR, "admin")
+	cookie := extractSessionCookie(cookieRR)
+
+	perf05DriverInstance.reset()
+
+	req := httptest.NewRequest(http.MethodGet, "/settings/subusers", nil)
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /settings/subusers status = %d, want 200", rr.Code)
+	}
+
+	queries := perf05DriverInstance.all()
+	// Total queries should be:
+	// 1 query for requireAuth (user resolution)
+	// 1 query for GetAllUsers (SELECT id, username, role, storage_quota_mb FROM users)
+	// 1 query for GetAllUsersTotalStorage (SELECT user_id, COALESCE(SUM(size), 0) FROM files GROUP BY user_id)
+	// Total = 3 queries. In baseline, it ran 1 + N (6) GetUserTotalStorage queries = 7+ queries.
+	if len(queries) != 3 {
+		t.Fatalf("expected exactly 3 DB queries for /settings/subusers (1 auth + 1 users + 1 grouped storage), got %d: %v", len(queries), queries)
+	}
+
+	for _, q := range queries {
+		upper := strings.ToUpper(q)
+		if strings.Contains(upper, "WHERE USER_ID =") && strings.Contains(upper, "SUM(SIZE)") {
+			t.Errorf("PERF-07: detected per-user N+1 storage query: %s", q)
+		}
+		if strings.Contains(upper, "FROM USERS") && !strings.Contains(upper, "WHERE USERNAME") && strings.Contains(upper, "PASSWORD_HASH") {
+			t.Errorf("PERF-07: detected password_hash selected in subusers listing: %s", q)
+		}
+	}
+}
+
+func TestPerf07_FilesKeysetPaginationAndSearchHandler(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		Port:             8080,
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "perf07_files.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "0123456789abcdef0123456789abcdef",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	passHash, _ := bcrypt.GenerateFromPassword([]byte("StrongPass123!"), bcrypt.DefaultCost)
+	if err := db.CreateAdmin(context.Background(), database, "admin", string(passHash)); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+
+	srv := New(cfg, database)
+	defer srv.Shutdown(context.Background())
+	_, _ = srv.CheckConfigured(context.Background())
+
+	cookieRR := httptest.NewRecorder()
+	srv.setJWTCookie(cookieRR, "admin")
+	cookie := extractSessionCookie(cookieRR)
+
+	// Seed 120 files
+	ctx := context.Background()
+	baseTime := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	for i := 1; i <= 120; i++ {
+		ts := baseTime.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05")
+		name := fmt.Sprintf("upload_%03d.png", i)
+		if i == 55 {
+			name = "findme_report.pdf"
+		}
+		_ = db.InsertFile(ctx, database, &db.File{
+			OriginalName: name,
+			URLPath:      fmt.Sprintf("path-%03d", i),
+			Size:         int64(i * 1024),
+			StorageType:  "local",
+			StoragePath:  fmt.Sprintf("key-%03d", i),
+			UserID:       1,
+		})
+		_, _ = database.ExecContext(ctx, "UPDATE files SET uploaded_at = $1 WHERE url_path = $2", ts, fmt.Sprintf("path-%03d", i))
+	}
+
+	// 1. First page: GET /files returns 50 files with "Next" link and no "Previous"
+	req1 := httptest.NewRequest(http.MethodGet, "/files", nil)
+	req1.AddCookie(cookie)
+	rr1 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("page 1 status = %d", rr1.Code)
+	}
+	body1 := rr1.Body.String()
+	if !strings.Contains(body1, "Next") {
+		t.Fatalf("expected page 1 HTML to contain 'Next' pagination link")
+	}
+	if strings.Contains(body1, "&larr; Previous") {
+		t.Fatalf("expected page 1 HTML NOT to contain 'Previous' link")
+	}
+
+	// Extract NextURL from HTML
+	nextIdx := strings.Index(body1, `href="/files?cursor=`)
+	if nextIdx < 0 {
+		t.Fatalf("missing cursor in Next link")
+	}
+	cursorSub := body1[nextIdx+len(`href="/files?cursor=`):]
+	cursorEnd := strings.Index(cursorSub, `"`)
+	cursor1 := cursorSub[:cursorEnd]
+
+	// 2. Second page: GET /files?cursor=... returns next 50 files with both "Previous" and "Next"
+	req2 := httptest.NewRequest(http.MethodGet, "/files?cursor="+cursor1, nil)
+	req2.AddCookie(cookie)
+	rr2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("page 2 status = %d", rr2.Code)
+	}
+	body2 := rr2.Body.String()
+	if !strings.Contains(body2, "Next") || !strings.Contains(body2, "Previous") {
+		t.Fatalf("expected page 2 HTML to contain both 'Next' and 'Previous' links")
+	}
+
+	nextIdx2 := strings.Index(body2, `href="/files?cursor=`)
+	if nextIdx2 < 0 {
+		t.Fatalf("missing cursor in page 2 Next link")
+	}
+	cursorSub2 := body2[nextIdx2+len(`href="/files?cursor=`):]
+	cursorEnd2 := strings.Index(cursorSub2, `"`)
+	cursor2 := cursorSub2[:cursorEnd2]
+
+	// 3. Third page: GET /files?cursor=... returns last 20 files with "Previous" but NO "Next"
+	req3 := httptest.NewRequest(http.MethodGet, "/files?cursor="+cursor2, nil)
+	req3.AddCookie(cookie)
+	rr3 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("page 3 status = %d", rr3.Code)
+	}
+	body3 := rr3.Body.String()
+	if !strings.Contains(body3, "Previous") {
+		t.Fatalf("expected page 3 HTML to contain 'Previous' link")
+	}
+	if strings.Contains(body3, `Next &rarr;`) {
+		t.Fatalf("expected page 3 HTML NOT to contain 'Next' link (reached end)")
+	}
+
+	// 4. Server-side search: GET /files?q=findme returns only matching file
+	reqSearch := httptest.NewRequest(http.MethodGet, "/files?q=findme", nil)
+	reqSearch.AddCookie(cookie)
+	rrSearch := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rrSearch, reqSearch)
+	if rrSearch.Code != http.StatusOK {
+		t.Fatalf("search status = %d", rrSearch.Code)
+	}
+	bodySearch := rrSearch.Body.String()
+	if !strings.Contains(bodySearch, "findme_report.pdf") {
+		t.Fatalf("expected search response to contain 'findme_report.pdf'")
+	}
+	if strings.Contains(bodySearch, "upload_001.png") {
+		t.Fatalf("search response contains non-matching 'upload_001.png'")
+	}
+}
+
+func BenchmarkPerf07_FilesPageKeysetVsUnpaginated(b *testing.B) {
+	tempDir := b.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "bench_files.db"),
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+	}
+	ctx := context.Background()
+	database, err := db.InitDB(ctx, cfg)
+	if err != nil {
+		b.Fatalf("InitDB failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(ctx, database, "sqlite"); err != nil {
+		b.Fatalf("Migrate failed: %v", err)
+	}
+
+	// Seed 1,000 files
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		b.Fatalf("BeginTx failed: %v", err)
+	}
+	stmt, _ := tx.PrepareContext(ctx, `INSERT INTO files (original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled) VALUES ($1, '', $2, 2048, 0, 'local', $3, 1, $4, 0)`)
+	baseTime := time.Date(2026, 10, 18, 0, 0, 0, 0, time.UTC)
+	for i := 1; i <= 1000; i++ {
+		ts := baseTime.Add(time.Duration(i) * time.Second).Format("2006-01-02 15:04:05")
+		name := fmt.Sprintf("bench_%04d.txt", i)
+		urlP := fmt.Sprintf("b-%04d", i)
+		_, _ = stmt.ExecContext(ctx, name, urlP, urlP, ts)
+	}
+	stmt.Close()
+	_ = tx.Commit()
+
+	b.Run("KeysetPage50", func(b *testing.B) {
+		opts := db.FilePageOpts{UserID: 1, Limit: 50}
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			page, err := db.GetFilesPage(ctx, database, opts)
+			if err != nil || len(page.Files) != 50 {
+				b.Fatalf("GetFilesPage failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("UnpaginatedGetAllFiles1000", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			files, err := db.GetAllFiles(ctx, database, 1)
+			if err != nil || len(files) != 1000 {
+				b.Fatalf("GetAllFiles failed: %v", err)
+			}
+		}
+	})
+}
+
+func TestEmbeddedAssetsAndStaticServing(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+	}
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	srv := New(cfg, database)
+
+	// 1. Verify template collection in srv.tmpls
+	expectedTemplates := []string{
+		"setup.html", "login.html", "login_2fa.html", "reset_password.html", "dashboard.html",
+		"404.html", "edit_file.html", "files.html", "settings.html", "settings_appearance.html",
+		"settings_embed.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
+		"embed_file.html",
+	}
+	for _, tmplName := range expectedTemplates {
+		if _, ok := srv.tmpls[tmplName]; !ok {
+			t.Errorf("template %s not found in server templates", tmplName)
+		}
+	}
+
+	// 2. Test rendering setup and 404 templates from memory
+	rec404 := httptest.NewRecorder()
+	srv.render404(rec404)
+	if rec404.Code != http.StatusNotFound {
+		t.Errorf("expected 404 status from render404, got %d", rec404.Code)
+	}
+	if !strings.Contains(rec404.Body.String(), "404") {
+		t.Errorf("expected 404 body to contain '404', got %q", rec404.Body.String())
+	}
+
+	recSetup := httptest.NewRecorder()
+	srv.renderSetupError(recSetup, false, "Test error message")
+	if !strings.Contains(recSetup.Body.String(), "Test error message") {
+		t.Errorf("expected setup body to contain error message, got %q", recSetup.Body.String())
+	}
+
+	// 3. Test static file delivery via HTTP router
+	tests := []struct {
+		urlPath          string
+		expectedStatus   int
+		expectedMime     string
+		bodyMustContain  string
+		wantCacheControl string
+	}{
+		{
+			urlPath:          "/static/css/style.css",
+			expectedStatus:   http.StatusOK,
+			expectedMime:     "text/css; charset=utf-8",
+			bodyMustContain:  "--accent-primary",
+			wantCacheControl: "public, max-age=86400",
+		},
+		{
+			urlPath:          "/static/fonts/Outfit-Regular.woff2",
+			expectedStatus:   http.StatusOK,
+			expectedMime:     "font/woff2",
+			wantCacheControl: "public, max-age=86400",
+		},
+		{
+			urlPath:          "/static/icons/bx-check.svg",
+			expectedStatus:   http.StatusOK,
+			expectedMime:     "image/svg+xml",
+			bodyMustContain:  "<svg",
+			wantCacheControl: "public, max-age=86400",
+		},
+		{
+			urlPath:          "/static/qrcode.min.js",
+			expectedStatus:   http.StatusOK,
+			expectedMime:     "text/javascript; charset=utf-8",
+			bodyMustContain:  "qrcode",
+			wantCacheControl: "public, max-age=86400",
+		},
+		{
+			urlPath:        "/static/",
+			expectedStatus: http.StatusNotFound, // Prevent directory listing
+		},
+		{
+			urlPath:        "/static/fonts/",
+			expectedStatus: http.StatusNotFound, // Prevent directory listing
+		},
+		{
+			urlPath:        "/static/fonts",
+			expectedStatus: http.StatusNotFound, // Prevent directory listing
+		},
+		{
+			urlPath:        "/static/icons/",
+			expectedStatus: http.StatusNotFound, // Prevent directory listing
+		},
+		{
+			urlPath:        "/static/icons",
+			expectedStatus: http.StatusNotFound, // Prevent directory listing
+		},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest("GET", tc.urlPath, nil)
+		rr := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rr, req)
+
+		if rr.Code != tc.expectedStatus {
+			t.Errorf("GET %s returned code %d, expected %d", tc.urlPath, rr.Code, tc.expectedStatus)
+		}
+		if tc.expectedMime != "" {
+			if ct := rr.Header().Get("Content-Type"); ct != tc.expectedMime {
+				t.Errorf("GET %s returned Content-Type %q, expected %q", tc.urlPath, ct, tc.expectedMime)
+			}
+		}
+		if tc.wantCacheControl != "" {
+			if cc := rr.Header().Get("Cache-Control"); cc != tc.wantCacheControl {
+				t.Errorf("GET %s returned Cache-Control %q, expected %q", tc.urlPath, cc, tc.wantCacheControl)
+			}
+		}
+		if tc.bodyMustContain != "" {
+			if !strings.Contains(rr.Body.String(), tc.bodyMustContain) {
+				t.Errorf("GET %s body did not contain %q", tc.urlPath, tc.bodyMustContain)
+			}
+		}
+	}
+
+	// 4. Test /logo and /favicon.ico routes
+	logoReq := httptest.NewRequest("GET", "/logo", nil)
+	logoRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(logoRR, logoReq)
+	if logoRR.Code != http.StatusOK {
+		t.Errorf("GET /logo returned %d, expected 200", logoRR.Code)
+	}
+	if ct := logoRR.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("GET /logo returned Content-Type %q, expected 'image/svg+xml'", ct)
+	}
+	if !strings.Contains(logoRR.Body.String(), "<svg") {
+		t.Errorf("GET /logo body did not contain '<svg'")
+	}
+
+	faviconReq := httptest.NewRequest("GET", "/favicon.ico", nil)
+	faviconRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(faviconRR, faviconReq)
+	if faviconRR.Code != http.StatusOK {
+		t.Errorf("GET /favicon.ico returned %d, expected 200", faviconRR.Code)
+	}
+	if ct := faviconRR.Header().Get("Content-Type"); ct != "image/svg+xml" {
+		t.Errorf("GET /favicon.ico returned Content-Type %q, expected 'image/svg+xml'", ct)
+	}
+}
+
+func TestPerf09_TemplateRenderingBufferPool(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "perf09.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      false, // test plain buffered rendering with Content-Length
+		MinifyResponses:  false,
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("db.Migrate failed: %v", err)
+	}
+	_ = db.CreateAdmin(context.Background(), database, "admin", "hashedpw")
+
+	srv := New(cfg, database)
+
+	// 1. Successful render writes Content-Length and completes cleanly
+	req := httptest.NewRequest("GET", "/login", nil)
+	rr := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /login status = %d, expected 200", rr.Code)
+	}
+	clStr := rr.Header().Get("Content-Length")
+	if clStr == "" {
+		t.Errorf("expected Content-Length header to be set on buffered template response")
+	} else if cl, err := strconv.Atoi(clStr); err != nil || cl != rr.Body.Len() {
+		t.Errorf("Content-Length header %q did not match actual body length %d", clStr, rr.Body.Len())
+	}
+
+	// 2. Dead DrivesJSON computation removed from settingsHandler
+	ctxAdmin := context.WithValue(context.Background(), userCtxKey{}, &db.User{ID: 1, Username: "admin", Role: "admin"})
+	settingsReq := httptest.NewRequest("GET", "/settings", nil).WithContext(ctxAdmin)
+	settingsRR := httptest.NewRecorder()
+	srv.settingsHandler(settingsRR, settingsReq)
+	if settingsRR.Code != http.StatusOK {
+		t.Fatalf("GET /settings status = %d, expected 200", settingsRR.Code)
+	}
+
+	// 3. Error during template execution returns clean 500 without leaving broken 200
+	errRR := httptest.NewRecorder()
+	srv.renderTemplate(errRR, nil, "non_existent_broken_template.html", nil)
+	if errRR.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 for missing template, got %d", errRR.Code)
+	}
+}
+
+func TestGzipCompression_StaticAssetsAndHTML(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "gzip_test.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      true,
+		MinifyResponses:  true,
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("db.Migrate failed: %v", err)
+	}
+	_ = db.CreateAdmin(context.Background(), database, "admin", "hashedpw")
+
+	srv := New(cfg, database)
+
+	// 1. Static CSS with gzip
+	cssReq := httptest.NewRequest("GET", "/static/css/style.css", nil)
+	cssReq.Header.Set("Accept-Encoding", "gzip, deflate, br")
+	cssRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(cssRR, cssReq)
+
+	if cssRR.Code != http.StatusOK {
+		t.Fatalf("GET /static/css/style.css status = %d, expected 200", cssRR.Code)
+	}
+	if ce := cssRR.Header().Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("expected Content-Encoding 'gzip', got %q", ce)
+	}
+	if vary := cssRR.Header().Get("Vary"); !strings.Contains(vary, "Accept-Encoding") {
+		t.Errorf("expected Vary: Accept-Encoding header, got %q", vary)
+	}
+
+	gzReader, err := gzip.NewReader(cssRR.Body)
+	if err != nil {
+		t.Fatalf("failed to create gzip reader for CSS: %v", err)
+	}
+	decompressedCSS, err := io.ReadAll(gzReader)
+	_ = gzReader.Close()
+	if err != nil {
+		t.Fatalf("failed to decompress gzipped CSS: %v", err)
+	}
+	if !strings.Contains(string(decompressedCSS), "--accent-primary") {
+		t.Errorf("decompressed CSS missing expected token '--accent-primary'")
+	}
+
+	// 2. Static SVG icon with gzip
+	svgReq := httptest.NewRequest("GET", "/static/icons/bx-check.svg", nil)
+	svgReq.Header.Set("Accept-Encoding", "gzip")
+	svgRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(svgRR, svgReq)
+
+	if svgRR.Code != http.StatusOK {
+		t.Fatalf("GET /static/icons/bx-check.svg status = %d, expected 200", svgRR.Code)
+	}
+	if ce := svgRR.Header().Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("expected Content-Encoding 'gzip' for SVG, got %q", ce)
+	}
+
+	// 3. Static Font with gzip
+	fontReq := httptest.NewRequest("GET", "/static/fonts/Outfit-Regular.woff2", nil)
+	fontReq.Header.Set("Accept-Encoding", "gzip")
+	fontRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(fontRR, fontReq)
+	if fontRR.Code != http.StatusOK {
+		t.Fatalf("GET font status = %d, expected 200", fontRR.Code)
+	}
+	if ce := fontRR.Header().Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("expected Content-Encoding 'gzip' for font, got %q", ce)
+	}
+
+	// 4. Dynamic HTML page with gzip
+	htmlReq := httptest.NewRequest("GET", "/login", nil)
+	htmlReq.Header.Set("Accept-Encoding", "gzip")
+	htmlRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(htmlRR, htmlReq)
+
+	if htmlRR.Code != http.StatusOK {
+		t.Fatalf("GET /login status = %d, expected 200", htmlRR.Code)
+	}
+	if ce := htmlRR.Header().Get("Content-Encoding"); ce != "gzip" {
+		t.Errorf("expected Content-Encoding 'gzip' for HTML, got %q", ce)
+	}
+	htmlGzReader, err := gzip.NewReader(htmlRR.Body)
+	if err != nil {
+		t.Fatalf("failed to create gzip reader for HTML: %v", err)
+	}
+	decompressedHTML, err := io.ReadAll(htmlGzReader)
+	_ = htmlGzReader.Close()
+	if err != nil {
+		t.Fatalf("failed to read decompressed HTML: %v", err)
+	}
+	if !strings.Contains(string(decompressedHTML), "<form") {
+		t.Errorf("decompressed HTML missing form")
+	}
+
+	// 5. When GzipEnabled is turned off, gzip is bypassed even if client requests it
+	srv.mu.Lock()
+	srv.cfg.GzipEnabled = false
+	srv.mu.Unlock()
+
+	noGzipReq := httptest.NewRequest("GET", "/static/css/style.css", nil)
+	noGzipReq.Header.Set("Accept-Encoding", "gzip")
+	noGzipRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(noGzipRR, noGzipReq)
+
+	if ce := noGzipRR.Header().Get("Content-Encoding"); ce != "" {
+		t.Errorf("expected no Content-Encoding when GzipEnabled=false, got %q", ce)
+	}
+	if !strings.Contains(noGzipRR.Body.String(), "--accent-primary") {
+		t.Errorf("expected raw/single-line body when gzip is disabled")
+	}
+}
+
+func TestSingleLineResponseOptimization(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "singleline_test.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      false, // inspect plain uncompressed single-line output
+		MinifyResponses:  true,
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("db.Migrate failed: %v", err)
+	}
+	_ = db.CreateAdmin(context.Background(), database, "admin", "hashedpw")
+
+	srv := New(cfg, database)
+
+	// 1. Static CSS response is single line
+	cssReq := httptest.NewRequest("GET", "/static/css/style.css", nil)
+	cssRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(cssRR, cssReq)
+
+	cssBody := cssRR.Body.String()
+	if strings.Contains(cssBody, "\n") {
+		t.Errorf("expected CSS response to be single line, but found newline characters")
+	}
+	if !strings.Contains(cssBody, "--accent-primary") {
+		t.Errorf("expected single-line CSS to preserve --accent-primary")
+	}
+
+	// 2. Rendered HTML template response is single line
+	htmlReq := httptest.NewRequest("GET", "/login", nil)
+	htmlRR := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(htmlRR, htmlReq)
+
+	htmlBody := htmlRR.Body.String()
+	if strings.Contains(htmlBody, "\n") {
+		t.Errorf("expected HTML template response to be single line, but found newline characters")
+	}
+	if !strings.Contains(htmlBody, "<form") {
+		t.Errorf("expected single-line HTML to contain form")
+	}
+}
+
+func TestSettingsAction_CompressionToggle(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgFile := filepath.Join(tempDir, "config.json")
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "settings_comp.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      true,
+		MinifyResponses:  true,
+	}
+	_ = cfg.Save(cfgFile)
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	if err := db.Migrate(context.Background(), database, "sqlite"); err != nil {
+		t.Fatalf("db.Migrate failed: %v", err)
+	}
+	_ = db.CreateAdmin(context.Background(), database, "admin", "hashedpw")
+
+	srv := New(cfg, database)
+	ctxAdmin := context.WithValue(context.Background(), userCtxKey{}, &db.User{ID: 1, Username: "admin", Role: "admin"})
+
+	// Disable via appearance form submission
+	formDisable := "compression_settings_present=1&theme=global&accent=global&language=global"
+	reqDisable := httptest.NewRequest("POST", "/settings/action/appearance", strings.NewReader(formDisable)).WithContext(ctxAdmin)
+	reqDisable.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rrDisable := httptest.NewRecorder()
+	srv.settingsActionHandler(rrDisable, reqDisable)
+
+	if rrDisable.Code != http.StatusFound {
+		t.Fatalf("POST /settings/action/appearance returned status %d", rrDisable.Code)
+	}
+	if srv.cfg.GzipEnabled {
+		t.Errorf("expected GzipEnabled to be false after unchecking")
+	}
+	if srv.cfg.MinifyResponses {
+		t.Errorf("expected MinifyResponses to be false after unchecking")
+	}
+
+	// Re-enable via dedicated compression action
+	formEnable := "gzip_enabled=on&minify_responses=on"
+	reqEnable := httptest.NewRequest("POST", "/settings/action/compression", strings.NewReader(formEnable)).WithContext(ctxAdmin)
+	reqEnable.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rrEnable := httptest.NewRecorder()
+	srv.settingsActionHandler(rrEnable, reqEnable)
+
+	if rrEnable.Code != http.StatusFound {
+		t.Fatalf("POST /settings/action/compression returned status %d", rrEnable.Code)
+	}
+	if !srv.cfg.GzipEnabled {
+		t.Errorf("expected GzipEnabled to be true after enabling")
+	}
+	if !srv.cfg.MinifyResponses {
+		t.Errorf("expected MinifyResponses to be true after enabling")
+	}
+}
+
+func BenchmarkRenderTemplate_Buffered(b *testing.B) {
+	tempDir := b.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "bench_render.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      false,
+		MinifyResponses:  true,
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		b.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	_ = db.Migrate(context.Background(), database, "sqlite")
+
+	srv := New(cfg, database)
+	req := httptest.NewRequest("GET", "/login", nil)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rr := httptest.NewRecorder()
+		srv.renderTemplate(rr, req, "login.html", map[string]interface{}{"Title": "Login"})
+	}
+}
+
+func BenchmarkStaticAsset_GzipPrecompressed(b *testing.B) {
+	tempDir := b.TempDir()
+	cfg := &config.Config{
+		DBType:           "sqlite",
+		SQLiteURL:        filepath.Join(tempDir, "bench_static.sqlite"),
+		Port:             8080,
+		Domain:           "localhost",
+		StorageType:      "local",
+		LocalStoragePath: tempDir,
+		JWTKey:           "test-secret-key-32-bytes-minimum-length-xyz",
+		GzipEnabled:      true,
+		MinifyResponses:  true,
+	}
+
+	database, err := db.InitDB(context.Background(), cfg)
+	if err != nil {
+		b.Fatalf("db.Init failed: %v", err)
+	}
+	defer database.Close()
+	_ = db.Migrate(context.Background(), database, "sqlite")
+
+	srv := New(cfg, database)
+	req := httptest.NewRequest("GET", "/static/css/style.css", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		rr := httptest.NewRecorder()
+		srv.staticHandler(rr, req)
 	}
 }

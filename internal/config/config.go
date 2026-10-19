@@ -64,6 +64,8 @@ type Config struct {
 	DefaultLanguage  string  `json:"default_language"`
 	BlockIndexing    bool    `json:"block_indexing"`
 	Debug            bool    `json:"debug"`
+	GzipEnabled      bool    `json:"gzip_enabled"`
+	MinifyResponses  bool    `json:"minify_responses"`
 	EnvOnly          bool    `json:"-"` // Not serialized
 }
 
@@ -86,6 +88,8 @@ func DefaultConfig() Config {
 		CustomLogo:       "/static/logo.svg",
 		DefaultLanguage:  "en",
 		BlockIndexing:    true,
+		GzipEnabled:      true,
+		MinifyResponses:  true,
 	}
 }
 
@@ -218,6 +222,24 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 			cfg.Debug = d
 		}
 	}
+	if v, ok := os.LookupEnv("FL_GZIP_ENABLED"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.GzipEnabled = b
+		}
+	} else if v, ok := os.LookupEnv("FL_GZIP_COMPRESSION"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.GzipEnabled = b
+		}
+	}
+	if v, ok := os.LookupEnv("FL_MINIFY_RESPONSES"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MinifyResponses = b
+		}
+	} else if v, ok := os.LookupEnv("FL_MINIFY_ENABLED"); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.MinifyResponses = b
+		}
+	}
 	return &cfg, nil
 }
 
@@ -343,6 +365,8 @@ type ConfigView struct {
 	DefaultLanguage  string      `json:"default_language"`
 	BlockIndexing    bool        `json:"block_indexing"`
 	Debug            bool        `json:"debug"`
+	GzipEnabled      bool        `json:"gzip_enabled"`
+	MinifyResponses  bool        `json:"minify_responses"`
 	EnvOnly          bool        `json:"-"`
 }
 
@@ -401,6 +425,8 @@ func (c *Config) SanitizedView() ConfigView {
 		DefaultLanguage:  c.DefaultLanguage,
 		BlockIndexing:    c.BlockIndexing,
 		Debug:            c.Debug,
+		GzipEnabled:      c.GzipEnabled,
+		MinifyResponses:  c.MinifyResponses,
 		EnvOnly:          c.EnvOnly,
 	}
 }

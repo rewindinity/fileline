@@ -1,15 +1,36 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 
 	"fileline/internal/config"
 	"fileline/internal/db"
 	"fileline/internal/logger"
 	"fileline/internal/translations"
+	"fileline/web"
 )
+
+const maxPoolBufferSize = 1 << 20 // 1 MiB
+
+var templateBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 16<<10))
+	},
+}
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		return gzip.NewWriter(io.Discard)
+	},
+}
 
 func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
 	t, ok := s.tmpls[name]
@@ -59,12 +80,26 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 			if cookie, err := r.Cookie("lang"); err == nil && cookie.Value != "" {
 				lang = cookie.Value
 			}
-			// If user is logged in, use user's preferred language
-			if username := r.Context().Value("username"); username != nil {
-				uname := username.(string)
-				if user, err := db.GetUserByUsername(r.Context(), s.db, uname); err == nil && user.Language != "" && user.Language != "global" {
-					lang = user.Language
+			// If user is logged in, use user's preferred language from cached context user (or map["User"]) without an extra DB query
+			var user *db.User
+			if u, ok := userFrom(r.Context()); ok {
+				user = u
+			} else if u, ok := m["User"].(*db.User); ok && u != nil {
+				user = u
+			}
+			uname, _ := usernameFrom(r.Context())
+			if user == nil && uname != "" {
+				s.mu.RLock()
+				database := s.db
+				s.mu.RUnlock()
+				if database != nil {
+					user, _ = db.GetUserByUsername(r.Context(), database, uname)
 				}
+			}
+			if user != nil && user.Language != "" && user.Language != "global" {
+				lang = user.Language
+			}
+			if uname != "" {
 				if code, ok := s.recoveryCodeStore.LoadAndDelete(uname); ok {
 					m["NewRecoveryCode"] = code
 				}
@@ -74,9 +109,48 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 		m["Languages"] = translations.AvailableLanguages()
 		m["LanguageNames"] = translations.LanguageNames
 	}
-	if err := t.ExecuteTemplate(w, name, data); err != nil {
+
+	buf := templateBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= maxPoolBufferSize {
+			buf.Reset()
+			templateBufferPool.Put(buf)
+		}
+	}()
+
+	if err := t.ExecuteTemplate(buf, name, data); err != nil {
 		logger.Error("Error rendering template %s: %v", name, err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
+
+	body := buf.Bytes()
+
+	s.mu.RLock()
+	minifyEnabled := s.cfg == nil || s.cfg.MinifyResponses
+	gzipEnabled := s.cfg == nil || s.cfg.GzipEnabled
+	s.mu.RUnlock()
+
+	if minifyEnabled {
+		body = formatHTMLSingleLine(body)
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if gzipEnabled && r != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		_, _ = gz.Write(body)
+		_ = gz.Close()
+		gzipWriterPool.Put(gz)
+		return
+	}
+
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	_, _ = w.Write(body)
 }
 
 func (s *Server) render404(w http.ResponseWriter) {
@@ -98,16 +172,16 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	username := r.Context().Value("username").(string)
 	s.mu.RLock()
 	database := s.db
 	sanitizedDrives := s.cfg.SanitizedDrives()
 	s.mu.RUnlock()
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	username := user.Username
 	filterID := user.ID
 	if user.Role == "admin" {
 		filterID = 0
@@ -144,13 +218,13 @@ func (s *Server) logoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 	if customLogo == "" || customLogo == "/static/logo.svg" {
-		http.ServeFile(w, r, "web/static/logo.svg")
+		http.ServeFileFS(w, r, web.Static(), "logo.svg")
 		return
 	}
 	logoPath := filepath.Join("data", customLogo)
 	if _, err := os.Stat(logoPath); err == nil {
 		http.ServeFile(w, r, logoPath)
 	} else {
-		http.ServeFile(w, r, "web/static/logo.svg")
+		http.ServeFileFS(w, r, web.Static(), "logo.svg")
 	}
 }

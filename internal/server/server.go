@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +19,7 @@ import (
 	"fileline/internal/logger"
 	"fileline/internal/storage"
 	"fileline/internal/translations"
+	"fileline/web"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 )
@@ -38,6 +37,7 @@ type Server struct {
 	configured    atomic.Bool
 	setupToken    string
 	tmpls         map[string]*template.Template
+	staticCache   map[string]*cachedStaticAsset
 	webAuthn      *webauthn.WebAuthn
 	// Temporary session stores (bounded with TTL and oldest-first eviction)
 	totpTempStore     ttlStore[string, string]               // username -> string (secret)
@@ -48,9 +48,19 @@ type Server struct {
 	authLimiter       *authRateLimiter
 	chunkMu           sync.RWMutex
 	chunkUploads      map[string]*ChunkUpload
+	reads             chan db.ReadEvent
+	readsFlushCh      chan chan struct{}
+	droppedReads      atomic.Int64
+	readsWg           sync.WaitGroup
 	stopOnce          sync.Once
 	stopCh            chan struct{}
 }
+
+const (
+	readEventsBufferSize = 4096
+	readBatchMaxEvents   = 500
+	readBatchFlushWindow = 10 * time.Millisecond
+)
 
 // New creates a new Server instance and configures its dependencies and routes.
 func New(cfg *config.Config, database *sql.DB) *Server {
@@ -71,9 +81,13 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		recoveryCodeStore: newTTLStore[string, string](recoveryDisplayTTL, defaultTTLStoreMaxEntries),
 		authLimiter:       newAuthRateLimiter(),
 		chunkUploads:      make(map[string]*ChunkUpload),
+		reads:             make(chan db.ReadEvent, readEventsBufferSize),
+		readsFlushCh:      make(chan chan struct{}, 16),
 		stopCh:            make(chan struct{}),
 	}
 	go s.runBackgroundJanitor()
+	s.readsWg.Add(1)
+	go s.runReadBatchWriter()
 	if database != nil {
 		if hasAdmin, err := db.HasAdmin(context.Background(), database); err == nil && hasAdmin {
 			s.configured.Store(true)
@@ -105,25 +119,17 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		"setup.html", "login.html", "login_2fa.html", "reset_password.html", "dashboard.html", "404.html", "edit_file.html", "files.html", "settings.html",
 		"settings_appearance.html", "settings_embed.html", "settings_account.html", "settings_storage.html", "settings_subusers.html",
 	}
-	templateDir := "web/templates"
-	if _, err := os.Stat(filepath.Join(templateDir, "base.html")); err != nil {
-		if _, err2 := os.Stat(filepath.Join("../../web/templates", "base.html")); err2 == nil {
-			templateDir = "../../web/templates"
-		}
-	}
+	tmplFS := web.Templates()
 	for _, page := range pages {
-		basePath := filepath.Join(templateDir, "base.html")
-		pagePath := filepath.Join(templateDir, page)
 		t := template.New("base.html").Funcs(funcs)
-		t, err := t.ParseFiles(basePath, pagePath)
+		t, err := t.ParseFS(tmplFS, "base.html", page)
 		if err != nil {
 			logger.Error("Failed to parse template %s: %v", page, err)
 		} else {
 			s.tmpls[page] = t
 		}
 	}
-	embedPagePath := filepath.Join(templateDir, "embed_file.html")
-	if tEmbed, err := template.New("embed_file.html").Funcs(funcs).ParseFiles(embedPagePath); err != nil {
+	if tEmbed, err := template.New("embed_file.html").Funcs(funcs).ParseFS(tmplFS, "embed_file.html"); err != nil {
 		logger.Error("Failed to parse template embed_file.html: %v", err)
 	} else {
 		s.tmpls["embed_file.html"] = tEmbed
@@ -160,14 +166,84 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 	}
 	s.webAuthn = wa
 
+	s.initStaticCache()
+
 	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      s.routes(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              fmt.Sprintf(":%d", cfg.Port),
+		Handler:           s.routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 	return s
+}
+
+const (
+	transferMinBandwidthBytesPerSec = 256 << 10 // 256 KiB/s conservative floor for deadline sizing
+	minTransferDeadline             = 60 * time.Second
+	maxTransferDeadline             = 6 * time.Hour
+	transferProgressBatchBytes      = 4 << 20 // extend deadline every 4 MiB transferred
+)
+
+// transferBudget returns a bounded transfer duration for a payload of sizeBytes
+// assuming at least transferMinBandwidthBytesPerSec throughput, clamped between
+// minTransferDeadline (60s) and maxTransferDeadline (6h).
+func transferBudget(sizeBytes int64) time.Duration {
+	if sizeBytes <= 0 {
+		return minTransferDeadline
+	}
+	secs := (sizeBytes + transferMinBandwidthBytesPerSec - 1) / transferMinBandwidthBytesPerSec
+	d := time.Duration(secs) * time.Second
+	if d < minTransferDeadline {
+		return minTransferDeadline
+	}
+	if d > maxTransferDeadline {
+		return maxTransferDeadline
+	}
+	return d
+}
+
+// deadlineExtendingResponseWriter wraps an http.ResponseWriter and extends the
+// underlying connection's write deadline on forward progress so that large
+// transfers on slow-but-active links are not cut off by the server's default WriteTimeout,
+// while stalled connections still time out.
+type deadlineExtendingResponseWriter struct {
+	http.ResponseWriter
+	rc          *http.ResponseController
+	stepTimeout time.Duration
+	sinceExtend int64
+}
+
+func newDeadlineExtendingResponseWriter(w http.ResponseWriter, initialBudget time.Duration) *deadlineExtendingResponseWriter {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(initialBudget))
+	return &deadlineExtendingResponseWriter{
+		ResponseWriter: w,
+		rc:             rc,
+		stepTimeout:    minTransferDeadline,
+	}
+}
+
+func (dw *deadlineExtendingResponseWriter) Write(p []byte) (int, error) {
+	n, err := dw.ResponseWriter.Write(p)
+	dw.sinceExtend += int64(n)
+	if dw.sinceExtend >= transferProgressBatchBytes {
+		dw.sinceExtend = 0
+		_ = dw.rc.SetWriteDeadline(time.Now().Add(dw.stepTimeout))
+	}
+	return n, err
+}
+
+func (dw *deadlineExtendingResponseWriter) Flush() {
+	if f, ok := dw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (dw *deadlineExtendingResponseWriter) Unwrap() http.ResponseWriter {
+	return dw.ResponseWriter
 }
 
 // routes registers all HTTP handlers and returns the configured ServeMux.
@@ -177,7 +253,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.HandleFunc("/robots.txt", s.robotsTxtHandler)
 	mux.HandleFunc("/oembed", s.oembedHandler)
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static"))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.HandlerFunc(s.staticHandler)))
 	mux.HandleFunc("/logo", s.logoHandler)
 	mux.HandleFunc("/favicon.ico", s.logoHandler)
 	// Authentication & Onboarding routes (auth.go)
@@ -298,12 +374,126 @@ func (s *Server) Start() error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server and drains buffered read statistics.
 func (s *Server) Shutdown(ctx context.Context) error {
+	var err error
+	if s.httpServer != nil {
+		err = s.httpServer.Shutdown(ctx)
+	}
 	if s.stopCh != nil {
 		s.stopOnce.Do(func() { close(s.stopCh) })
 	}
-	return s.httpServer.Shutdown(ctx)
+	s.readsWg.Wait()
+	return err
+}
+
+// recordRead enqueues a file read event without blocking the HTTP handler.
+// If the bounded buffer is full, the event is dropped and counted in droppedReads.
+func (s *Server) recordRead(ev db.ReadEvent) {
+	if s.reads == nil {
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		if database != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = db.RecordFileRead(ctx, database, ev.FileID, ev.DeviceType)
+		}
+		return
+	}
+	select {
+	case s.reads <- ev:
+	default:
+		s.droppedReads.Add(1)
+	}
+}
+
+// DroppedReads returns the number of file read events dropped due to a full buffer.
+func (s *Server) DroppedReads() int64 {
+	return s.droppedReads.Load()
+}
+
+// FlushReads forces the background read-stats writer to flush all currently queued events.
+func (s *Server) FlushReads(ctx context.Context) {
+	if s.readsFlushCh == nil {
+		return
+	}
+	done := make(chan struct{})
+	select {
+	case s.readsFlushCh <- done:
+	case <-s.stopCh:
+		return
+	case <-ctx.Done():
+		return
+	}
+	select {
+	case <-done:
+	case <-s.stopCh:
+	case <-ctx.Done():
+	}
+}
+
+func (s *Server) runReadBatchWriter() {
+	defer s.readsWg.Done()
+	ticker := time.NewTicker(readBatchFlushWindow)
+	defer ticker.Stop()
+
+	batch := make([]db.ReadEvent, 0, readBatchMaxEvents)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		s.mu.RLock()
+		database := s.db
+		s.mu.RUnlock()
+		if database != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := db.RecordFileReadsBatch(ctx, database, batch); err != nil {
+				logger.Error("Failed to flush %d file read event(s): %v", len(batch), err)
+			}
+			cancel()
+		}
+		batch = batch[:0]
+	}
+	drainChannel := func() {
+		for {
+			select {
+			case ev := <-s.reads:
+				batch = append(batch, ev)
+				if len(batch) >= readBatchMaxEvents {
+					flush()
+				}
+			default:
+				flush()
+				return
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-s.stopCh:
+			drainChannel()
+			for {
+				select {
+				case done := <-s.readsFlushCh:
+					close(done)
+				default:
+					return
+				}
+			}
+		case ev := <-s.reads:
+			batch = append(batch, ev)
+			if len(batch) >= readBatchMaxEvents {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case done := <-s.readsFlushCh:
+			drainChannel()
+			close(done)
+		}
+	}
 }
 
 func (s *Server) limiter() *authRateLimiter {
@@ -541,16 +731,18 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+		holder := &requestAuthHolder{}
+		r = r.WithContext(context.WithValue(r.Context(), authHolderCtxKey{}, holder))
 
 		defer func() {
 			duration := time.Since(start)
-			username := ""
-			if u := r.Context().Value("username"); u != nil {
-				if uname, ok := u.(string); ok {
+			username := holder.username
+			if username == "" {
+				if uname, ok := usernameFrom(r.Context()); ok {
 					username = uname
 				}
 			}
-			if username == "" {
+			if username == "" && !holder.checked {
 				if cookie, err := r.Cookie("session"); err == nil && cookie.Value != "" {
 					if u, ok := s.parseJWTUsername(cookie.Value); ok {
 						username = u
@@ -701,7 +893,7 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, msg strin
 		logger.Error("%s", msg)
 	}
 
-	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webauthn/") || strings.HasPrefix(r.URL.Path, "/settings/2fa/generate") || strings.HasPrefix(r.URL.Path, "/settings/webauthn/") {
+	if r != nil && (strings.Contains(r.Header.Get("Accept"), "application/json") || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/webauthn/") || strings.HasPrefix(r.URL.Path, "/settings/2fa/generate") || strings.HasPrefix(r.URL.Path, "/settings/webauthn/")) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error": "Internal Server Error"}`))

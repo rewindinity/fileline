@@ -17,6 +17,12 @@ func TestLoadConfig_Default(t *testing.T) {
 	if !cfg.BlockIndexing {
 		t.Errorf("expected default BlockIndexing true, got false")
 	}
+	if !cfg.GzipEnabled {
+		t.Errorf("expected default GzipEnabled true, got false")
+	}
+	if !cfg.MinifyResponses {
+		t.Errorf("expected default MinifyResponses true, got false")
+	}
 }
 
 func TestLoadConfig_File(t *testing.T) {
@@ -54,10 +60,14 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	os.Setenv("FL_DB_TYPE", "sqlite")
 	os.Setenv("FL_PORT", "8000")
 	os.Setenv("FL_BLOCK_INDEXING", "false")
+	os.Setenv("FL_GZIP_ENABLED", "false")
+	os.Setenv("FL_MINIFY_RESPONSES", "false")
 	defer func() {
 		os.Unsetenv("FL_DB_TYPE")
 		os.Unsetenv("FL_PORT")
 		os.Unsetenv("FL_BLOCK_INDEXING")
+		os.Unsetenv("FL_GZIP_ENABLED")
+		os.Unsetenv("FL_MINIFY_RESPONSES")
 	}()
 	cfg, err := Load("", true)
 	if err != nil {
@@ -71,6 +81,12 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	}
 	if cfg.BlockIndexing {
 		t.Errorf("expected BlockIndexing false from env override, got true")
+	}
+	if cfg.GzipEnabled {
+		t.Errorf("expected GzipEnabled false from env override, got true")
+	}
+	if cfg.MinifyResponses {
+		t.Errorf("expected MinifyResponses false from env override, got true")
 	}
 }
 

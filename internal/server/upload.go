@@ -1,13 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +15,7 @@ import (
 
 	"fileline/internal/db"
 	"fileline/internal/logger"
+	"fileline/internal/storage"
 )
 
 const (
@@ -31,6 +32,7 @@ const (
 type ChunkUpload struct {
 	mu            sync.Mutex
 	ID            string
+	StorageKey    string
 	OriginalName  string
 	CustomName    string
 	URLPath       string
@@ -47,6 +49,7 @@ type ChunkUpload struct {
 	Completing    bool
 	TempDir       string
 	CreatedAt     time.Time
+	Staged        storage.StagedUpload
 }
 
 func (s *Server) configuredChunkSizeBytes() int64 {
@@ -57,6 +60,13 @@ func (s *Server) configuredChunkSizeBytes() int64 {
 	}
 	s.mu.RUnlock()
 	return int64(mb) << 20
+}
+
+func (s *Server) createStagedUpload(ctx context.Context, st storage.Provider, uploadID string, storageKey string, totalSize int64, chunkSize int64) (storage.StagedUpload, error) {
+	if sp, ok := st.(storage.StagedProvider); ok {
+		return sp.CreateStaged(ctx, uploadID, storageKey, totalSize, chunkSize)
+	}
+	return storage.NewDiskFallbackStagedUpload(chunkBaseDir(), uploadID, storageKey, totalSize, st)
 }
 
 type countingReader struct {
@@ -85,6 +95,15 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	maxSize := int64(s.cfg.MaxUploadSizeMB) * 1024 * 1024
 	maxUploadMB := s.cfg.MaxUploadSizeMB
 	s.mu.RUnlock()
+
+	uploadBudget := transferBudget(maxSize)
+	if maxSize <= 0 {
+		uploadBudget = transferBudget(50 << 20)
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(uploadBudget))
+	_ = rc.SetWriteDeadline(time.Now().Add(uploadBudget))
+
 	if maxSize > 0 {
 		r.Body = http.MaxBytesReader(w, r.Body, maxSize+(1<<20))
 	}
@@ -104,7 +123,12 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	username := r.Context().Value("username").(string)
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	username := user.Username
 
 	if maxSize > 0 && header.Size > maxSize {
 		logger.Action("User '%s' upload rejected: file '%s' (%s) exceeds maximum allowed size (%d MB)", username, header.Filename, logger.FormatBytes(header.Size), maxUploadMB)
@@ -153,12 +177,6 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	database := s.db
 	s.mu.RUnlock()
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
 	var currentUsed int64
 	if user.StorageQuotaMB > 0 {
 		currentUsed, _ = db.GetUserTotalStorage(r.Context(), database, user.ID)
@@ -309,16 +327,15 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 	database := s.db
 	s.mu.RUnlock()
 
-	username, _ := r.Context().Value("username").(string)
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	username := user.Username
 	if maxSize > 0 && req.TotalSize > maxSize {
 		logger.Action("User '%s' chunked upload init rejected: file '%s' exceeds maximum allowed size (%d MB)", username, req.FileName, maxUploadMB)
 		http.Error(w, "File exceeds maximum allowed size", http.StatusBadRequest)
-		return
-	}
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if user.StorageQuotaMB > 0 {
@@ -346,26 +363,23 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Random, server-generated ID: the temp directory is always a direct child of chunkBaseDir(), confined via os.Root.
 	uploadID := newUploadID()
-	baseDir := chunkBaseDir()
-	tempDir := filepath.Join(baseDir, uploadID)
-	baseRoot, err := openChunkBaseRoot()
+	storageKey := newStorageKey()
+
+	s.mu.RLock()
+	st := s.getProvider(req.DriveID)
+	s.mu.RUnlock()
+
+	staged, err := s.createStagedUpload(r.Context(), st, uploadID, storageKey, req.TotalSize, chunkSize)
 	if err != nil {
 		s.chunkMu.Unlock()
-		s.internalError(w, r, "Failed to open chunk base directory", err)
+		s.internalError(w, r, "Failed to initialize staged upload", err)
 		return
 	}
-	if err := baseRoot.Mkdir(uploadID, 0o700); err != nil {
-		baseRoot.Close()
-		s.chunkMu.Unlock()
-		s.internalError(w, r, "Failed to create temp directory", err)
-		return
-	}
-	baseRoot.Close()
 
 	upload := &ChunkUpload{
 		ID:           uploadID,
+		StorageKey:   storageKey,
 		OriginalName: req.FileName,
 		CustomName:   req.CustomName,
 		URLPath:      req.URLPath,
@@ -378,8 +392,8 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 		UserID:       user.ID,
 		Received:     make([]bool, req.TotalChunks),
 		ChunkSizes:   make([]int64, req.TotalChunks),
-		TempDir:      tempDir,
 		CreatedAt:    now,
+		Staged:       staged,
 	}
 	s.chunkUploads[uploadID] = upload
 	s.chunkMu.Unlock()
@@ -396,49 +410,123 @@ func (s *Server) chunkUploadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	username, _ := r.Context().Value("username").(string)
-	s.mu.RLock()
-	database := s.db
-	s.mu.RUnlock()
-	currentUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
+	currentUser, err := s.currentUser(r)
+	if err != nil || currentUser == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
 	maxChunkBytes := s.configuredChunkSizeBytes()
+	chunkBudget := transferBudget(maxChunkBytes)
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(chunkBudget))
+	_ = rc.SetWriteDeadline(time.Now().Add(chunkBudget))
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxChunkBytes+(1<<20))
-	if err := r.ParseMultipartForm(8 << 20); err != nil {
-		if isMaxBytesError(err) {
-			http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
+		return
+	}
+
+	var uploadID string
+	chunkIndex := -1
+	var chunkReader io.Reader
+	var spoolFile *os.File
+
+	if qID := r.URL.Query().Get("upload_id"); qID != "" {
+		uploadID = qID
+	}
+	if qIdx := r.URL.Query().Get("chunk_index"); qIdx != "" {
+		if idx, err := strconv.Atoi(qIdx); err == nil {
+			chunkIndex = idx
+		}
+	}
+
+	for {
+		part, err := mr.NextPart()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if isMaxBytesError(err) {
+				if spoolFile != nil {
+					_ = spoolFile.Close()
+					_ = os.Remove(spoolFile.Name())
+				}
+				http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if spoolFile != nil {
+				_ = spoolFile.Close()
+				_ = os.Remove(spoolFile.Name())
+			}
+			http.Error(w, "Failed to read chunk", http.StatusBadRequest)
 			return
 		}
-		http.Error(w, "Chunk exceeds maximum allowed size or invalid form", http.StatusBadRequest)
+
+		formName := part.FormName()
+		switch formName {
+		case "upload_id":
+			b, _ := io.ReadAll(io.LimitReader(part, 128))
+			uploadID = strings.TrimSpace(string(b))
+		case "chunk_index":
+			b, _ := io.ReadAll(io.LimitReader(part, 32))
+			if idx, parseErr := strconv.Atoi(strings.TrimSpace(string(b))); parseErr == nil {
+				chunkIndex = idx
+			}
+		case "chunk":
+			if uploadID != "" && chunkIndex >= 0 {
+				chunkReader = part
+				goto streamChunk
+			}
+			spoolFile, err = os.CreateTemp(chunkBaseDir(), "spool_*")
+			if err != nil {
+				http.Error(w, "Failed to process chunk", http.StatusInternalServerError)
+				return
+			}
+			defer func() {
+				if spoolFile != nil {
+					_ = spoolFile.Close()
+					_ = os.Remove(spoolFile.Name())
+				}
+			}()
+			if _, err := io.Copy(spoolFile, part); err != nil {
+				if isMaxBytesError(err) {
+					http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
+					return
+				}
+				http.Error(w, "Failed to read chunk", http.StatusBadRequest)
+				return
+			}
+			if _, err := spoolFile.Seek(0, io.SeekStart); err != nil {
+				http.Error(w, "Failed to process chunk", http.StatusInternalServerError)
+				return
+			}
+			chunkReader = spoolFile
+		default:
+			_, _ = io.Copy(io.Discard, part)
+		}
+	}
+
+streamChunk:
+	if chunkReader == nil || uploadID == "" || chunkIndex < 0 {
+		http.Error(w, "Invalid chunk submission or missing parameters", http.StatusBadRequest)
 		return
 	}
-	uploadID := r.FormValue("upload_id")
-	chunkIndex, err := strconv.Atoi(r.FormValue("chunk_index"))
-	if err != nil {
-		http.Error(w, "Invalid chunk index", http.StatusBadRequest)
-		return
-	}
-	file, _, err := r.FormFile("chunk")
-	if err != nil {
-		http.Error(w, "Failed to read chunk", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
 
 	s.chunkMu.RLock()
 	upload, ok := s.chunkUploads[uploadID]
 	s.chunkMu.RUnlock()
 
 	if !ok || upload.UserID != currentUser.ID {
+		_, _ = io.Copy(io.Discard, chunkReader)
 		http.Error(w, "Upload session not found", http.StatusNotFound)
 		return
 	}
 
 	if chunkIndex < 0 || chunkIndex >= upload.TotalChunks {
+		_, _ = io.Copy(io.Discard, chunkReader)
 		http.Error(w, "Chunk index out of bounds", http.StatusBadRequest)
 		return
 	}
@@ -449,51 +537,39 @@ func (s *Server) chunkUploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upload.mu.Lock()
+	if upload.Completing {
+		upload.mu.Unlock()
+		_, _ = io.Copy(io.Discard, chunkReader)
+		http.Error(w, "Upload session not found", http.StatusNotFound)
+		return
+	}
+	upload.mu.Unlock()
+
+	offset := int64(chunkIndex) * upload.ChunkSize
+	written, copyErr := upload.Staged.WriteChunk(chunkIndex, offset, chunkReader, chunkLimit)
+	if copyErr != nil {
+		if isMaxBytesError(copyErr) {
+			http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Failed to write chunk to storage", http.StatusBadRequest)
+		return
+	}
+	if written > chunkLimit {
+		http.Error(w, "Chunk exceeds maximum configured chunk size", http.StatusBadRequest)
+		return
+	}
+
+	upload.mu.Lock()
 	defer upload.mu.Unlock()
 	if upload.Completing {
 		http.Error(w, "Upload session not found", http.StatusNotFound)
 		return
 	}
 
-	uploadRoot, err := openChunkUploadRoot(upload.ID)
-	if err != nil {
-		s.internalError(w, r, "Failed to open chunk directory", err)
-		return
-	}
-	defer uploadRoot.Close()
-
-	chunkName := strconv.Itoa(chunkIndex)
-	dst, err := uploadRoot.OpenFile(chunkName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		s.internalError(w, r, "Failed to save chunk to disk", err)
-		return
-	}
-	written, copyErr := io.Copy(dst, io.LimitReader(file, chunkLimit+1))
-	closeErr := dst.Close()
-	if copyErr != nil {
-		_ = uploadRoot.Remove(chunkName)
-		if isMaxBytesError(copyErr) {
-			http.Error(w, "Chunk exceeds maximum allowed size", http.StatusRequestEntityTooLarge)
-			return
-		}
-		s.internalError(w, r, "Failed to write chunk to disk", copyErr)
-		return
-	}
-	if closeErr != nil {
-		_ = uploadRoot.Remove(chunkName)
-		s.internalError(w, r, "Failed to close chunk file", closeErr)
-		return
-	}
-	if written > chunkLimit {
-		_ = uploadRoot.Remove(chunkName)
-		http.Error(w, "Chunk exceeds maximum configured chunk size", http.StatusBadRequest)
-		return
-	}
-
 	prevSize := upload.ChunkSizes[chunkIndex]
 	newTotalReceived := upload.BytesReceived - prevSize + written
 	if newTotalReceived > upload.TotalSize {
-		_ = uploadRoot.Remove(chunkName)
 		upload.Received[chunkIndex] = false
 		upload.ChunkSizes[chunkIndex] = 0
 		upload.BytesReceived -= prevSize
@@ -515,12 +591,8 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	username, _ := r.Context().Value("username").(string)
-	s.mu.RLock()
-	database := s.db
-	s.mu.RUnlock()
-	currentUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
+	currentUser, err := s.currentUser(r)
+	if err != nil || currentUser == nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -566,17 +638,8 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	upload.mu.Unlock()
 	s.chunkMu.Unlock()
 
-	uploadRoot, err := openChunkUploadRoot(upload.ID)
-	if err != nil {
-		_ = removeChunkUploadDir(upload.ID)
-		s.internalError(w, r, "Failed to open chunk upload directory", err)
-		return
-	}
-	// Clean up temp dir after we are done storing (confined to chunkBaseDir via os.Root)
-	defer func() {
-		uploadRoot.Close()
-		_ = removeChunkUploadDir(upload.ID)
-	}()
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(transferBudget(upload.TotalSize)))
 
 	s.mu.RLock()
 	st := s.getProvider(upload.DriveID)
@@ -585,67 +648,39 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		storageType = s.cfg.StorageType
 	}
 	maxSize := int64(s.cfg.MaxUploadSizeMB) * 1024 * 1024
+	database := s.db
 	s.mu.RUnlock()
 
 	user := currentUser
+	actualSize := upload.TotalSize
 
-	// Assemble file inside the confined uploadRoot
-	finalFile, err := uploadRoot.OpenFile("assembled", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		s.internalError(w, r, "Failed to create assembled file", err)
-		return
-	}
-	var actualSize int64
-	for i := 0; i < upload.TotalChunks; i++ {
-		chunkFile, err := uploadRoot.Open(strconv.Itoa(i))
-		if err != nil {
-			finalFile.Close()
-			s.internalError(w, r, "Failed to read chunk from disk", err)
-			return
+	if upload.BytesReceived != upload.TotalSize {
+		if upload.Staged != nil {
+			_ = upload.Staged.Abort()
 		}
-		n, copyErr := io.Copy(finalFile, chunkFile)
-		chunkFile.Close()
-		if copyErr != nil {
-			finalFile.Close()
-			s.internalError(w, r, "Failed to write assembled file", copyErr)
-			return
-		}
-		actualSize += n
-		if maxSize > 0 && actualSize > maxSize {
-			finalFile.Close()
-			http.Error(w, "Assembled file exceeds maximum allowed size", http.StatusBadRequest)
-			return
-		}
-	}
-	if err := finalFile.Close(); err != nil {
-		s.internalError(w, r, "Failed to finalize assembled file", err)
-		return
-	}
-
-	if actualSize != upload.TotalSize {
 		http.Error(w, "Assembled file size does not match declared total size", http.StatusBadRequest)
 		return
 	}
+
 	if maxSize > 0 && actualSize > maxSize {
+		if upload.Staged != nil {
+			_ = upload.Staged.Abort()
+		}
 		http.Error(w, "Assembled file exceeds maximum allowed size", http.StatusBadRequest)
 		return
 	}
+
 	if user.StorageQuotaMB > 0 {
 		total, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
 		if total+actualSize > int64(user.StorageQuotaMB)*1024*1024 {
+			if upload.Staged != nil {
+				_ = upload.Staged.Abort()
+			}
 			logger.Action("User '%s' chunked upload complete rejected: quota exceeded for file '%s' (%s)", user.Username, upload.OriginalName, logger.FormatBytes(actualSize))
 			http.Error(w, "Storage quota exceeded", http.StatusForbidden)
 			return
 		}
 	}
-
-	// Re-open for storage provider
-	assembledFile, err := uploadRoot.Open("assembled")
-	if err != nil {
-		s.internalError(w, r, "Failed to open assembled file", err)
-		return
-	}
-	defer assembledFile.Close()
 
 	urlPath := upload.URLPath
 	explicitURLPath := urlPath != ""
@@ -657,9 +692,9 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	storageKey := newStorageKey()
-	if err := st.Save(r.Context(), storageKey, assembledFile); err != nil {
-		s.internalError(w, r, "Failed to save file to storage", err)
+	storageKey := upload.StorageKey
+	if err := upload.Staged.Commit(r.Context(), storageKey, actualSize); err != nil {
+		s.internalError(w, r, "Failed to commit file to storage", err)
 		return
 	}
 	f := &db.File{
@@ -698,7 +733,7 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) cleanupExpiredUploads(now time.Time) {
-	var expiredIDs []string
+	var expiredUploads []*ChunkUpload
 	s.chunkMu.Lock()
 	for id, u := range s.chunkUploads {
 		if now.Sub(u.CreatedAt) > chunkUploadTTL {
@@ -706,14 +741,17 @@ func (s *Server) cleanupExpiredUploads(now time.Time) {
 			if !u.Completing {
 				u.Completing = true
 				delete(s.chunkUploads, id)
-				expiredIDs = append(expiredIDs, id)
+				expiredUploads = append(expiredUploads, u)
 			}
 			u.mu.Unlock()
 		}
 	}
 	s.chunkMu.Unlock()
-	for _, id := range expiredIDs {
-		_ = removeChunkUploadDir(id)
+	for _, u := range expiredUploads {
+		if u.Staged != nil {
+			_ = u.Staged.Abort()
+		}
+		_ = removeChunkUploadDir(u.ID)
 	}
 	s.totpTempStore.Sweep(now)
 	s.webAuthnTempStore.Sweep(now)

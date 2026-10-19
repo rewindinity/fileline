@@ -3,6 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -68,22 +72,24 @@ func GetAllFiles(ctx context.Context, db *sql.DB, userID int) ([]*File, error) {
 	var rows *sql.Rows
 	var err error
 	if userID > 0 {
-		query = `SELECT f.id, f.original_name, f.custom_name, f.url_path, f.size, f.is_private, f.storage_type, f.storage_path, f.user_id, f.uploaded_at, f.stats_enabled,
-			COALESCE(tot.cnt, 0) AS total_reads,
-			COALESCE(r24.cnt, 0) AS reads_24h
-			FROM files f
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads GROUP BY file_id) tot ON tot.file_id = f.id
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads WHERE read_at >= $1 GROUP BY file_id) r24 ON r24.file_id = f.id
-			WHERE f.user_id = $2 ORDER BY f.uploaded_at DESC`
-		rows, err = db.QueryContext(ctx, query, cutoff, userID)
+		query = `WITH page AS (
+			SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
+			FROM files WHERE user_id = $1 ORDER BY uploaded_at DESC
+		)
+		SELECT page.id, page.original_name, page.custom_name, page.url_path, page.size, page.is_private, page.storage_type, page.storage_path, page.user_id, page.uploaded_at, page.stats_enabled,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id) AS total_reads,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id AND r.read_at >= $2) AS reads_24h
+		FROM page ORDER BY page.uploaded_at DESC`
+		rows, err = db.QueryContext(ctx, query, userID, cutoff)
 	} else {
-		query = `SELECT f.id, f.original_name, f.custom_name, f.url_path, f.size, f.is_private, f.storage_type, f.storage_path, f.user_id, f.uploaded_at, f.stats_enabled,
-			COALESCE(tot.cnt, 0) AS total_reads,
-			COALESCE(r24.cnt, 0) AS reads_24h
-			FROM files f
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads GROUP BY file_id) tot ON tot.file_id = f.id
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads WHERE read_at >= $1 GROUP BY file_id) r24 ON r24.file_id = f.id
-			ORDER BY f.uploaded_at DESC`
+		query = `WITH page AS (
+			SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
+			FROM files ORDER BY uploaded_at DESC
+		)
+		SELECT page.id, page.original_name, page.custom_name, page.url_path, page.size, page.is_private, page.storage_type, page.storage_path, page.user_id, page.uploaded_at, page.stats_enabled,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id) AS total_reads,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id AND r.read_at >= $1) AS reads_24h
+		FROM page ORDER BY page.uploaded_at DESC`
 		rows, err = db.QueryContext(ctx, query, cutoff)
 	}
 	if err != nil {
@@ -99,7 +105,141 @@ func GetAllFiles(ctx context.Context, db *sql.DB, userID int) ([]*File, error) {
 		}
 		files = append(files, f)
 	}
-	return files, nil
+	return files, rows.Err()
+}
+
+// FilePageOpts defines filtering and pagination parameters for files listing.
+type FilePageOpts struct {
+	UserID   int
+	CursorTS *time.Time
+	CursorID int
+	Limit    int
+	Search   string
+}
+
+// FilePage represents a paginated slice of files with keyset navigation cursors.
+type FilePage struct {
+	Files      []*File
+	NextCursor string
+	HasNext    bool
+}
+
+func formatDBTimestamp(t time.Time) string {
+	t = t.UTC()
+	if t.Nanosecond() > 0 {
+		return t.Format("2006-01-02 15:04:05.999999")
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+// EncodeCursor encodes a timestamp and file ID into a URL-safe keyset pagination cursor.
+func EncodeCursor(uploadedAt time.Time, id int) string {
+	raw := fmt.Sprintf("%s,%d", formatDBTimestamp(uploadedAt), id)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeCursor decodes a URL-safe keyset pagination cursor into its timestamp and file ID components.
+func DecodeCursor(s string) (time.Time, int, error) {
+	if s == "" {
+		return time.Time{}, 0, errors.New("empty cursor")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	parts := strings.Split(string(raw), ",")
+	if len(parts) != 2 {
+		return time.Time{}, 0, errors.New("invalid cursor parts")
+	}
+	t, err := time.Parse("2006-01-02 15:04:05.999999", parts[0])
+	if err != nil {
+		t, err = time.Parse("2006-01-02 15:04:05", parts[0])
+		if err != nil {
+			t, err = time.Parse(time.RFC3339Nano, parts[0])
+			if err != nil {
+				return time.Time{}, 0, err
+			}
+		}
+	}
+	id, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return time.Time{}, 0, err
+	}
+	return t, id, nil
+}
+
+// GetFilesPage returns a paginated slice of files using keyset pagination and covering index scans.
+func GetFilesPage(ctx context.Context, database *sql.DB, opts FilePageOpts) (*FilePage, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	var (
+		whereClauses []string
+		args         []interface{}
+		argIdx       = 1
+	)
+
+	if opts.UserID > 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf("user_id = $%d", argIdx))
+		args = append(args, opts.UserID)
+		argIdx++
+	}
+
+	if opts.CursorTS != nil && !opts.CursorTS.IsZero() && opts.CursorID > 0 {
+		tsStr := formatDBTimestamp(*opts.CursorTS)
+		whereClauses = append(whereClauses, fmt.Sprintf("(uploaded_at < $%d OR (uploaded_at = $%d AND id < $%d))", argIdx, argIdx+1, argIdx+2))
+		args = append(args, tsStr, tsStr, opts.CursorID)
+		argIdx += 3
+	}
+
+	search := strings.TrimSpace(opts.Search)
+	if search != "" {
+		likePattern := "%" + search + "%"
+		whereClauses = append(whereClauses, fmt.Sprintf("(original_name LIKE $%d OR custom_name LIKE $%d OR url_path LIKE $%d)", argIdx, argIdx, argIdx))
+		args = append(args, likePattern)
+		argIdx++
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	query := fmt.Sprintf(`SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
+FROM files %s ORDER BY uploaded_at DESC, id DESC LIMIT %d`, whereSQL, limit+1)
+
+	rows, err := database.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []*File
+	for rows.Next() {
+		f := &File{}
+		if err := rows.Scan(&f.ID, &f.OriginalName, &f.CustomName, &f.URLPath, &f.Size, &f.IsPrivate, &f.StorageType, &f.StoragePath, &f.UserID, &f.UploadedAt, &f.StatsEnabled); err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	page := &FilePage{}
+	if len(files) > limit {
+		page.HasNext = true
+		files = files[:limit]
+		last := files[len(files)-1]
+		page.NextCursor = EncodeCursor(last.UploadedAt, last.ID)
+	}
+	page.Files = files
+	return page, nil
 }
 
 // DeleteFile removes a file record by ID and cleans up any related stats
@@ -135,23 +275,25 @@ func GetRecentFiles(ctx context.Context, db *sql.DB, limit, userID int) ([]*File
 	var rows *sql.Rows
 	var err error
 	if userID > 0 {
-		query = `SELECT f.id, f.original_name, f.custom_name, f.url_path, f.size, f.is_private, f.storage_type, f.storage_path, f.user_id, f.uploaded_at, f.stats_enabled,
-			COALESCE(tot.cnt, 0) AS total_reads,
-			COALESCE(r24.cnt, 0) AS reads_24h
-			FROM files f
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads GROUP BY file_id) tot ON tot.file_id = f.id
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads WHERE read_at >= $1 GROUP BY file_id) r24 ON r24.file_id = f.id
-			WHERE f.user_id = $2 ORDER BY f.uploaded_at DESC LIMIT $3`
-		rows, err = db.QueryContext(ctx, query, cutoff, userID, limit)
+		query = `WITH page AS (
+			SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
+			FROM files WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT $2
+		)
+		SELECT page.id, page.original_name, page.custom_name, page.url_path, page.size, page.is_private, page.storage_type, page.storage_path, page.user_id, page.uploaded_at, page.stats_enabled,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id) AS total_reads,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id AND r.read_at >= $3) AS reads_24h
+		FROM page ORDER BY page.uploaded_at DESC`
+		rows, err = db.QueryContext(ctx, query, userID, limit, cutoff)
 	} else {
-		query = `SELECT f.id, f.original_name, f.custom_name, f.url_path, f.size, f.is_private, f.storage_type, f.storage_path, f.user_id, f.uploaded_at, f.stats_enabled,
-			COALESCE(tot.cnt, 0) AS total_reads,
-			COALESCE(r24.cnt, 0) AS reads_24h
-			FROM files f
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads GROUP BY file_id) tot ON tot.file_id = f.id
-			LEFT JOIN (SELECT file_id, COUNT(*) AS cnt FROM file_reads WHERE read_at >= $1 GROUP BY file_id) r24 ON r24.file_id = f.id
-			ORDER BY f.uploaded_at DESC LIMIT $2`
-		rows, err = db.QueryContext(ctx, query, cutoff, limit)
+		query = `WITH page AS (
+			SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
+			FROM files ORDER BY uploaded_at DESC LIMIT $1
+		)
+		SELECT page.id, page.original_name, page.custom_name, page.url_path, page.size, page.is_private, page.storage_type, page.storage_path, page.user_id, page.uploaded_at, page.stats_enabled,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id) AS total_reads,
+			(SELECT COUNT(*) FROM file_reads r WHERE r.file_id = page.id AND r.read_at >= $2) AS reads_24h
+		FROM page ORDER BY page.uploaded_at DESC`
+		rows, err = db.QueryContext(ctx, query, limit, cutoff)
 	}
 	if err != nil {
 		return nil, err
@@ -165,7 +307,7 @@ func GetRecentFiles(ctx context.Context, db *sql.DB, limit, userID int) ([]*File
 		}
 		files = append(files, f)
 	}
-	return files, nil
+	return files, rows.Err()
 }
 
 // GetUserTotalStorage retrieves the total sum of file sizes for a specific user
@@ -181,12 +323,73 @@ func GetUserTotalStorage(ctx context.Context, database *sql.DB, userID int) (int
 	return 0, nil
 }
 
+// GetAllUsersTotalStorage retrieves the total storage sum grouped by user_id in a single query
+func GetAllUsersTotalStorage(ctx context.Context, database *sql.DB) (map[int]int64, error) {
+	query := "SELECT user_id, COALESCE(SUM(size), 0) FROM files GROUP BY user_id"
+	rows, err := database.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	totals := make(map[int]int64)
+	for rows.Next() {
+		var (
+			uid   int
+			total int64
+		)
+		if err := rows.Scan(&uid, &total); err != nil {
+			return nil, err
+		}
+		totals[uid] = total
+	}
+	return totals, rows.Err()
+}
+
+// ReadEvent represents a single file read event to be persisted.
+type ReadEvent struct {
+	FileID     int
+	DeviceType string
+	ReadAt     time.Time
+}
+
 // RecordFileRead records a single file read event with timestamp and device type
 func RecordFileRead(ctx context.Context, database *sql.DB, fileID int, deviceType string) error {
 	now := time.Now().UTC()
 	query := `INSERT INTO file_reads (file_id, device_type, read_at) VALUES ($1, $2, $3)`
 	_, err := database.ExecContext(ctx, query, fileID, deviceType, now.Format("2006-01-02 15:04:05"))
 	return err
+}
+
+// RecordFileReadsBatch inserts multiple file read events inside a single database transaction.
+func RecordFileReadsBatch(ctx context.Context, database *sql.DB, events []ReadEvent) error {
+	if database == nil || len(events) == 0 {
+		return nil
+	}
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO file_reads (file_id, device_type, read_at) VALUES ($1, $2, $3)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, ev := range events {
+		ts := ev.ReadAt
+		if ts.IsZero() {
+			ts = time.Now().UTC()
+		} else {
+			ts = ts.UTC()
+		}
+		if _, err := stmt.ExecContext(ctx, ev.FileID, ev.DeviceType, ts.Format("2006-01-02 15:04:05")); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ResetFileStats deletes all recorded read statistics for a file
@@ -262,6 +465,59 @@ func GetFileStats(ctx context.Context, database *sql.DB, fileID int) (*FileStats
 	return stats, nil
 }
 
+var dbTimeLayouts = [...]string{
+	"2006-01-02 15:04:05",
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05 +0000 UTC",
+	"2006-01-02 15:04:05.999999999 +0000 UTC",
+	"2006-01-02 15:04:05-07:00",
+	"2006-01-02 15:04:05.999999999-07:00",
+	"2006-01-02 15:04:05 -0700 MST",
+	"2006-01-02 15:04:05.999999999 -0700 MST",
+}
+
+func parseDBTimeString(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	// Fast path 1: Standard SQLite format "YYYY-MM-DD HH:MM:SS" or ISO "YYYY-MM-DDTHH:MM:SS" (len 19)
+	if len(s) == 19 {
+		switch s[10] {
+		case ' ':
+			if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+				return &t
+			}
+		case 'T':
+			if t, err := time.Parse("2006-01-02T15:04:05", s); err == nil {
+				return &t
+			}
+		}
+	} else if len(s) == 20 && s[19] == 'Z' && s[10] == 'T' {
+		// Fast path 2: Standard RFC3339 UTC "YYYY-MM-DDTHH:MM:SSZ" (len 20)
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return &t
+		}
+	} else if len(s) > 20 && strings.ContainsRune(s, 'T') {
+		// Fast path 3: RFC3339 with timezone offset or fractional seconds
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return &t
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return &t
+		}
+	}
+
+	for _, layout := range dbTimeLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
 func parseDBTime(val interface{}) *time.Time {
 	if val == nil {
 		return nil
@@ -272,29 +528,12 @@ func parseDBTime(val interface{}) *time.Time {
 	case *time.Time:
 		return v
 	case string:
-		if v == "" {
+		return parseDBTimeString(v)
+	case []byte:
+		if len(v) == 0 {
 			return nil
 		}
-		layouts := []string{
-			"2006-01-02 15:04:05.999999999 -0700 MST",
-			"2006-01-02 15:04:05 -0700 MST",
-			"2006-01-02 15:04:05.999999999 +0000 UTC",
-			"2006-01-02 15:04:05 +0000 UTC",
-			time.RFC3339Nano,
-			time.RFC3339,
-			"2006-01-02 15:04:05.999999999-07:00",
-			"2006-01-02 15:04:05-07:00",
-			"2006-01-02 15:04:05.999999999",
-			"2006-01-02 15:04:05",
-			"2006-01-02T15:04:05",
-		}
-		for _, layout := range layouts {
-			if t, err := time.Parse(layout, v); err == nil {
-				return &t
-			}
-		}
-	case []byte:
-		return parseDBTime(string(v))
+		return parseDBTimeString(string(v))
 	}
 	return nil
 }

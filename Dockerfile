@@ -16,7 +16,6 @@ FROM gcr.io/distroless/static-debian13:nonroot
 WORKDIR /app
 
 COPY --from=builder --chown=65532:65532 /out/app /app
-COPY --from=builder --chown=65532:65532 /src/web /app/web
 COPY --from=builder /out/fileline /usr/local/bin/fileline
 
 USER 65532:65532

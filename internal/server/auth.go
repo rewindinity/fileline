@@ -126,11 +126,90 @@ func (s *Server) parseJWTUsername(tokenStr string) (string, bool) {
 	return claims.Username, true
 }
 
+type userCtxKey struct{}
+type authHolderCtxKey struct{}
+
+// requestAuthHolder allows loggingMiddleware (outer) to observe the authenticated username
+// resolved by requireAuth or serveFileHandler (inner) without re-parsing the JWT or querying the DB.
+type requestAuthHolder struct {
+	username string
+	checked  bool
+}
+
+func withUser(ctx context.Context, u *db.User) context.Context {
+	if u == nil {
+		return ctx
+	}
+	ctx = context.WithValue(ctx, userCtxKey{}, u)
+	ctx = context.WithValue(ctx, "username", u.Username)
+	if h, ok := ctx.Value(authHolderCtxKey{}).(*requestAuthHolder); ok && h != nil {
+		h.username = u.Username
+		h.checked = true
+	}
+	return ctx
+}
+
+func userFrom(ctx context.Context) (*db.User, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	u, ok := ctx.Value(userCtxKey{}).(*db.User)
+	return u, ok && u != nil
+}
+
+func usernameFrom(ctx context.Context) (string, bool) {
+	if u, ok := userFrom(ctx); ok {
+		return u.Username, true
+	}
+	if ctx != nil {
+		if uname, ok := ctx.Value("username").(string); ok && uname != "" {
+			return uname, true
+		}
+	}
+	return "", false
+}
+
+// currentUser returns the authenticated *db.User cached on r.Context() by requireAuth,
+// falling back to a single DB lookup when handlers are invoked directly in tests with only "username" in context.
+func (s *Server) currentUser(r *http.Request) (*db.User, error) {
+	if r == nil {
+		return nil, errors.New("nil request")
+	}
+	if u, ok := userFrom(r.Context()); ok {
+		return u, nil
+	}
+	uname, ok := usernameFrom(r.Context())
+	if !ok {
+		return nil, errors.New("unauthenticated")
+	}
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+	if database == nil {
+		return nil, errors.New("database not configured")
+	}
+	u, err := db.GetUserByUsername(r.Context(), database, uname)
+	if err != nil {
+		return nil, err
+	}
+	if h, ok := r.Context().Value(authHolderCtxKey{}).(*requestAuthHolder); ok && h != nil {
+		h.username = u.Username
+		h.checked = true
+	}
+	return u, nil
+}
+
 // parseSession verifies the session cookie from r, loads the user from the database,
 // and checks that the user still exists and the token's session version (`ver`) matches `user.SessionVersion`.
 func (s *Server) parseSession(r *http.Request) (*db.User, bool) {
 	if r == nil {
 		return nil, false
+	}
+	if u, ok := userFrom(r.Context()); ok {
+		return u, true
+	}
+	if h, ok := r.Context().Value(authHolderCtxKey{}).(*requestAuthHolder); ok && h != nil {
+		h.checked = true
 	}
 	cookie, err := r.Cookie("session")
 	if err != nil || cookie.Value == "" {
@@ -157,6 +236,10 @@ func (s *Server) parseSession(r *http.Request) (*db.User, bool) {
 	if tokenVer != user.SessionVersion {
 		return nil, false
 	}
+	if h, ok := r.Context().Value(authHolderCtxKey{}).(*requestAuthHolder); ok && h != nil {
+		h.username = user.Username
+		h.checked = true
+	}
 	return user, true
 }
 
@@ -178,36 +261,21 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/login", http.StatusFound)
 			return
 		}
-		ctx := context.WithValue(r.Context(), "username", user.Username)
+		ctx := withUser(r.Context(), user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
 
 func (s *Server) setJWTCookie(w http.ResponseWriter, username string) {
-	s.mu.RLock()
+	s.mu.Lock()
 	if !config.IsValidJWTKey(s.cfg.JWTKey) {
-		s.mu.RUnlock()
-		s.mu.Lock()
-		if !config.IsValidJWTKey(s.cfg.JWTKey) {
-			_ = s.cfg.EnsureJWTKey("config.json")
-		}
-		key := s.cfg.JWTKey
-		secure := s.cfg.SSL || s.cfg.ReverseProxy
-		database := s.db
-		s.mu.Unlock()
-		ver := 0
-		if database != nil {
-			if u, err := db.GetUserByUsername(context.Background(), database, username); err == nil && u != nil {
-				ver = u.SessionVersion
-			}
-		}
-		s.writeSessionCookie(w, username, ver, key, secure)
-		return
+		_ = s.cfg.EnsureJWTKey("config.json")
 	}
 	key := s.cfg.JWTKey
 	secure := s.cfg.SSL || s.cfg.ReverseProxy
 	database := s.db
-	s.mu.RUnlock()
+	s.mu.Unlock()
+
 	ver := 0
 	if database != nil {
 		if u, err := db.GetUserByUsername(context.Background(), database, username); err == nil && u != nil {

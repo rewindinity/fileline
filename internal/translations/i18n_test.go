@@ -1,6 +1,7 @@
 package translations
 
 import (
+	"sort"
 	"testing"
 )
 
@@ -55,5 +56,24 @@ func TestGetString(t *testing.T) {
 	// Fallback to key itself if not in any dictionary
 	if val := GetString("en", "UnknownKey123"); val != "UnknownKey123" {
 		t.Errorf("Expected key fallback 'UnknownKey123', got %q", val)
+	}
+}
+
+func TestFSAndAvailableLanguages(t *testing.T) {
+	fsys := FS()
+	data, err := fsys.ReadFile("en.json")
+	if err != nil {
+		t.Fatalf("expected to read en.json from FS(): %v", err)
+	}
+	if len(data) == 0 {
+		t.Errorf("en.json in FS() is empty")
+	}
+
+	langs := AvailableLanguages()
+	if len(langs) == 0 {
+		t.Fatal("AvailableLanguages() returned empty slice")
+	}
+	if !sort.StringsAreSorted(langs) {
+		t.Errorf("AvailableLanguages() is not sorted: %v", langs)
 	}
 }

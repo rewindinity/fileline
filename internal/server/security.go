@@ -40,12 +40,15 @@ func formatPasskeysDisplay(webAuthnData string) []map[string]interface{} {
 }
 
 func (s *Server) settingsAccountHandler(w http.ResponseWriter, r *http.Request) {
-	username := r.Context().Value("username").(string)
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	username := user.Username
 	s.mu.RLock()
 	cfg := s.cfg
-	database := s.db
 	s.mu.RUnlock()
-	user, _ := db.GetUserByUsername(r.Context(), database, username)
 	passkeysDisplay := formatPasskeysDisplay(user.WebAuthnData)
 	successMsg := r.URL.Query().Get("success")
 	errorMsg := r.URL.Query().Get("error")
@@ -65,7 +68,11 @@ func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	username := r.Context().Value("username").(string)
+	username, ok := usernameFrom(r.Context())
+	if !ok || username == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      "FileLine",
 		AccountName: username,
@@ -78,8 +85,7 @@ func (s *Server) totpGenerateHandler(w http.ResponseWriter, r *http.Request) {
 	s.totpTempStore.Store(username, key.Secret())
 	logger.Action("User '%s' requested new 2FA TOTP secret generation", username)
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	respondJSON(w, http.StatusOK, map[string]string{
 		"secret": key.Secret(),
 		"url":    key.URL(),
 	})
@@ -99,7 +105,12 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form submission", http.StatusBadRequest)
 		return
 	}
-	username := r.Context().Value("username").(string)
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	username := user.Username
 	code := r.FormValue("code")
 	secret, ok := s.totpTempStore.Load(username)
 	if !ok {
@@ -116,10 +127,7 @@ func (s *Server) totpVerifyHandler(w http.ResponseWriter, r *http.Request) {
 	database := s.db
 	s.mu.RUnlock()
 
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err == nil {
-		db.UpdateUserAuthData(r.Context(), database, username, secret, user.WebAuthnData)
-	}
+	db.UpdateUserAuthData(r.Context(), database, username, secret, user.WebAuthnData)
 	s.totpTempStore.Delete(username)
 	s.setJWTCookie(w, username)
 	logger.Action("User '%s' successfully enabled 2FA TOTP", username)
@@ -140,23 +148,22 @@ func (s *Server) totpDisableHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid form submission", http.StatusBadRequest)
 		return
 	}
-	username := r.Context().Value("username").(string)
-	code := r.FormValue("code")
-
-	s.mu.RLock()
-	database := s.db
-	s.mu.RUnlock()
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil || user.TOTPSecret == "" {
+	user, err := s.currentUser(r)
+	if err != nil || user == nil || user.TOTPSecret == "" {
 		http.Redirect(w, r, "/settings/account?error=2FA+is+not+enabled", http.StatusFound)
 		return
 	}
+	username := user.Username
+	code := r.FormValue("code")
+
 	if !totp.Validate(code, user.TOTPSecret) {
 		logger.Action("User '%s' entered invalid 2FA code when attempting to disable 2FA", username)
 		http.Redirect(w, r, "/settings/account?error=Invalid+2FA+code", http.StatusFound)
 		return
 	}
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
 	if err := db.UpdateUserAuthData(r.Context(), database, username, "", user.WebAuthnData); err != nil {
 		s.internalError(w, r, "Failed to disable 2FA in database", err)
 		return
@@ -171,9 +178,19 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
-	username := r.Context().Value("username").(string)
 	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error": "Unauthorized"}`))
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	username := user.Username
 
 	var currentPassword, totpCode string
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -220,18 +237,6 @@ func (s *Server) recoveryGenerateHandler(w http.ResponseWriter, r *http.Request)
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil || user == nil {
-		if isJSON {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error": "Unauthorized"}`))
-			return
-		}
-		http.Redirect(w, r, "/login", http.StatusFound)
-		return
-	}
 
 	// Require re-authentication via current password or valid TOTP code
 	reauthed := false
@@ -294,27 +299,23 @@ func (s *Server) recoveryAckHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
-	if username, ok := r.Context().Value("username").(string); ok && username != "" {
+	if username, ok := usernameFrom(r.Context()); ok && username != "" {
 		s.recoveryCodeStore.Delete(username)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status": "ok"}`))
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
-	username := r.Context().Value("username").(string)
-
-	s.mu.RLock()
-	database := s.db
-	secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
-	s.mu.RUnlock()
-
-	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
+	dbUser, err := s.currentUser(r)
+	if err != nil || dbUser == nil {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
+
+	s.mu.RLock()
+	secure := s.cfg != nil && (s.cfg.SSL || s.cfg.ReverseProxy)
+	s.mu.RUnlock()
+
 	user := auth.NewWebAuthnUser(dbUser)
 	options, sessionData, err := s.webAuthn.BeginRegistration(
 		user,
@@ -341,7 +342,12 @@ func (s *Server) webAuthnRegisterBegin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
-	username := r.Context().Value("username").(string)
+	dbUser, err := s.currentUser(r)
+	if err != nil || dbUser == nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+	username := dbUser.Username
 	cookie, err := r.Cookie("wa_session")
 	if err != nil {
 		http.Error(w, "Session expired", http.StatusBadRequest)
@@ -356,11 +362,6 @@ func (s *Server) webAuthnRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-	dbUser, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
-	}
 	user := auth.NewWebAuthnUser(dbUser)
 	credential, err := s.webAuthn.FinishRegistration(user, sessionData, r)
 	if err != nil {
@@ -402,7 +403,18 @@ func (s *Server) webAuthnRenameHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
-	username := r.Context().Value("username").(string)
+	user, err := s.currentUser(r)
+	if err != nil || user == nil || user.WebAuthnData == "" {
+		if strings.Contains(r.Header.Get("Accept"), "application/json") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "User or passkeys not found"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
+		return
+	}
+	username := user.Username
 
 	var idToRename, newName string
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -452,18 +464,6 @@ func (s *Server) webAuthnRenameHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil || user.WebAuthnData == "" {
-		if isJSON {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error": "User or passkeys not found"}`))
-			return
-		}
-		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
-		return
-	}
 
 	var passkeys []auth.Passkey
 	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
@@ -528,9 +528,21 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
-	username := r.Context().Value("username").(string)
+	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
+	user, err := s.currentUser(r)
+	if err != nil || user == nil || user.WebAuthnData == "" {
+		if isJSON {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"error": "User or passkeys not found"}`))
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
+		return
+	}
+	username := user.Username
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
 	var idToDelete string
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		var reqData struct {
@@ -556,23 +568,9 @@ func (s *Server) webAuthnDeleteHandler(w http.ResponseWriter, r *http.Request) {
 		idToDelete = r.FormValue("id")
 	}
 
-	isJSON := strings.Contains(r.Header.Get("Accept"), "application/json")
-
 	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
-
-	user, err := db.GetUserByUsername(r.Context(), database, username)
-	if err != nil || user.WebAuthnData == "" {
-		if isJSON {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"error": "User or passkeys not found"}`))
-			return
-		}
-		http.Redirect(w, r, "/settings/account?error=User+or+passkeys+not+found", http.StatusFound)
-		return
-	}
 	var passkeys []auth.Passkey
 	if err := json.Unmarshal([]byte(user.WebAuthnData), &passkeys); err != nil {
 		if isJSON {

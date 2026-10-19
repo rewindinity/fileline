@@ -325,5 +325,10 @@
   "Save Indexing Settings": "Uložiť nastavenia indexovania",
   "Indexing protection settings saved": "Nastavenia ochrany pred indexovaním boli uložené",
   "Embed settings saved": "Nastavenia náhľadu médií boli uložené",
-  "Failed to update embed settings": "Nepodarilo sa uložiť nastavenia náhľadu médií"
+  "Failed to update embed settings": "Nepodarilo sa uložiť nastavenia náhľadu médií",
+  "Enable Gzip Compression": "Povoliť kompresiu Gzip",
+  "Compress static assets (fonts, CSS, JS, SVG, HTML) and dynamic responses. Disable if running behind a reverse proxy (e.g. Nginx, Cloudflare) that already handles compression.": "Komprimovať statické súbory (fonty, CSS, JS, SVG, HTML) a dynamické odpovede. Vypnite, ak používate reverznú proxy (napr. Nginx, Cloudflare), ktorá už kompresiu vykonáva.",
+  "Single-Line Response Optimization": "Jednoriadková optimalizácia odpovedí",
+  "Serve CSS, JS, and HTML as a continuous single line to reduce bandwidth transfer.": "Odosielať CSS, JS a HTML ako jeden súvislý riadok na úsporu prenosu dát.",
+  "Compression settings saved": "Nastavenie kompresie bolo uložené"
 }

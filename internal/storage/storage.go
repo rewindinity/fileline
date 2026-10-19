@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 
 	fileline_config "fileline/internal/config"
 
@@ -14,6 +16,7 @@ import (
 	aws_config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // ErrInvalidKey is returned when a storage key is not a single, plain file name
@@ -24,6 +27,51 @@ type Provider interface {
 	Save(ctx context.Context, key string, reader io.Reader) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	Delete(ctx context.Context, key string) error
+}
+
+// StagedProvider is an optional extension of Provider for backends that support
+// direct chunked staging at arbitrary byte offsets and zero-copy O(1) commit.
+type StagedProvider interface {
+	Provider
+	CreateStaged(ctx context.Context, uploadID string, storageKey string, totalSize int64, chunkSize int64) (StagedUpload, error)
+}
+
+// StagedUpload represents an active staged chunked upload session.
+type StagedUpload interface {
+	// WriteChunk streams chunk content into the staged target at byte offset up to maxBytes.
+	// Implementations must support concurrent calls for non-overlapping offsets.
+	WriteChunk(chunkIndex int, offset int64, r io.Reader, maxBytes int64) (written int64, err error)
+	// Commit verifies that total size matches expectedSize and moves the object live under storageKey.
+	Commit(ctx context.Context, storageKey string, expectedSize int64) error
+	// Abort cleans up any temporary staged data.
+	Abort() error
+}
+
+// SeekableProvider is an optional extension of Provider for backends (such as local disk)
+// that can return an io.ReadSeekCloser suitable for http.ServeContent (Range, conditional requests, and sendfile).
+type SeekableProvider interface {
+	Provider
+	Open(ctx context.Context, key string) (io.ReadSeekCloser, error)
+}
+
+// RangedObject holds metadata and body from a ranged or head S3 object retrieval.
+type RangedObject struct {
+	Body          io.ReadCloser
+	ContentLength int64
+	ContentRange  string
+	ETag          string
+	LastModified  *s3ObjectTime
+	IsPartial     bool
+}
+
+type s3ObjectTime = int64
+
+// RangeProvider is an optional extension of Provider for remote object stores (such as S3)
+// that support byte-range GET and HEAD operations without streaming the full object.
+type RangeProvider interface {
+	Provider
+	GetRange(ctx context.Context, key string, rangeHeader string) (*RangedObject, error)
+	Head(ctx context.Context, key string) (*RangedObject, error)
 }
 
 // LocalProvider implements Provider for local disk storage.
@@ -79,7 +127,8 @@ func (p *LocalProvider) Save(ctx context.Context, key string, reader io.Reader) 
 	return nil
 }
 
-func (p *LocalProvider) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+// Open opens a stored file and returns an io.ReadSeekCloser (*os.File) confined to basePath via os.Root.
+func (p *LocalProvider) Open(ctx context.Context, key string) (io.ReadSeekCloser, error) {
 	root, err := p.openRoot(key)
 	if err != nil {
 		return nil, err
@@ -90,6 +139,10 @@ func (p *LocalProvider) Get(ctx context.Context, key string) (io.ReadCloser, err
 		return nil, err
 	}
 	return f, nil
+}
+
+func (p *LocalProvider) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	return p.Open(ctx, key)
 }
 
 func (p *LocalProvider) Delete(ctx context.Context, key string) error {
@@ -103,6 +156,279 @@ func (p *LocalProvider) Delete(ctx context.Context, key string) error {
 		return nil
 	}
 	return err
+}
+
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	},
+}
+
+func (p *LocalProvider) CreateStaged(ctx context.Context, uploadID string, storageKey string, totalSize int64, chunkSize int64) (StagedUpload, error) {
+	if err := validateLocalKey(uploadID); err != nil {
+		return nil, err
+	}
+	if err := validateLocalKey(storageKey); err != nil {
+		return nil, err
+	}
+	root, err := p.openRoot(uploadID)
+	if err != nil {
+		return nil, err
+	}
+	tempName := ".tmp_upload_" + uploadID
+	f, err := root.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o640)
+	if err != nil {
+		root.Close()
+		return nil, fmt.Errorf("failed to create staged file: %w", err)
+	}
+	if totalSize > 0 {
+		_ = f.Truncate(totalSize)
+	}
+	return &localStagedUpload{
+		root:      root,
+		file:      f,
+		tempName:  tempName,
+		totalSize: totalSize,
+	}, nil
+}
+
+type localStagedUpload struct {
+	mu        sync.Mutex
+	root      *os.Root
+	file      *os.File
+	tempName  string
+	totalSize int64
+	closed    bool
+}
+
+func (l *localStagedUpload) WriteChunk(chunkIndex int, offset int64, r io.Reader, maxBytes int64) (int64, error) {
+	l.mu.Lock()
+	if l.closed || l.file == nil {
+		l.mu.Unlock()
+		return 0, errors.New("staged upload closed")
+	}
+	f := l.file
+	l.mu.Unlock()
+
+	bufPtr := copyBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer copyBufPool.Put(bufPtr)
+
+	var totalWritten int64
+	limit := maxBytes
+	if limit > 0 {
+		limit = maxBytes + 1
+	}
+
+	for {
+		readSize := len(buf)
+		if limit > 0 && int64(readSize) > limit-totalWritten {
+			readSize = int(limit - totalWritten)
+			if readSize <= 0 {
+				break
+			}
+		}
+		nr, rErr := r.Read(buf[:readSize])
+		if nr > 0 {
+			nw, wErr := f.WriteAt(buf[:nr], offset+totalWritten)
+			totalWritten += int64(nw)
+			if wErr != nil {
+				return totalWritten, fmt.Errorf("failed to write chunk at offset %d: %w", offset+totalWritten, wErr)
+			}
+		}
+		if rErr != nil {
+			if errors.Is(rErr, io.EOF) {
+				break
+			}
+			return totalWritten, rErr
+		}
+	}
+	return totalWritten, nil
+}
+
+func (l *localStagedUpload) Commit(ctx context.Context, storageKey string, expectedSize int64) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return errors.New("staged upload already completed or closed")
+	}
+	l.closed = true
+
+	if err := validateLocalKey(storageKey); err != nil {
+		if l.file != nil {
+			_ = l.file.Close()
+		}
+		if l.root != nil {
+			_ = l.root.Remove(l.tempName)
+			_ = l.root.Close()
+		}
+		return err
+	}
+
+	fi, err := l.file.Stat()
+	if err != nil {
+		_ = l.file.Close()
+		_ = l.root.Remove(l.tempName)
+		_ = l.root.Close()
+		return fmt.Errorf("failed to stat staged file: %w", err)
+	}
+	if fi.Size() != expectedSize {
+		_ = l.file.Close()
+		_ = l.root.Remove(l.tempName)
+		_ = l.root.Close()
+		return fmt.Errorf("staged file size mismatch: got %d, want %d", fi.Size(), expectedSize)
+	}
+
+	_ = l.file.Sync()
+	if err := l.file.Close(); err != nil {
+		_ = l.root.Remove(l.tempName)
+		_ = l.root.Close()
+		return fmt.Errorf("failed to close staged file: %w", err)
+	}
+
+	if err := l.root.Rename(l.tempName, storageKey); err != nil {
+		_ = l.root.Remove(l.tempName)
+		_ = l.root.Close()
+		return fmt.Errorf("failed to commit staged file: %w", err)
+	}
+	return l.root.Close()
+}
+
+func (l *localStagedUpload) Abort() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+	if l.root != nil {
+		_ = l.root.Remove(l.tempName)
+		_ = l.root.Close()
+	}
+	return nil
+}
+
+// DiskFallbackStagedUpload implements StagedUpload for storage providers that do not
+// support zero-copy staged renames. It streams chunks via WriteAt to a single temp file
+// and streams it to provider.Save on Commit.
+type DiskFallbackStagedUpload struct {
+	mu         sync.Mutex
+	tempFile   *os.File
+	tempPath   string
+	totalSize  int64
+	targetProv Provider
+	closed     bool
+}
+
+func NewDiskFallbackStagedUpload(tempDir string, uploadID string, storageKey string, totalSize int64, targetProv Provider) (*DiskFallbackStagedUpload, error) {
+	if err := os.MkdirAll(tempDir, 0o700); err != nil {
+		return nil, err
+	}
+	tempPath := filepath.Join(tempDir, ".tmp_fallback_"+uploadID)
+	f, err := os.OpenFile(tempPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if totalSize > 0 {
+		_ = f.Truncate(totalSize)
+	}
+	return &DiskFallbackStagedUpload{
+		tempFile:   f,
+		tempPath:   tempPath,
+		totalSize:  totalSize,
+		targetProv: targetProv,
+	}, nil
+}
+
+func (d *DiskFallbackStagedUpload) WriteChunk(chunkIndex int, offset int64, r io.Reader, maxBytes int64) (int64, error) {
+	d.mu.Lock()
+	if d.closed || d.tempFile == nil {
+		d.mu.Unlock()
+		return 0, errors.New("staged upload closed")
+	}
+	f := d.tempFile
+	d.mu.Unlock()
+
+	bufPtr := copyBufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer copyBufPool.Put(bufPtr)
+
+	var totalWritten int64
+	limit := maxBytes
+	if limit > 0 {
+		limit = maxBytes + 1
+	}
+
+	for {
+		readSize := len(buf)
+		if limit > 0 && int64(readSize) > limit-totalWritten {
+			readSize = int(limit - totalWritten)
+			if readSize <= 0 {
+				break
+			}
+		}
+		nr, rErr := r.Read(buf[:readSize])
+		if nr > 0 {
+			nw, wErr := f.WriteAt(buf[:nr], offset+totalWritten)
+			totalWritten += int64(nw)
+			if wErr != nil {
+				return totalWritten, fmt.Errorf("failed to write chunk at offset %d: %w", offset+totalWritten, wErr)
+			}
+		}
+		if rErr != nil {
+			if errors.Is(rErr, io.EOF) {
+				break
+			}
+			return totalWritten, rErr
+		}
+	}
+	return totalWritten, nil
+}
+
+func (d *DiskFallbackStagedUpload) Commit(ctx context.Context, storageKey string, expectedSize int64) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return errors.New("staged upload already completed or closed")
+	}
+	d.closed = true
+
+	defer func() {
+		if d.tempFile != nil {
+			_ = d.tempFile.Close()
+		}
+		_ = os.Remove(d.tempPath)
+	}()
+
+	fi, err := d.tempFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat staged file: %w", err)
+	}
+	if fi.Size() != expectedSize {
+		return fmt.Errorf("staged file size mismatch: got %d, want %d", fi.Size(), expectedSize)
+	}
+	if _, err := d.tempFile.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("failed to seek staged file: %w", err)
+	}
+	return d.targetProv.Save(ctx, storageKey, d.tempFile)
+}
+
+func (d *DiskFallbackStagedUpload) Abort() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	if d.tempFile != nil {
+		_ = d.tempFile.Close()
+	}
+	_ = os.Remove(d.tempPath)
+	return nil
 }
 
 // S3Provider implements Provider for S3 compatible storage.
@@ -200,12 +526,190 @@ func (p *S3Provider) Get(ctx context.Context, key string) (io.ReadCloser, error)
 	return out.Body, nil
 }
 
+func (p *S3Provider) GetRange(ctx context.Context, key string, rangeHeader string) (*RangedObject, error) {
+	in := &s3.GetObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	}
+	if rangeHeader != "" {
+		in.Range = aws.String(rangeHeader)
+	}
+	out, err := p.client.GetObject(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	ro := &RangedObject{
+		Body:      out.Body,
+		IsPartial: rangeHeader != "" && aws.ToString(out.ContentRange) != "",
+	}
+	if out.ContentLength != nil {
+		ro.ContentLength = *out.ContentLength
+	}
+	if out.ContentRange != nil {
+		ro.ContentRange = *out.ContentRange
+	}
+	if out.ETag != nil {
+		ro.ETag = *out.ETag
+	}
+	return ro, nil
+}
+
+func (p *S3Provider) Head(ctx context.Context, key string) (*RangedObject, error) {
+	out, err := p.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, err
+	}
+	ro := &RangedObject{}
+	if out.ContentLength != nil {
+		ro.ContentLength = *out.ContentLength
+	}
+	if out.ETag != nil {
+		ro.ETag = *out.ETag
+	}
+	return ro, nil
+}
+
 func (p *S3Provider) Delete(ctx context.Context, key string) error {
 	_, err := p.client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(p.bucket),
 		Key:    aws.String(key),
 	})
 	return err
+}
+
+func (p *S3Provider) CreateStaged(ctx context.Context, uploadID string, storageKey string, totalSize int64, chunkSize int64) (StagedUpload, error) {
+	if chunkSize >= 5*1024*1024 && totalSize >= 5*1024*1024 {
+		out, err := p.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+			Bucket: aws.String(p.bucket),
+			Key:    aws.String(storageKey),
+		})
+		if err == nil && out.UploadId != nil {
+			return &s3MultipartStagedUpload{
+				client:    p.client,
+				bucket:    p.bucket,
+				key:       storageKey,
+				uploadID:  *out.UploadId,
+				totalSize: totalSize,
+				chunkSize: chunkSize,
+				parts:     make(map[int]string),
+			}, nil
+		}
+	}
+	return NewDiskFallbackStagedUpload(os.TempDir(), uploadID, storageKey, totalSize, p)
+}
+
+type s3MultipartStagedUpload struct {
+	mu        sync.Mutex
+	client    *s3.Client
+	bucket    string
+	key       string
+	uploadID  string
+	totalSize int64
+	chunkSize int64
+	parts     map[int]string
+	closed    bool
+}
+
+type s3CountingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (cr *s3CountingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	cr.n += int64(n)
+	return n, err
+}
+
+func (s *s3MultipartStagedUpload) WriteChunk(chunkIndex int, offset int64, r io.Reader, maxBytes int64) (int64, error) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return 0, errors.New("upload closed")
+	}
+	s.mu.Unlock()
+
+	partNum := int32(chunkIndex + 1)
+	limit := maxBytes
+	if limit > 0 {
+		limit = maxBytes + 1
+	}
+	cr := &s3CountingReader{r: io.LimitReader(r, limit)}
+	out, err := s.client.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:     aws.String(s.bucket),
+		Key:        aws.String(s.key),
+		UploadId:   aws.String(s.uploadID),
+		PartNumber: &partNum,
+		Body:       cr,
+	})
+	if err != nil {
+		return cr.n, err
+	}
+	if out.ETag != nil {
+		s.mu.Lock()
+		s.parts[chunkIndex] = *out.ETag
+		s.mu.Unlock()
+	}
+	return cr.n, nil
+}
+
+func (s *s3MultipartStagedUpload) Commit(ctx context.Context, storageKey string, expectedSize int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("upload already completed or closed")
+	}
+	s.closed = true
+
+	var completedParts []types.CompletedPart
+	for idx := 0; idx < len(s.parts); idx++ {
+		etag, ok := s.parts[idx]
+		if !ok {
+			_ = s.abortLocked(ctx)
+			return fmt.Errorf("missing part %d for s3 multipart upload", idx)
+		}
+		pNum := int32(idx + 1)
+		completedParts = append(completedParts, types.CompletedPart{
+			PartNumber: &pNum,
+			ETag:       aws.String(etag),
+		})
+	}
+
+	_, err := s.client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(s.key),
+		UploadId: aws.String(s.uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+	})
+	if err != nil {
+		_ = s.abortLocked(ctx)
+		return err
+	}
+	return nil
+}
+
+func (s *s3MultipartStagedUpload) abortLocked(ctx context.Context) error {
+	_, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket:   aws.String(s.bucket),
+		Key:      aws.String(s.key),
+		UploadId: aws.String(s.uploadID),
+	})
+	return err
+}
+
+func (s *s3MultipartStagedUpload) Abort() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.abortLocked(context.Background())
 }
 
 // NewProvider creates a new storage provider based on configuration.

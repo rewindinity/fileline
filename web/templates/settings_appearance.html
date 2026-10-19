@@ -171,6 +171,29 @@
                     </label>
                 </div>
             </div>
+
+            <!-- Performance & Compression (Admin Only) -->
+            <input type="hidden" name="compression_settings_present" value="1">
+            <div class="option-card" style="margin-bottom: 1.5rem;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="gzip_enabled" name="gzip_enabled" {{if .Config.GzipEnabled}}checked{{end}}>
+                    <label for="gzip_enabled">
+                        <strong>{{ T .Language "Enable Gzip Compression" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Compress static assets (fonts, CSS, JS, SVG, HTML) and dynamic responses. Disable if running behind a reverse proxy (e.g. Nginx, Cloudflare) that already handles compression." }}
+                        </span>
+                    </label>
+                </div>
+                <div class="checkbox-group" style="margin-top: 1rem;">
+                    <input type="checkbox" id="minify_responses" name="minify_responses" {{if .Config.MinifyResponses}}checked{{end}}>
+                    <label for="minify_responses">
+                        <strong>{{ T .Language "Single-Line Response Optimization" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Serve CSS, JS, and HTML as a continuous single line to reduce bandwidth transfer." }}
+                        </span>
+                    </label>
+                </div>
+            </div>
             {{end}}
 
             <!-- Form Submit Action -->

@@ -325,5 +325,10 @@
   "Save Indexing Settings": "Zapisz ustawienia indeksowania",
   "Indexing protection settings saved": "Zapisano ustawienia ochrony przed indeksowaniem",
   "Embed settings saved": "Zapisano ustawienia podglądu mediów",
-  "Failed to update embed settings": "Nie udało się zapisać ustawień podglądu mediów"
+  "Failed to update embed settings": "Nie udało się zapisać ustawień podglądu mediów",
+  "Enable Gzip Compression": "Włącz kompresję Gzip",
+  "Compress static assets (fonts, CSS, JS, SVG, HTML) and dynamic responses. Disable if running behind a reverse proxy (e.g. Nginx, Cloudflare) that already handles compression.": "Kompresuj pliki statyczne (fonty, CSS, JS, SVG, HTML) oraz odpowiedzi serwera. Wyłącz, jeśli instancja działa za reverse proxy (np. Nginx, Cloudflare), które wykonuje kompresję.",
+  "Single-Line Response Optimization": "Optymalizacja odpowiedzi w jednej linii",
+  "Serve CSS, JS, and HTML as a continuous single line to reduce bandwidth transfer.": "Wysyłaj CSS, JS i HTML jako ciąg jednej linii w celu zaoszczędzenia transferu.",
+  "Compression settings saved": "Zapisano ustawienia kompresji"
 }

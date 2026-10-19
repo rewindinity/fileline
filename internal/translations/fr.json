@@ -325,5 +325,10 @@
   "Save Indexing Settings": "Enregistrer les paramètres d'indexation",
   "Indexing protection settings saved": "Paramètres de protection contre l'indexation enregistrés",
   "Embed settings saved": "Paramètres d'aperçu enregistrés",
-  "Failed to update embed settings": "Échec de la mise à jour des paramètres d'aperçu"
+  "Failed to update embed settings": "Échec de la mise à jour des paramètres d'aperçu",
+  "Enable Gzip Compression": "Activer la compression Gzip",
+  "Compress static assets (fonts, CSS, JS, SVG, HTML) and dynamic responses. Disable if running behind a reverse proxy (e.g. Nginx, Cloudflare) that already handles compression.": "Compresser les fichiers statiques (polices, CSS, JS, SVG, HTML) et les réponses dynamiques. Désactiver en cas d'utilisation d'un reverse proxy (ex. Nginx, Cloudflare) qui compresse déjà.",
+  "Single-Line Response Optimization": "Optimisation des réponses sur une seule ligne",
+  "Serve CSS, JS, and HTML as a continuous single line to reduce bandwidth transfer.": "Envoyer le CSS, JS et HTML sur une seule ligne continue pour économiser la bande passante.",
+  "Compression settings saved": "Paramètres de compression enregistrés"
 }

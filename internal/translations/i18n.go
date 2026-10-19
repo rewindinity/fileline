@@ -3,6 +3,9 @@ package translations
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
 	"sync"
 )
 
@@ -14,23 +17,45 @@ var (
 	mu           sync.RWMutex
 )
 
-// Load hydrates all known language packs into memory.
+func init() {
+	_ = Load()
+}
+
+// FS returns the underlying embed.FS containing all translation files.
+func FS() embed.FS {
+	return translationsFS
+}
+
+// Load hydrates all embedded language packs into memory.
 func Load() error {
-	files := []string{"en.json", "pl.json", "cz.json", "sk.json", "de.json", "nl.json", "it.json", "fr.json", "es.json"}
-	for _, file := range files {
-		data, err := translationsFS.ReadFile(file)
-		if err != nil {
+	entries, err := translationsFS.ReadDir(".")
+	if err != nil {
+		return fmt.Errorf("reading translations directory: %w", err)
+	}
+
+	newTrans := make(map[string]map[string]interface{})
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+
+		data, err := translationsFS.ReadFile(entry.Name())
+		if err != nil {
+			return fmt.Errorf("reading translation file %s: %w", entry.Name(), err)
+		}
+
 		var trans map[string]interface{}
 		if err := json.Unmarshal(data, &trans); err != nil {
-			continue
+			return fmt.Errorf("unmarshaling translation file %s: %w", entry.Name(), err)
 		}
-		lang := file[:len(file)-5] // Remove .json
-		mu.Lock()
-		translations[lang] = trans
-		mu.Unlock()
+
+		lang := strings.TrimSuffix(entry.Name(), ".json")
+		newTrans[lang] = trans
 	}
+
+	mu.Lock()
+	translations = newTrans
+	mu.Unlock()
 	return nil
 }
 
@@ -71,7 +96,7 @@ var LanguageNames = map[string]string{
 	"es": "Español",
 }
 
-// AvailableLanguages returns currently loaded language codes.
+// AvailableLanguages returns currently loaded language codes in deterministic sorted order.
 func AvailableLanguages() []string {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -79,5 +104,6 @@ func AvailableLanguages() []string {
 	for lang := range translations {
 		langs = append(langs, lang)
 	}
+	sort.Strings(langs)
 	return langs
 }

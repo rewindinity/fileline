@@ -54,6 +54,24 @@ func TestLocalProvider_SaveGetDelete(t *testing.T) {
 		t.Fatalf("Get content mismatch: got %q, want %q", got, payload)
 	}
 
+	// Open and verify io.ReadSeekCloser supports seeking
+	rsc, err := p.Open(ctx, key)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if _, err := rsc.Seek(13, io.SeekStart); err != nil {
+		rsc.Close()
+		t.Fatalf("Seek failed: %v", err)
+	}
+	tail, err := io.ReadAll(rsc)
+	rsc.Close()
+	if err != nil {
+		t.Fatalf("io.ReadAll after Seek failed: %v", err)
+	}
+	if string(tail) != "file contents" {
+		t.Fatalf("Seek+Read content mismatch: got %q, want %q", tail, "file contents")
+	}
+
 	// Delete and verify removal
 	if err := p.Delete(ctx, key); err != nil {
 		t.Fatalf("Delete failed: %v", err)
@@ -125,5 +143,87 @@ func TestLocalProvider_RejectsPathTraversalAndSymlinks(t *testing.T) {
 	}
 	if string(after) != `{"secret":"keep"}` {
 		t.Fatalf("outside target was modified: %q", string(after))
+	}
+}
+
+func TestLocalProvider_StagedChunkUploadAndCommit(t *testing.T) {
+	base := t.TempDir()
+	p, err := NewLocalProvider(base)
+	if err != nil {
+		t.Fatalf("NewLocalProvider failed: %v", err)
+	}
+
+	ctx := context.Background()
+	uploadID := "UP1234567890"
+	storageKey := "KEY1234567890"
+
+	chunk0 := []byte("chunk-zero-payload-data-")
+	chunk1 := []byte("chunk-one-payload-data--")
+	chunk2 := []byte("chunk-two-payload-final!")
+	totalSize := int64(len(chunk0) + len(chunk1) + len(chunk2))
+	chunkSize := int64(len(chunk0))
+
+	staged, err := p.CreateStaged(ctx, uploadID, storageKey, totalSize, chunkSize)
+	if err != nil {
+		t.Fatalf("CreateStaged failed: %v", err)
+	}
+
+	// Write chunks out of order: chunk 1, then chunk 0, then chunk 2
+	n1, err := staged.WriteChunk(1, chunkSize, bytes.NewReader(chunk1), chunkSize)
+	if err != nil || n1 != int64(len(chunk1)) {
+		t.Fatalf("WriteChunk(1) failed: n=%d err=%v", n1, err)
+	}
+
+	n0, err := staged.WriteChunk(0, 0, bytes.NewReader(chunk0), chunkSize)
+	if err != nil || n0 != int64(len(chunk0)) {
+		t.Fatalf("WriteChunk(0) failed: n=%d err=%v", n0, err)
+	}
+
+	n2, err := staged.WriteChunk(2, chunkSize*2, bytes.NewReader(chunk2), chunkSize)
+	if err != nil || n2 != int64(len(chunk2)) {
+		t.Fatalf("WriteChunk(2) failed: n=%d err=%v", n2, err)
+	}
+
+	// Commit staged upload
+	if err := staged.Commit(ctx, storageKey, totalSize); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	// Verify temp file is gone
+	tempPath := filepath.Join(base, ".tmp_upload_"+uploadID)
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected temp file %q to be gone after Commit, got err=%v", tempPath, err)
+	}
+
+	// Verify committed file
+	rc, err := p.Get(ctx, storageKey)
+	if err != nil {
+		t.Fatalf("Get on committed key failed: %v", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+	expected := append(append(chunk0, chunk1...), chunk2...)
+	if !bytes.Equal(data, expected) {
+		t.Fatalf("committed content mismatch: got %q, want %q", string(data), string(expected))
+	}
+
+	// Verify abort cleans up
+	abortUploadID := "UP_ABORT_123"
+	abortStaged, err := p.CreateStaged(ctx, abortUploadID, "KEY_ABORT", 100, 50)
+	if err != nil {
+		t.Fatalf("CreateStaged abort failed: %v", err)
+	}
+	abortTempPath := filepath.Join(base, ".tmp_upload_"+abortUploadID)
+	if _, err := os.Stat(abortTempPath); err != nil {
+		t.Fatalf("expected temp file to exist: %v", err)
+	}
+	if err := abortStaged.Abort(); err != nil {
+		t.Fatalf("Abort failed: %v", err)
+	}
+	if _, err := os.Stat(abortTempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected temp file to be removed after Abort, got %v", err)
 	}
 }

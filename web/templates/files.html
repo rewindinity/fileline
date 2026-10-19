@@ -7,7 +7,13 @@
         <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Files" }}</h1>
         <p class="text-muted">{{ T .Language "Manage all your uploaded files" }}</p>
     </div>
-    <div class="header-actions">
+    <div class="header-actions" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <form method="GET" action="/files" style="display: flex; margin: 0; align-items: center; position: relative;">
+            <input type="text" name="q" value="{{.SearchQuery}}" placeholder="{{ T .Language "Search files..." }}" class="form-control form-control-sm" style="width: 200px; padding: 0.45rem 2rem 0.45rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); font-size: 0.875rem;">
+            {{if .SearchQuery}}
+            <a href="/files" style="position: absolute; right: 0.5rem; color: var(--text-muted); text-decoration: none; font-size: 1rem; line-height: 1;" title="{{ T .Language "Clear search" }}">&times;</a>
+            {{end}}
+        </form>
         <a href="/" class="btn btn-primary">
             <img src="/static/icons/bxs-cloud-upload.svg" alt="{{ T .Language "Upload File" }}" style="width: 18px; filter: brightness(0) invert(1);">
             {{ T .Language "Upload File" }}
@@ -70,13 +76,30 @@
                 <tr>
                     <td colspan="6" class="text-center text-muted" style="padding: 3rem;">
                         <img src="/static/icons/bx-data.svg" alt="{{ T .Language "No Data" }}" style="width: 48px; opacity: 0.5; margin-bottom: 1rem; filter: brightness(0) invert(0.6);">
-                        <br>{{ T .Language "No files uploaded yet." }}
+                        <br>{{if .SearchQuery}}{{ T .Language "No files match your search query." }}{{else}}{{ T .Language "No files uploaded yet." }}{{end}}
                     </td>
                 </tr>
                 {{end}}
             </tbody>
         </table>
     </div>
+    {{if or .HasNext .HasPrev}}
+    <div class="card-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 0.875rem 1.25rem; border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.75rem;">
+        <div>
+            {{if .SearchQuery}}
+            <span class="text-muted" style="font-size: 0.85rem;">{{ T .Language "Search" }}: <strong>{{.SearchQuery}}</strong></span>
+            {{end}}
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+            {{if .HasPrev}}
+            <a href="{{.PrevURL}}" class="btn btn-secondary btn-sm">&larr; {{ T .Language "Previous" }}</a>
+            {{end}}
+            {{if .HasNext}}
+            <a href="{{.NextURL}}" class="btn btn-secondary btn-sm">{{ T .Language "Next" }} &rarr;</a>
+            {{end}}
+        </div>
+    </div>
+    {{end}}
 </div>
 
 <!-- File Statistics Modal -->
