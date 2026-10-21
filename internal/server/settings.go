@@ -355,7 +355,7 @@ func (s *Server) settingsActionStorage(w http.ResponseWriter, r *http.Request, u
 			logger.Error("Failed to parse drives_json: %v", err)
 		}
 	}
-	s.cfg.Save("config.json")
+	_ = s.saveConfigLocked()
 	// Reinit storage
 	st, err := storage.NewProvider(r.Context(), s.cfg)
 	if err == nil {
@@ -447,7 +447,7 @@ func (s *Server) settingsActionAppearance(w http.ResponseWriter, r *http.Request
 			s.cfg.GzipEnabled = r.FormValue("gzip_enabled") == "on"
 			s.cfg.MinifyResponses = r.FormValue("minify_responses") == "on"
 		}
-		s.cfg.Save("config.json")
+		_ = s.saveConfigLocked()
 		s.mu.Unlock()
 
 		// Handle custom logo upload
@@ -478,7 +478,7 @@ func (s *Server) settingsActionAppearance(w http.ResponseWriter, r *http.Request
 					if writeErr == nil {
 						s.mu.Lock()
 						s.cfg.CustomLogo = filename
-						s.cfg.Save("config.json")
+						_ = s.saveConfigLocked()
 						s.mu.Unlock()
 						logger.Action("User '%s' uploaded custom logo '%s'", user.Username, filename)
 					} else {
@@ -511,7 +511,7 @@ func (s *Server) settingsActionIndexing(w http.ResponseWriter, r *http.Request, 
 	blockIndexing := r.FormValue("block_indexing") == "on"
 	s.mu.Lock()
 	s.cfg.BlockIndexing = blockIndexing
-	_ = s.cfg.Save("config.json")
+	_ = s.saveConfigLocked()
 	s.mu.Unlock()
 	logger.Action("User '%s' updated search engine indexing protection (block_indexing=%t)", user.Username, blockIndexing)
 	http.Redirect(w, r, "/settings/account?success=Indexing+protection+settings+saved", http.StatusFound)
@@ -527,7 +527,7 @@ func (s *Server) settingsActionCompression(w http.ResponseWriter, r *http.Reques
 	s.mu.Lock()
 	s.cfg.GzipEnabled = gzipEnabled
 	s.cfg.MinifyResponses = minifyResponses
-	_ = s.cfg.Save("config.json")
+	_ = s.saveConfigLocked()
 	s.mu.Unlock()
 	logger.Action("User '%s' updated compression settings (gzip_enabled=%t, minify_responses=%t)", user.Username, gzipEnabled, minifyResponses)
 	http.Redirect(w, r, "/settings/appearance?success=Compression+settings+saved", http.StatusFound)
@@ -620,7 +620,7 @@ func (s *Server) settingsRemoveLogoHandler(w http.ResponseWriter, r *http.Reques
 	s.mu.Lock()
 	oldLogo := s.cfg.CustomLogo
 	s.cfg.CustomLogo = "/static/logo.svg"
-	s.cfg.Save("config.json")
+	_ = s.saveConfigLocked()
 	s.mu.Unlock()
 	// Optionally delete the file
 	if oldLogo != "" && oldLogo != "/static/logo.svg" {

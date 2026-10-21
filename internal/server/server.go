@@ -30,6 +30,7 @@ type Server struct {
 	httpServer *http.Server
 	db         *sql.DB
 	cfg        *config.Config
+	configPath string
 	// Storage
 	storage       storage.Provider            // Default legacy provider
 	storageDrives map[string]storage.Provider // Configured drives
@@ -71,6 +72,9 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 			if key, err := config.GenerateJWTKey(); err == nil {
 				cfg.JWTKey = key
 			}
+		}
+		if cfg.ChunksDir != "" {
+			SetChunkBaseDir(cfg.ChunksDir)
 		}
 	}
 	s := &Server{
@@ -354,6 +358,58 @@ func (s *Server) requestBodyLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// SetConfigPath configures the target file path used when persisting configuration
+func (s *Server) SetConfigPath(p string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.configPath = strings.TrimSpace(p)
+}
+
+func (s *Server) configPathLocked() string {
+	if s.configPath != "" {
+		return s.configPath
+	}
+	return "config.json"
+}
+
+// ConfigPath returns the current path to the configuration file, defaulting to "config.json"
+func (s *Server) ConfigPath() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.configPathLocked()
+}
+
+// saveConfigLocked saves configuration without acquiring s.mu
+func (s *Server) saveConfigLocked() error {
+	cfg := s.cfg
+	p := s.configPathLocked()
+	return cfg.Save(p)
+}
+
+func isPermissionDenied(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "permission denied")
+}
+
+func isPrivateOrLocalHost(host string) bool {
+	h := host
+	if strings.Contains(h, ":") {
+		if splitHost, _, err := net.SplitHostPort(h); err == nil {
+			h = splitHost
+		}
+	}
+	h = strings.TrimSpace(strings.ToLower(h))
+	if h == "" || h == "localhost" || h == "127.0.0.1" || h == "0.0.0.0" || strings.HasSuffix(h, ".local") || strings.HasSuffix(h, ".internal") {
+		return true
+	}
+	if addr, err := netip.ParseAddr(h); err == nil {
+		return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsUnspecified()
+	}
+	return false
+}
+
 // Start begins listening for HTTP requests.
 func (s *Server) Start() error {
 	if s.cfg.SSL {
@@ -369,13 +425,27 @@ func (s *Server) Start() error {
 			},
 		}
 		logger.Info("Server listening on https://localhost:%d", s.cfg.Port)
-		return s.httpServer.ListenAndServeTLS(s.cfg.SSLCertPath, s.cfg.SSLKeyPath)
+		err := s.httpServer.ListenAndServeTLS(s.cfg.SSLCertPath, s.cfg.SSLKeyPath)
+		if err != nil && isPermissionDenied(err) && s.cfg.Port < 1024 {
+			logger.Error("Permission denied listening on privileged port %d. To allow non-root listening on ports < 1024:\n"+
+				" - In Docker: add 'cap_add: [NET_BIND_SERVICE]' in docker-compose.yml\n"+
+				" - On Linux: run 'sudo setcap cap_net_bind_service=+ep <binary>'\n"+
+				" - Or map port on host to an unprivileged container port (e.g. 8080)", s.cfg.Port)
+		}
+		return err
 	}
-	if !s.cfg.ReverseProxy && !s.cfg.AllowInsecureHTTP && !s.cfg.Debug && s.cfg.Domain != "localhost" && s.cfg.Domain != "127.0.0.1" {
-		return fmt.Errorf("refusing to serve HTTP without TLS; configure SSL, ReverseProxy, or the development-only AllowInsecureHTTP option")
+	if !s.cfg.ReverseProxy && !s.cfg.AllowInsecureHTTP && !s.cfg.Debug && !isPrivateOrLocalHost(s.cfg.Domain) && s.isConfigured() {
+		return fmt.Errorf("refusing to serve HTTP without TLS on public domain %q; configure SSL, ReverseProxy, or the development-only AllowInsecureHTTP option", s.cfg.Domain)
 	}
 	logger.Info("Server listening on http://localhost:%d", s.cfg.Port)
-	return s.httpServer.ListenAndServe()
+	err := s.httpServer.ListenAndServe()
+	if err != nil && isPermissionDenied(err) && s.cfg.Port < 1024 {
+		logger.Error("Permission denied listening on privileged port %d. To allow non-root listening on ports < 1024:\n"+
+			" - In Docker: add 'cap_add: [NET_BIND_SERVICE]' in docker-compose.yml\n"+
+			" - On Linux: run 'sudo setcap cap_net_bind_service=+ep <binary>'\n"+
+			" - Or map port on host to an unprivileged container port (e.g. 8080)", s.cfg.Port)
+	}
+	return err
 }
 
 // Shutdown gracefully shuts down the server and drains buffered read statistics.

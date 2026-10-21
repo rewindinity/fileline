@@ -30,7 +30,7 @@ func newJSONLogger(w io.Writer, debugEnabled bool) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl}))
 }
 
-// Sanitize strips or escapes ASCII control characters (including CR, LF, and NUL) to prevent log injection (CWE-117).
+// Sanitize strips or escapes ASCII control characters (including CR, LF, and NUL) to prevent log injection
 func Sanitize(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

@@ -76,8 +76,7 @@ func InitDB(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 			db.SetConnMaxLifetime(0)
 			db.SetConnMaxIdleTime(0)
 		} else {
-			// SQLite allows only one concurrent writer; a small pool (4) serves concurrent WAL readers
-			// while avoiding 25-way writer lock contention.
+			// SQLite allows only one concurrent writer; a small pool (4) serves concurrent WAL readers while avoiding 25-way writer lock contention
 			db.SetMaxOpenConns(4)
 			db.SetMaxIdleConns(4)
 			db.SetConnMaxLifetime(30 * time.Minute)

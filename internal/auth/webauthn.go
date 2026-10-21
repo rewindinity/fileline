@@ -50,7 +50,7 @@ func NewWebAuthnUser(u *db.User) *WebAuthnUser {
 }
 
 func (u *WebAuthnUser) WebAuthnID() []byte {
-	return []byte(fmt.Sprintf("%d", u.dbUser.ID))
+	return fmt.Appendf(nil, "%d", u.dbUser.ID)
 }
 
 func (u *WebAuthnUser) WebAuthnName() string {

@@ -5312,8 +5312,8 @@ func BenchmarkRenderTemplate_Buffered(b *testing.B) {
 	req := httptest.NewRequest("GET", "/login", nil)
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		rr := httptest.NewRecorder()
 		srv.renderTemplate(rr, req, "login.html", map[string]interface{}{"Title": "Login"})
 	}
@@ -5345,8 +5345,8 @@ func BenchmarkStaticAsset_GzipPrecompressed(b *testing.B) {
 	req.Header.Set("Accept-Encoding", "gzip")
 
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	
+	for b.Loop() {
 		rr := httptest.NewRecorder()
 		srv.staticHandler(rr, req)
 	}

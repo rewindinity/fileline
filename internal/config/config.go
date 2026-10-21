@@ -76,6 +76,7 @@ type Config struct {
 // DefaultConfig returns a Config with default values
 func DefaultConfig() Config {
 	return Config{
+		SQLiteURL:        "data/database.sqlite",
 		Port:             8080,
 		SSL:              false,
 		ReverseProxy:     false,
@@ -87,6 +88,7 @@ func DefaultConfig() Config {
 		MaxUploadSizeMB:  1024,
 		ChunkThresholdMB: 50,
 		ChunkSizeMB:      10,
+		ChunksDir:        "./chunks",
 		Theme:            "dark-blue",
 		Accent:           "blue",
 		CustomAccentHex:  "#2563eb",
@@ -334,8 +336,7 @@ func GenerateDataKey() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// EnsureDataKey verifies that DataKey is present. If not configured and not in EnvOnly mode,
-// a random 256-bit key is generated and persisted to configPath.
+// EnsureDataKey verifies that DataKey is present. If not configured and not in EnvOnly mode, a random 256-bit key is generated and persisted to configPath.
 func (c *Config) EnsureDataKey(configPath string) error {
 	if strings.TrimSpace(c.DataKey) != "" {
 		return nil

@@ -670,9 +670,11 @@ func (p *S3Provider) CreateStaged(ctx context.Context, uploadID string, storageK
 			return s, nil
 		}
 	}
-	fallbackDir := os.TempDir()
+	fallbackDir := "./chunks"
 	if envDir := strings.TrimSpace(os.Getenv("FL_CHUNKS_DIR")); envDir != "" {
 		fallbackDir = envDir
+	} else if _, err := os.Stat("./chunks"); err != nil {
+		fallbackDir = os.TempDir()
 	}
 	return NewDiskFallbackStagedUpload(fallbackDir, uploadID, storageKey, totalSize, p)
 }

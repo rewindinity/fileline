@@ -56,8 +56,7 @@ func InsertFile(ctx context.Context, db *sql.DB, f *File) error {
 func GetFileByURL(ctx context.Context, db *sql.DB, urlPath string) (*File, error) {
 	f := &File{}
 	query := `SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled FROM files WHERE url_path = $1`
-	err := db.QueryRowContext(ctx, query, urlPath).Scan(
-		&f.ID, &f.OriginalName, &f.CustomName, &f.URLPath, &f.Size,
+	err := db.QueryRowContext(ctx, query, urlPath).Scan(&f.ID, &f.OriginalName, &f.CustomName, &f.URLPath, &f.Size,
 		&f.IsPrivate, &f.StorageType, &f.StoragePath, &f.UserID, &f.UploadedAt, &f.StatsEnabled)
 	if err != nil {
 		return nil, err
@@ -211,7 +210,7 @@ func GetFilesPage(ctx context.Context, database *sql.DB, opts FilePageOpts) (*Fi
 	}
 
 	query := fmt.Sprintf(`SELECT id, original_name, custom_name, url_path, size, is_private, storage_type, storage_path, user_id, uploaded_at, stats_enabled
-FROM files %s ORDER BY uploaded_at DESC, id DESC LIMIT %d`, whereSQL, limit+1)
+						FROM files %s ORDER BY uploaded_at DESC, id DESC LIMIT %d`, whereSQL, limit+1)
 
 	rows, err := database.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -483,7 +482,7 @@ func parseDBTimeString(s string) *time.Time {
 	if s == "" {
 		return nil
 	}
-	// Fast path 1: Standard SQLite format "YYYY-MM-DD HH:MM:SS" or ISO "YYYY-MM-DDTHH:MM:SS" (len 19)
+	// Fast path 1: Standard SQLite format "YYYY-MM-DD HH:MM:SS" or ISO "YYYY-MM-DDTHH:MM:SS"
 	if len(s) == 19 {
 		switch s[10] {
 		case ' ':
@@ -496,7 +495,7 @@ func parseDBTimeString(s string) *time.Time {
 			}
 		}
 	} else if len(s) == 20 && s[19] == 'Z' && s[10] == 'T' {
-		// Fast path 2: Standard RFC3339 UTC "YYYY-MM-DDTHH:MM:SSZ" (len 20)
+		// Fast path 2: Standard RFC3339 UTC "YYYY-MM-DDTHH:MM:SSZ"
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			return &t
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"flag"
@@ -21,6 +22,21 @@ import (
 	"fileline/internal/translations"
 )
 
+var version = "dev"
+
+func resolveConfigPath() string {
+	if v, ok := os.LookupEnv("FL_CONFIG_PATH"); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	if _, err := os.Stat("config.json"); err == nil {
+		return "config.json"
+	}
+	if _, err := os.Stat("data/config.json"); err == nil {
+		return "data/config.json"
+	}
+	return "data/config.json"
+}
+
 func runHealthCheck(cfg *config.Config) int {
 	port := 8080
 	if cfg != nil && cfg.Port > 0 {
@@ -30,7 +46,12 @@ func runHealthCheck(cfg *config.Config) int {
 	if cfg != nil && cfg.SSL {
 		scheme = "https"
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	resp, err := client.Get(fmt.Sprintf("%s://127.0.0.1:%d/health", scheme, port))
 	if err != nil {
 		return 1
@@ -43,14 +64,15 @@ func runHealthCheck(cfg *config.Config) int {
 }
 
 func main() {
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
+	flag.BoolVar(&showVersion, "v", false, "Print version and exit (shorthand)")
+
 	var envOnly bool
 	flag.BoolVar(&envOnly, "envonly", false, "Use only environment variables for configuration")
 	flag.BoolVar(&envOnly, "env-only", false, "Use only environment variables for configuration (alias)")
 
-	configPath := "config.json"
-	if v, ok := os.LookupEnv("FL_CONFIG_PATH"); ok && strings.TrimSpace(v) != "" {
-		configPath = strings.TrimSpace(v)
-	}
+	configPath := resolveConfigPath()
 	flag.StringVar(&configPath, "config", configPath, "Path to configuration file")
 	flag.StringVar(&configPath, "c", configPath, "Path to configuration file (shorthand)")
 
@@ -58,6 +80,11 @@ func main() {
 	healthCheck := flag.Bool("healthcheck", false, "Probe local /health endpoint and exit (for container HEALTHCHECK)")
 	flag.BoolVar(debug, "d", false, "Enable debug mode (shorthand)")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("FileLine %s\n", version)
+		os.Exit(0)
+	}
 
 	if v, ok := os.LookupEnv("FL_ENV_ONLY"); ok {
 		if b, err := strconv.ParseBool(v); err == nil && b {
@@ -105,7 +132,13 @@ func main() {
 		logger.Error("Failed to load translations: %v", err)
 	}
 
-	os.MkdirAll("data", 0755)
+	_ = os.MkdirAll("data", 0o750)
+	if cfg.LocalStoragePath != "" {
+		_ = os.MkdirAll(cfg.LocalStoragePath, 0o750)
+	}
+	if cfg.ChunksDir != "" {
+		_ = os.MkdirAll(cfg.ChunksDir, 0o700)
+	}
 
 	// Root context for application lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,6 +163,7 @@ func main() {
 
 	// Initialize Server
 	srv := server.New(cfg, database)
+	srv.SetConfigPath(configPath)
 
 	// Check setup state and generate a one-time setup token when not yet configured
 	configured, err := srv.CheckConfigured(ctx)
@@ -139,8 +173,15 @@ func main() {
 	}
 	if !configured {
 		token := srv.EnableSetupToken()
-		logger.Info("Instance is not yet configured. Starting in Setup mode.")
-		logger.Info("One-time setup token: %s", token)
+		scheme := "http"
+		if cfg.SSL {
+			scheme = "https"
+		}
+		logger.Info("========================================================================")
+		logger.Info("  FileLine is ready for initial configuration!")
+		logger.Info("  Open in your browser: %s://localhost:%d/setup", scheme, cfg.Port)
+		logger.Info("  One-time setup token: %s", token)
+		logger.Info("========================================================================")
 	}
 
 	serverErrors := make(chan error, 1)

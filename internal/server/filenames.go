@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -60,8 +61,26 @@ func isValidUploadID(id string) bool {
 	return true
 }
 
+var (
+	customChunkDirMu sync.RWMutex
+	customChunkDir   string
+)
+
+// SetChunkBaseDir sets an explicit chunk base directory (e.g. from server configuration)
+func SetChunkBaseDir(dir string) {
+	customChunkDirMu.Lock()
+	defer customChunkDirMu.Unlock()
+	customChunkDir = strings.TrimSpace(dir)
+}
+
 // chunkBaseDir is the directory that holds per-upload chunk directories
 func chunkBaseDir() string {
+	customChunkDirMu.RLock()
+	custom := customChunkDir
+	customChunkDirMu.RUnlock()
+	if custom != "" {
+		return custom
+	}
 	if dir := os.Getenv("FL_CHUNKS_DIR"); dir != "" {
 		return dir
 	}
@@ -75,19 +94,6 @@ func openChunkBaseRoot() (*os.Root, error) {
 		return nil, err
 	}
 	return os.OpenRoot(base)
-}
-
-// openChunkUploadRoot opens the per-upload temporary directory confined inside chunkBaseDir() via os.Root
-func openChunkUploadRoot(uploadID string) (*os.Root, error) {
-	if !isValidUploadID(uploadID) {
-		return nil, errInvalidFileName
-	}
-	baseRoot, err := openChunkBaseRoot()
-	if err != nil {
-		return nil, err
-	}
-	defer baseRoot.Close()
-	return baseRoot.OpenRoot(uploadID)
 }
 
 // removeChunkUploadDir safely removes a per-upload temporary directory confined under chunkBaseDir() via os.Root

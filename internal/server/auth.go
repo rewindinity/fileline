@@ -280,7 +280,7 @@ func (s *Server) setJWTCookie(w http.ResponseWriter, username string) {
 	if needsEnsure {
 		s.mu.Lock()
 		if !config.IsValidJWTKey(s.cfg.JWTKey) {
-			_ = s.cfg.EnsureJWTKey("config.json")
+			_ = s.cfg.EnsureJWTKey(s.configPathLocked())
 		}
 		key = s.cfg.JWTKey
 		secure = s.cfg.SSL || s.cfg.ReverseProxy
@@ -516,7 +516,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.SQLiteURL = candidateCfg.SQLiteURL
 			s.cfg.PostgresURL = candidateCfg.PostgresURL
 			s.db = database
-			if saveErr := s.cfg.Save("config.json"); saveErr != nil {
+			if saveErr := s.saveConfigLocked(); saveErr != nil {
 				logger.Error("Failed to save config during setup: %v", saveErr)
 			}
 			s.mu.Unlock()
@@ -580,9 +580,9 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.S3SecretKey = r.FormValue("s3_secret_key")
 			s.cfg.S3UseSSL = r.FormValue("s3_use_ssl") == "on"
 		}
-		if err := s.cfg.EnsureJWTKey("config.json"); err != nil {
+		if err := s.cfg.EnsureJWTKey(s.configPathLocked()); err != nil {
 			logger.Error("Failed to ensure JWT key during setup: %v", err)
-		} else if err := s.cfg.Save("config.json"); err != nil {
+		} else if err := s.saveConfigLocked(); err != nil {
 			logger.Error("Failed to save config during setup: %v", err)
 		}
 		st, stErr := storage.NewProvider(r.Context(), s.cfg)
