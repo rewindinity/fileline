@@ -5,11 +5,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	fileline_config "fileline/internal/config"
 )
 
 type blockingReader struct {
@@ -282,5 +286,157 @@ func TestLocalProvider_StagedChunkUploadAndCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(abortTempPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("expected temp file to be removed after Abort, got %v", err)
+	}
+}
+
+func TestS3Provider_HTTPAndSelfSignedHTTPS(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Test Plain HTTP Scheme
+	var receivedHTTPReq bool
+	var receivedHTTPScheme string
+	tsHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHTTPReq = true
+		if r.TLS != nil {
+			receivedHTTPScheme = "https"
+		} else {
+			receivedHTTPScheme = "http"
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer tsHTTP.Close()
+
+	driveHTTP := fileline_config.Drive{
+		ID:              "s3_http",
+		Name:            "S3 HTTP Drive",
+		Type:            "s3",
+		Enabled:         true,
+		S3Endpoint:      tsHTTP.URL, // with http:// prefix to test endpoint cleaning
+		S3Region:        "us-east-1",
+		S3Bucket:        "test-bucket",
+		S3AccessKey:     "TEST_KEY",
+		S3SecretKey:     "TEST_SECRET",
+		S3Protocol:      "http",
+		S3SkipSSLVerify: false,
+	}
+
+	pHTTP, err := NewS3ProviderFromDrive(ctx, driveHTTP)
+	if err != nil {
+		t.Fatalf("failed to create S3 HTTP provider: %v", err)
+	}
+	err = pHTTP.Save(ctx, "test-key-http", strings.NewReader("hello http"))
+	if err != nil {
+		t.Fatalf("Save on S3 HTTP failed: %v", err)
+	}
+	if !receivedHTTPReq || receivedHTTPScheme != "http" {
+		t.Errorf("expected S3 request to arrive over plain HTTP, got req=%v scheme=%s", receivedHTTPReq, receivedHTTPScheme)
+	}
+
+	// 2. Test Self-Signed HTTPS with S3SkipSSLVerify = true
+	var receivedTLSReq bool
+	tsTLS := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedTLSReq = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer tsTLS.Close()
+
+	driveTLS := fileline_config.Drive{
+		ID:              "s3_tls",
+		Name:            "S3 TLS Drive",
+		Type:            "s3",
+		Enabled:         true,
+		S3Endpoint:      tsTLS.URL,
+		S3Region:        "us-east-1",
+		S3Bucket:        "test-bucket",
+		S3AccessKey:     "TEST_KEY",
+		S3SecretKey:     "TEST_SECRET",
+		S3Protocol:      "https",
+		S3SkipSSLVerify: true,
+	}
+
+	pTLS, err := NewS3ProviderFromDrive(ctx, driveTLS)
+	if err != nil {
+		t.Fatalf("failed to create S3 TLS provider: %v", err)
+	}
+	err = pTLS.Save(ctx, "test-key-tls", strings.NewReader("hello self-signed tls"))
+	if err != nil {
+		t.Fatalf("Save on S3 with SkipSSLVerify failed on self-signed cert: %v", err)
+	}
+	if !receivedTLSReq {
+		t.Errorf("expected S3 request to arrive over TLS")
+	}
+
+	// 3. Test Self-Signed HTTPS with S3SkipSSLVerify = false fails with cert error
+	driveTLSNoSkip := driveTLS
+	driveTLSNoSkip.S3SkipSSLVerify = false
+	pTLSNoSkip, err := NewS3ProviderFromDrive(ctx, driveTLSNoSkip)
+	if err != nil {
+		t.Fatalf("failed to create S3 TLS provider: %v", err)
+	}
+	err = pTLSNoSkip.Save(ctx, "test-key-fail", strings.NewReader("should fail cert verification"))
+	if err == nil {
+		t.Fatalf("expected Save on self-signed cert without SkipSSLVerify to fail, but succeeded")
+	}
+}
+
+func TestLocalProvider_ListAndRename(t *testing.T) {
+	tempDir := t.TempDir()
+	p, err := NewLocalProvider(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create local provider: %v", err)
+	}
+	ctx := context.Background()
+
+	// 1. Initially empty
+	items, err := p.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected 0 items, got %d", len(items))
+	}
+
+	// 2. Put regular file and hidden file
+	if err := os.WriteFile(filepath.Join(tempDir, "duzy-plik.zip"), []byte("archive contents 12345"), 0640); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, ".hidden.tmp"), []byte("temp"), 0640); err != nil {
+		t.Fatalf("failed to write hidden file: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(tempDir, "some-dir"), 0750); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	items, err = p.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 regular item (ignoring hidden files & dirs), got %d", len(items))
+	}
+	if items[0].Key != "duzy-plik.zip" || items[0].Size != int64(len("archive contents 12345")) {
+		t.Fatalf("unexpected item: %+v", items[0])
+	}
+
+	// 3. Rename
+	newKey := "rand-storage-key-xyz"
+	if err := p.Rename(ctx, "duzy-plik.zip", newKey); err != nil {
+		t.Fatalf("Rename failed: %v", err)
+	}
+
+	// Old file should no longer exist
+	if _, err := os.Stat(filepath.Join(tempDir, "duzy-plik.zip")); !os.IsNotExist(err) {
+		t.Fatalf("expected old file to be gone after rename")
+	}
+
+	// New file should exist and have same content
+	rc, err := p.Get(ctx, newKey)
+	if err != nil {
+		t.Fatalf("Get on renamed key failed: %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(data) != "archive contents 12345" {
+		t.Fatalf("content mismatch after rename: got %q", string(data))
 	}
 }

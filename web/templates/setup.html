@@ -60,6 +60,12 @@
                 <label for="pg_db">{{ T .Language "Database Name" }}</label>
                 <input type="text" id="pg_db" name="pg_db" value="fileline">
             </div>
+            <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="pg_tls" name="pg_tls" {{if and .Config .Config.PostgresTLS}}checked{{end}}>
+                    <label for="pg_tls">{{ T .Language "Use TLS connection" }}</label>
+                </div>
+            </div>
         </div>
         {{else}}
         <p class="text-muted text-center" style="color: var(--success);">{{ T .Language "Database configured via environment variables." }}</p>
@@ -107,10 +113,17 @@
                 <label for="s3_secret_key">{{ T .Language "Secret Key" }}</label>
                 <input type="password" id="s3_secret_key" name="s3_secret_key">
             </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="s3_protocol">{{ T .Language "Protocol" }}</label>
+                <select id="s3_protocol" name="s3_protocol">
+                    <option value="https" selected>HTTPS</option>
+                    <option value="http">HTTP</option>
+                </select>
+            </div>
             <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
                 <div class="checkbox-group">
-                    <input type="checkbox" id="s3_use_ssl" name="s3_use_ssl" checked>
-                    <label for="s3_use_ssl">{{ T .Language "Use SSL" }}</label>
+                    <input type="checkbox" id="s3_skip_ssl_verify" name="s3_skip_ssl_verify">
+                    <label for="s3_skip_ssl_verify">{{ T .Language "Skip SSL certificate verification (e.g. self-signed certificates)" }}</label>
                 </div>
             </div>
         </div>

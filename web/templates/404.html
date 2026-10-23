@@ -1,16 +1,25 @@
-{{template "base.html" .}} {{define "content"}}
-<!-- 404 Error Card -->
-<div class="auth-layout">
-  <div class="auth-card text-center" style="padding: 4rem 2rem">
-    <img
-      src="/static/icons/bxs-error-circle.svg"
-      alt="404"
-      style="width: 64px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%); margin-bottom: 1.5rem"
-    />
-    <h1 style="font-size: 3rem; margin-bottom: 0.5rem; letter-spacing: -0.05em">404</h1>
-    <h2 style="color: var(--text-secondary); margin-bottom: 1rem">{{ T .Language "File Not Found" }}</h2>
-    <p class="text-muted" style="margin-bottom: 2rem">{{ T .Language "The requested file does not exist or you don't have permission to view it." }}</p>
-    <a href="/" class="btn btn-primary">{{ T .Language "Return to Dashboard" }}</a>
-  </div>
+{{template "base.html" .}} {{define "content"}} {{if .Username}}
+<div class="card text-center" style="max-width: 520px; margin: 3rem auto; padding: 3rem 2rem">
+  <img
+    src="/static/icons/bxs-error-circle.svg"
+    alt="404"
+    style="width: 64px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%); margin-bottom: 1.5rem"
+  />
+  <h1 style="font-size: 3.5rem; margin-bottom: 0.5rem; letter-spacing: -0.05em; line-height: 1">404</h1>
+  <h2 style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 1.25rem">{{ T .Language "File Not Found" }}</h2>
+  <p class="text-muted" style="margin-bottom: 2rem">{{ T .Language "The requested file does not exist or you don't have permission to view it." }}</p>
+  <a href="/" class="btn btn-primary">{{ T .Language "Return to Dashboard" }}</a>
 </div>
-{{end}}
+{{else}}
+<div class="text-center" style="padding: 1.5rem 0">
+  <img
+    src="/static/icons/bxs-error-circle.svg"
+    alt="404"
+    style="width: 64px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%); margin-bottom: 1.25rem"
+  />
+  <h1 style="font-size: 3.5rem; margin-bottom: 0.5rem; letter-spacing: -0.05em; line-height: 1">404</h1>
+  <h2 style="color: var(--text-secondary); margin-bottom: 1rem; font-size: 1.25rem">{{ T .Language "File Not Found" }}</h2>
+  <p class="text-muted" style="margin-bottom: 2rem">{{ T .Language "The requested file does not exist or you don't have permission to view it." }}</p>
+  <a href="/" class="btn btn-primary btn-block">{{ T .Language "Return to Dashboard" }}</a>
+</div>
+{{end}} {{end}}

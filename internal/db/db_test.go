@@ -688,6 +688,18 @@ func TestPerf07_GetFilesPagePaginationAndSearch(t *testing.T) {
 	if len(searchPage.Files) != 1 || searchPage.Files[0].OriginalName != "special_secret_document.pdf" {
 		t.Fatalf("expected 1 search result 'special_secret_document.pdf', got %+v", searchPage.Files)
 	}
+
+	// 3. ExcludeUserID filter
+	excludePage, err := GetFilesPage(ctx, database, FilePageOpts{
+		ExcludeUserID: 1,
+		Limit:         50,
+	})
+	if err != nil {
+		t.Fatalf("exclude GetFilesPage failed: %v", err)
+	}
+	if len(excludePage.Files) != 0 {
+		t.Fatalf("expected 0 files when excluding user 1 (all files were user 1), got %d", len(excludePage.Files))
+	}
 }
 
 func TestPerf07_GetFilesPageQueryPlan(t *testing.T) {
@@ -949,5 +961,115 @@ func TestSetDataKey(t *testing.T) {
 	restored, err := DecryptTOTPSecret(encrypted)
 	if err != nil || restored != secret {
 		t.Fatalf("expected successful decryption after restoring key, got %q, err: %v", restored, err)
+	}
+}
+
+func TestApplyPostgresTLS(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		useTLS   bool
+		expected string
+	}{
+		{
+			name:     "URL without sslmode with TLS false",
+			input:    "postgres://admin:pass@localhost:5433/baza",
+			useTLS:   false,
+			expected: "postgres://admin:pass@localhost:5433/baza?sslmode=disable",
+		},
+		{
+			name:     "URL with sslmode require with TLS false",
+			input:    "postgres://admin:pass@localhost:5433/baza?sslmode=require",
+			useTLS:   false,
+			expected: "postgres://admin:pass@localhost:5433/baza?sslmode=disable",
+		},
+		{
+			name:     "URL without sslmode with TLS true",
+			input:    "postgres://admin:pass@localhost:5433/baza",
+			useTLS:   true,
+			expected: "postgres://admin:pass@localhost:5433/baza?sslmode=require",
+		},
+		{
+			name:     "URL with sslmode disable with TLS true",
+			input:    "postgres://admin:pass@localhost:5433/baza?sslmode=disable",
+			useTLS:   true,
+			expected: "postgres://admin:pass@localhost:5433/baza?sslmode=require",
+		},
+		{
+			name:     "URL with sslmode verify-full with TLS true",
+			input:    "postgres://admin:pass@localhost:5433/baza?sslmode=verify-full",
+			useTLS:   true,
+			expected: "postgres://admin:pass@localhost:5433/baza?sslmode=verify-full",
+		},
+		{
+			name:     "KV format with TLS false",
+			input:    "host=localhost port=5433 user=admin dbname=baza",
+			useTLS:   false,
+			expected: "host=localhost port=5433 user=admin dbname=baza sslmode=disable",
+		},
+		{
+			name:     "KV format with sslmode=require with TLS false",
+			input:    "host=localhost port=5433 user=admin dbname=baza sslmode=require",
+			useTLS:   false,
+			expected: "host=localhost port=5433 user=admin dbname=baza sslmode=disable",
+		},
+		{
+			name:     "KV format with TLS true",
+			input:    "host=localhost port=5433 user=admin dbname=baza",
+			useTLS:   true,
+			expected: "host=localhost port=5433 user=admin dbname=baza sslmode=require",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyPostgresTLS(tc.input, tc.useTLS)
+			if got != tc.expected {
+				t.Errorf("expected %q, got %q", tc.expected, got)
+			}
+		})
+	}
+}
+
+func TestGetAllStoragePaths(t *testing.T) {
+	cfg := &config.Config{
+		DBType:    "sqlite",
+		SQLiteURL: ":memory:",
+	}
+	ctx := context.Background()
+	database, err := InitDB(ctx, cfg)
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	if err := Migrate(ctx, database, "sqlite"); err != nil {
+		t.Fatalf("failed to run migrations: %v", err)
+	}
+
+	paths, err := GetAllStoragePaths(ctx, database)
+	if err != nil {
+		t.Fatalf("GetAllStoragePaths failed: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("expected 0 paths initially, got %d", len(paths))
+	}
+
+	// Insert test files
+	f1 := &File{OriginalName: "f1.txt", URLPath: "f1", StoragePath: "storage-key-1", Size: 10, UserID: 1}
+	f2 := &File{OriginalName: "f2.txt", URLPath: "f2", StoragePath: "storage-key-2", Size: 20, UserID: 1}
+	if err := InsertFile(ctx, database, f1); err != nil {
+		t.Fatalf("InsertFile failed: %v", err)
+	}
+	if err := InsertFile(ctx, database, f2); err != nil {
+		t.Fatalf("InsertFile failed: %v", err)
+	}
+
+	paths, err = GetAllStoragePaths(ctx, database)
+	if err != nil {
+		t.Fatalf("GetAllStoragePaths failed: %v", err)
+	}
+	if len(paths) != 2 || !paths["storage-key-1"] || !paths["storage-key-2"] {
+		t.Errorf("expected paths to contain storage-key-1 and storage-key-2, got %+v", paths)
 	}
 }

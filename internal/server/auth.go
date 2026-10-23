@@ -181,6 +181,9 @@ func (s *Server) currentUser(r *http.Request) (*db.User, error) {
 	if u, ok := userFrom(r.Context()); ok {
 		return u, nil
 	}
+	if u, ok := s.parseSession(r); ok && u != nil {
+		return u, nil
+	}
 	uname, ok := usernameFrom(r.Context())
 	if !ok {
 		return nil, errors.New("unauthenticated")
@@ -433,8 +436,7 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			supplied := strings.TrimSpace(r.FormValue("setup_token"))
 			if subtle.ConstantTimeCompare([]byte(supplied), []byte(s.setupToken)) != 1 {
 				logger.Action("Rejected setup attempt from %s: invalid setup token", s.clientIP(r))
-				w.WriteHeader(http.StatusForbidden)
-				s.renderSetupError(w, dbConfigured, "Invalid setup token")
+				s.renderSetupError(w, dbConfigured, "Invalid setup token", http.StatusForbidden)
 				return
 			}
 		}
@@ -466,14 +468,32 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 				if port != "" {
 					hostPort = net.JoinHostPort(host, port)
 				}
+				pgTLSForm := strings.ToLower(strings.TrimSpace(r.FormValue("pg_tls")))
+				if pgTLSForm == "" {
+					pgTLSForm = strings.ToLower(strings.TrimSpace(r.FormValue("postgres_tls")))
+				}
+				if pgTLSForm == "" {
+					pgTLSForm = strings.ToLower(strings.TrimSpace(r.FormValue("db_tls")))
+				}
+				useTLS := pgTLSForm == "1" || pgTLSForm == "true" || pgTLSForm == "on" || pgTLSForm == "yes"
+
 				sslMode := strings.TrimSpace(r.FormValue("pg_sslmode"))
-				switch sslMode {
-				case "":
-					sslMode = "require"
-				case "require", "verify-full", "verify-ca", "disable":
-				default:
-					s.renderSetupError(w, dbConfigured, "Invalid database configuration")
-					return
+				if sslMode == "" {
+					if useTLS {
+						sslMode = "require"
+					} else {
+						sslMode = "disable"
+					}
+				} else {
+					switch sslMode {
+					case "require", "verify-full", "verify-ca":
+						useTLS = true
+					case "disable":
+						useTLS = false
+					default:
+						s.renderSetupError(w, dbConfigured, "Invalid database configuration")
+						return
+					}
 				}
 				query := url.Values{}
 				query.Set("sslmode", sslMode)
@@ -485,6 +505,8 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 					RawQuery: query.Encode(),
 				}
 				candidateCfg.PostgresURL = pgURL.String()
+				candidateCfg.PostgresTLS = useTLS
+				candidateCfg.DBTLS = useTLS
 			default:
 				s.renderSetupError(w, dbConfigured, "Invalid database type")
 				return
@@ -515,6 +537,8 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.DBType = candidateCfg.DBType
 			s.cfg.SQLiteURL = candidateCfg.SQLiteURL
 			s.cfg.PostgresURL = candidateCfg.PostgresURL
+			s.cfg.PostgresTLS = candidateCfg.PostgresTLS
+			s.cfg.DBTLS = candidateCfg.DBTLS
 			s.db = database
 			if saveErr := s.saveConfigLocked(); saveErr != nil {
 				logger.Error("Failed to save config during setup: %v", saveErr)
@@ -578,8 +602,15 @@ func (s *Server) setupHandler(w http.ResponseWriter, r *http.Request) {
 			s.cfg.S3Bucket = r.FormValue("s3_bucket")
 			s.cfg.S3AccessKey = r.FormValue("s3_access_key")
 			s.cfg.S3SecretKey = r.FormValue("s3_secret_key")
-			s.cfg.S3UseSSL = r.FormValue("s3_use_ssl") == "on"
+			proto := r.FormValue("s3_protocol")
+			if proto == "" {
+				proto = "https"
+			}
+			s.cfg.S3Protocol = proto
+			s.cfg.S3SkipSSLVerify = r.FormValue("s3_skip_ssl_verify") == "on"
+			s.cfg.S3UseSSL = (proto == "https")
 		}
+		s.cfg.EnsureDrives()
 		if err := s.cfg.EnsureJWTKey(s.configPathLocked()); err != nil {
 			logger.Error("Failed to ensure JWT key during setup: %v", err)
 		} else if err := s.saveConfigLocked(); err != nil {
@@ -661,32 +692,29 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 
 		if blocked, retry := lim.check(userKey, now); blocked {
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title":  "Login",
 				"Config": s.cfg,
 				"Error":  "Too many failed login attempts. Please try again later.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 		if blocked, retry := lim.check(accountKey, now); blocked {
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title":  "Login",
 				"Config": s.cfg,
 				"Error":  "Too many failed login attempts. Please try again later.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 		if blocked, retry := lim.check(ipKey, now); blocked {
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "login.html", map[string]interface{}{
 				"Title":  "Login",
 				"Config": s.cfg,
 				"Error":  "Too many failed login attempts. Please try again later.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 
@@ -710,12 +738,11 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				logger.Info("Rate limit lockout on /login for username '%s' from %s", username, clientIP)
 				setRetryAfterHeader(w, retry)
-				w.WriteHeader(http.StatusTooManyRequests)
 				s.renderTemplate(w, r, "login.html", map[string]interface{}{
 					"Title":  "Login",
 					"Config": s.cfg,
 					"Error":  "Too many failed login attempts. Please try again later.",
-				})
+				}, http.StatusTooManyRequests)
 				return
 			}
 			logger.Action("Failed login attempt for username '%s' from %s (user not found)", username, clientIP)
@@ -740,12 +767,11 @@ func (s *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				logger.Info("Rate limit lockout on /login for username '%s' from %s", username, clientIP)
 				setRetryAfterHeader(w, retry)
-				w.WriteHeader(http.StatusTooManyRequests)
 				s.renderTemplate(w, r, "login.html", map[string]interface{}{
 					"Title":  "Login",
 					"Config": s.cfg,
 					"Error":  "Too many failed login attempts. Please try again later.",
-				})
+				}, http.StatusTooManyRequests)
 				return
 			}
 			logger.Action("Failed login attempt for username '%s' from %s (invalid password)", username, clientIP)
@@ -839,23 +865,21 @@ func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		if blocked, retry := lim.check(userKey, now); blocked {
 			logger.Info("Blocked password reset attempt for '%s' from %s (rate limit active)", username, clientIP)
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
 				"Title":  "Reset Password",
 				"Config": s.cfg,
 				"Error":  "Too many failed attempts. Try again in 1 hour.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 		if blocked, retry := lim.check(ipKey, now); blocked {
 			logger.Info("Blocked password reset attempt from %s (IP rate limit active)", clientIP)
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
 				"Title":  "Reset Password",
 				"Config": s.cfg,
 				"Error":  "Too many failed attempts. Try again in 1 hour.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 
@@ -886,12 +910,11 @@ func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 				}
 				logger.Info("Failed password reset attempt for username '%s' from %s (rate limit reached: %d/%d, locked for 1h)", username, clientIP, attempts, resetMaxAttempts)
 				setRetryAfterHeader(w, retry)
-				w.WriteHeader(http.StatusTooManyRequests)
 				s.renderTemplate(w, r, "reset_password.html", map[string]interface{}{
 					"Title":  "Reset Password",
 					"Config": s.cfg,
 					"Error":  "Too many failed attempts. Try again in 1 hour.",
-				})
+				}, http.StatusTooManyRequests)
 				return
 			}
 			logger.Action("Failed password reset attempt for username '%s' from %s (attempt %d/%d)", username, clientIP, attempts, resetMaxAttempts)
@@ -950,7 +973,7 @@ func (s *Server) resetPasswordHandler(w http.ResponseWriter, r *http.Request) {
 		lim.reset(userKey)
 		lim.reset(ipKey)
 
-		logger.Action("User '%s' successfully reset their password using recovery code from %s (recovery code rotated)", username, clientIP)
+		logger.Info("User '%s' successfully reset their password using recovery code from %s (recovery code rotated)", username, clientIP)
 		http.Redirect(w, r, "/login?success=Password+updated+successfully", http.StatusFound)
 	}
 }
@@ -1054,14 +1077,13 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 		rateKey := authRateKey("2fa", clientIP, username)
 		if blocked, retry := lim.check(rateKey, now); blocked {
 			setRetryAfterHeader(w, retry)
-			w.WriteHeader(http.StatusTooManyRequests)
 			s.renderTemplate(w, r, "login_2fa.html", map[string]interface{}{
 				"Title":      "Two-Factor Authentication",
 				"Config":     s.cfg,
 				"User":       user,
 				"TargetUser": username,
 				"Error":      "Too many failed verification attempts. Please try again later.",
-			})
+			}, http.StatusTooManyRequests)
 			return
 		}
 
@@ -1082,14 +1104,13 @@ func (s *Server) login2FAHandler(w http.ResponseWriter, r *http.Request) {
 			if blocked {
 				logger.Info("Rate limit lockout on /login/2fa for username '%s' from %s", username, clientIP)
 				setRetryAfterHeader(w, retry)
-				w.WriteHeader(http.StatusTooManyRequests)
 				s.renderTemplate(w, r, "login_2fa.html", map[string]interface{}{
 					"Title":      "Two-Factor Authentication",
 					"Config":     s.cfg,
 					"User":       user,
 					"TargetUser": username,
 					"Error":      "Too many failed verification attempts. Please try again later.",
-				})
+				}, http.StatusTooManyRequests)
 				return
 			}
 			if exhausted {
@@ -1267,17 +1288,37 @@ func (s *Server) webAuthnLoginFinish(w http.ResponseWriter, r *http.Request) {
 	s.mu.RUnlock()
 	var loggedInUser *db.User
 	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
-		idStr := string(userHandle)
-		var id int
-		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
-			return nil, fmt.Errorf("invalid user handle")
+		if len(userHandle) > 0 {
+			idStr := string(userHandle)
+			var id int
+			if _, err := fmt.Sscanf(idStr, "%d", &id); err == nil {
+				if dbUser, err := db.GetUserByID(r.Context(), database, id); err == nil && dbUser != nil {
+					loggedInUser = dbUser
+					return auth.NewWebAuthnUser(dbUser), nil
+				}
+			}
 		}
-		dbUser, err := db.GetUserByID(r.Context(), database, id)
-		if err != nil {
-			return nil, err
+		// Fallback: search by credential ID in stored WebAuthnData across users
+		if len(rawID) > 0 && database != nil {
+			allUsers, err := db.GetAllUsers(r.Context(), database)
+			if err == nil {
+				for _, u := range allUsers {
+					var passkeys []auth.Passkey
+					if u.WebAuthnData != "" && json.Unmarshal([]byte(u.WebAuthnData), &passkeys) == nil {
+						for _, pk := range passkeys {
+							if subtle.ConstantTimeCompare(pk.Credential.ID, rawID) == 1 {
+								fullUser, err := db.GetUserByID(r.Context(), database, u.ID)
+								if err == nil && fullUser != nil {
+									loggedInUser = fullUser
+									return auth.NewWebAuthnUser(fullUser), nil
+								}
+							}
+						}
+					}
+				}
+			}
 		}
-		loggedInUser = dbUser
-		return auth.NewWebAuthnUser(dbUser), nil
+		return nil, fmt.Errorf("user not found for passkey")
 	}
 	credential, err := s.webAuthn.FinishDiscoverableLogin(handler, sessionData, r)
 	if err != nil {

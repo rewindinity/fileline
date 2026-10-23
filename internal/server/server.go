@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"errors"
 	"fmt"
 	"html/template"
 	"net"
@@ -32,9 +33,10 @@ type Server struct {
 	cfg        *config.Config
 	configPath string
 	// Storage
-	storage       storage.Provider            // Default legacy provider
-	storageDrives map[string]storage.Provider // Configured drives
-	mu            sync.RWMutex
+	storage         storage.Provider            // Default legacy provider
+	storageDrives   map[string]storage.Provider // Configured drives
+	driveInitErrors map[string]error            // Errors during drive initialization
+	mu              sync.RWMutex
 	setupMu       sync.Mutex
 	configured    atomic.Bool
 	setupToken    string
@@ -104,6 +106,9 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		"FormatSize": func(b int64) string {
 			return logger.FormatBytes(b)
 		},
+		"StorageQuotaBytes": func(quotaMB int) int64 {
+			return int64(quotaMB) * 1024 * 1024
+		},
 		"FormatPercent": func(p float64) string {
 			return fmt.Sprintf("%.1f%%", p)
 		},
@@ -160,10 +165,28 @@ func New(cfg *config.Config, database *sql.DB) *Server {
 		}
 	}
 	origin := fmt.Sprintf("%s://%s", schema, domain)
+	rpID := cfg.Domain
+	if h, _, err := net.SplitHostPort(rpID); err == nil {
+		rpID = h
+	}
+	if rpID == "" {
+		rpID = "localhost"
+	}
+	origins := []string{origin}
+	if rpID == "localhost" || rpID == "127.0.0.1" {
+		portStr := ""
+		if cfg.Port != 80 && cfg.Port != 443 && cfg.Port > 0 {
+			portStr = fmt.Sprintf(":%d", cfg.Port)
+		}
+		origins = append(origins,
+			fmt.Sprintf("%s://localhost%s", schema, portStr),
+			fmt.Sprintf("%s://127.0.0.1%s", schema, portStr),
+		)
+	}
 	wConfig := &webauthn.Config{
 		RPDisplayName: "FileLine",
-		RPID:          cfg.Domain, // RPID should not contain the port, just the domain
-		RPOrigins:     []string{origin},
+		RPID:          rpID, // RPID should not contain the port, just the domain
+		RPOrigins:     origins,
 	}
 	wa, err := webauthn.New(wConfig)
 	if err != nil {
@@ -276,6 +299,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/edit", s.requireAuth(s.editFileHandler))
 	mux.HandleFunc("/delete", s.requireAuth(s.deleteHandler))
 	mux.HandleFunc("/api/files/stats", s.requireAuth(s.fileStatsAPIHandler))
+	mux.HandleFunc("/api/admin/storage/scan", s.requireAuth(s.adminScanStorageHandler))
+	mux.HandleFunc("/api/admin/storage/import", s.requireAuth(s.adminImportStorageHandler))
+	mux.HandleFunc("/api/admin/storage/test_s3", s.requireAuth(s.adminTestS3Handler))
 	// File Upload routes (upload.go)
 	mux.HandleFunc("/upload", s.requireAuth(s.uploadHandler))
 	mux.HandleFunc("/api/upload/init", s.requireAuth(s.chunkUploadInitHandler))
@@ -291,8 +317,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/settings/subusers", s.requireAuth(s.settingsSubusersHandler))
 	mux.HandleFunc("/settings/users/add", s.requireAuth(s.addUserHandler))
 	mux.HandleFunc("/settings/users/delete", s.requireAuth(s.deleteUserHandler))
+	mux.HandleFunc("/settings/users/quota", s.requireAuth(s.editUserQuotaHandler))
 	// Account Security routes - 2FA, WebAuthn passkeys & Recovery Code (security.go)
 	mux.HandleFunc("/settings/account", s.requireAuth(s.settingsAccountHandler))
+	mux.HandleFunc("/settings/password", s.requireAuth(s.settingsPasswordHandler))
 	mux.HandleFunc("/settings/2fa/generate", s.requireAuth(s.totpGenerateHandler))
 	mux.HandleFunc("/settings/2fa/verify", s.requireAuth(s.totpVerifyHandler))
 	mux.HandleFunc("/settings/2fa/disable", s.requireAuth(s.totpDisableHandler))
@@ -303,7 +331,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/settings/webauthn/rename", s.requireAuth(s.webAuthnRenameHandler))
 	mux.HandleFunc("/settings/webauthn/delete", s.requireAuth(s.webAuthnDeleteHandler))
 	// Main Dashboard route (render.go)
-	mux.HandleFunc("/", s.requireAuth(s.dashboardHandler))
+	mux.HandleFunc("/", s.dashboardHandler)
 
 	cop := http.NewCrossOriginProtection()
 	s.mu.RLock()
@@ -625,12 +653,43 @@ func (s *Server) isConfigured() bool {
 
 func (s *Server) initDrives(ctx context.Context) {
 	s.storageDrives = make(map[string]storage.Provider)
+	s.driveInitErrors = make(map[string]error)
+
+	if s.cfg == nil {
+		return
+	}
+	s.cfg.EnsureDrives()
+
 	for _, drive := range s.cfg.Drives {
+		if !drive.Enabled {
+			continue
+		}
 		p, err := storage.NewProviderFromDrive(ctx, drive)
 		if err == nil {
 			s.storageDrives[drive.ID] = p
 		} else {
-			logger.Error("Failed to initialize drive %s: %v", drive.Name, err)
+			s.driveInitErrors[drive.ID] = err
+			logger.Error("Failed to initialize drive %s (%s): %v", drive.Name, drive.ID, err)
+		}
+	}
+
+	// Set s.storage to the designated default drive
+	defID := s.cfg.DefaultDriveID
+	if p, ok := s.storageDrives[defID]; ok {
+		s.storage = p
+	} else {
+		for _, drive := range s.cfg.Drives {
+			if drive.IsDefault {
+				if p, ok := s.storageDrives[drive.ID]; ok {
+					s.storage = p
+					break
+				}
+			}
+		}
+		if s.storage == nil {
+			if p, err := storage.NewProvider(ctx, s.cfg); err == nil {
+				s.storage = p
+			}
 		}
 	}
 }
@@ -641,8 +700,75 @@ func (s *Server) getProvider(driveID string) storage.Provider {
 	if p, ok := s.storageDrives[driveID]; ok {
 		return p
 	}
-	// Fallback to default
-	return s.storage
+	if driveID == "" || driveID == "default" || (s.cfg != nil && driveID == s.cfg.DefaultDriveID) {
+		return s.storage
+	}
+	if driveID == "local" || driveID == "s3" {
+		if s.cfg != nil {
+			for _, d := range s.cfg.Drives {
+				if d.Type == driveID {
+					if p, ok := s.storageDrives[d.ID]; ok {
+						return p
+					}
+				}
+			}
+		}
+		return s.storage
+	}
+	return nil
+}
+
+func (s *Server) getUploadProvider(driveID string) (storage.Provider, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.cfg == nil {
+		return nil, "", errors.New("server configuration not initialized")
+	}
+
+	var targetDrive *config.Drive
+	if driveID == "" || driveID == "default" {
+		for i := range s.cfg.Drives {
+			if s.cfg.Drives[i].ID == s.cfg.DefaultDriveID || s.cfg.Drives[i].IsDefault {
+				targetDrive = &s.cfg.Drives[i]
+				break
+			}
+		}
+		if targetDrive == nil && len(s.cfg.Drives) > 0 {
+			targetDrive = &s.cfg.Drives[0]
+		}
+	} else {
+		for i := range s.cfg.Drives {
+			if s.cfg.Drives[i].ID == driveID {
+				targetDrive = &s.cfg.Drives[i]
+				break
+			}
+		}
+	}
+
+	if targetDrive == nil {
+		if driveID == "" || driveID == "default" {
+			if s.storage != nil {
+				return s.storage, "default", nil
+			}
+			return nil, "", errors.New("default storage drive is not configured")
+		}
+		return nil, "", fmt.Errorf("storage drive %q not found", driveID)
+	}
+
+	if !targetDrive.Enabled {
+		return nil, "", fmt.Errorf("storage drive %q is disabled", targetDrive.Name)
+	}
+
+	p, ok := s.storageDrives[targetDrive.ID]
+	if !ok || p == nil {
+		if initErr, hasErr := s.driveInitErrors[targetDrive.ID]; hasErr && initErr != nil {
+			return nil, "", fmt.Errorf("storage drive %q is unavailable: %w", targetDrive.Name, initErr)
+		}
+		return nil, "", fmt.Errorf("storage drive %q is unavailable", targetDrive.Name)
+	}
+
+	return p, targetDrive.ID, nil
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {

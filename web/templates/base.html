@@ -56,7 +56,7 @@
                     <img src="/static/icons/bxs-dashboard.svg" alt="{{ T .Language "Dashboard" }}">
                     {{ T .Language "Dashboard" }}
                 </a>
-                <a href="/files" class="nav-item {{if eq .Title "My Files"}}active{{end}}">
+                <a href="/files" class="nav-item {{if or (eq .Title "My Files") (eq .Title "All Files") (eq .Title "Files")}}active{{end}}">
                     <img src="/static/icons/bxs-folder.svg" alt="{{ T .Language "Files" }}">
                     {{ T .Language "Files" }}
                 </a>

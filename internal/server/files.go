@@ -37,6 +37,36 @@ func classifyUserAgent(uaStr string) string {
 	}
 }
 
+// isSocialMediaBot returns true if the User-Agent belongs to a social media crawler/scraper
+// (Discord, Twitter/X, Telegram, Facebook, Slack, WhatsApp, Pinterest, etc.) or a bot.
+func isSocialMediaBot(uaStr string) bool {
+	lower := strings.ToLower(uaStr)
+	socialSignatures := []string{
+		"discordbot",
+		"twitterbot",
+		"facebookexternalhit",
+		"telegrambot",
+		"slackbot",
+		"whatsapp",
+		"linkedinbot",
+		"vkshare",
+		"embedly",
+		"pinterest",
+		"redditbot",
+		"applebot",
+		"skypeuripreview",
+		"mastodon",
+		"bluesky",
+	}
+	for _, sig := range socialSignatures {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	ua := useragent.Parse(uaStr)
+	return ua.Bot
+}
+
 // detectMediaInfo determines the media category ("image", "video", "audio", "other") and MIME type.
 func detectMediaInfo(filename string) (string, string) {
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -338,9 +368,23 @@ func isNotModified(r *http.Request, etag string, lastModified time.Time) bool {
 }
 
 func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
+	if user, ok := s.parseSession(r); ok && user != nil {
+		r = r.WithContext(withUser(r.Context(), user))
+	}
+
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Range, Content-Type, Accept-Encoding")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Disposition")
+		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	urlPath := strings.TrimPrefix(r.URL.Path, "/f/")
 	if urlPath == "" {
-		s.render404(w)
+		s.render404(w, r)
 		return
 	}
 
@@ -351,14 +395,14 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	f, err := db.GetFileByURL(r.Context(), database, urlPath)
 	if err != nil {
-		s.render404(w)
+		s.render404(w, r)
 		return
 	}
 
 	if f.IsPrivate {
-		user, ok := s.parseSession(r)
-		if !ok || user == nil || (user.ID != f.UserID && user.Role != "admin") {
-			s.render404(w)
+		user, _ := userFrom(r.Context())
+		if user == nil || (user.ID != f.UserID && user.Role != "admin") {
+			s.render404(w, r)
 			return
 		}
 	}
@@ -370,7 +414,15 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	if database != nil {
 		owner, _ = db.GetUserByID(r.Context(), database, f.UserID)
 	}
-	embedEnabled := owner != nil && owner.EmbedConfig.Enabled
+	embedEnabled := false
+	if owner != nil && owner.EmbedConfig.Enabled {
+		isBot := isSocialMediaBot(r.UserAgent())
+		if isBot && owner.EmbedConfig.SocialMedia {
+			embedEnabled = true
+		} else if !isBot && owner.EmbedConfig.DirectVisit {
+			embedEnabled = true
+		}
+	}
 
 	// Record read statistics if enabled on GET (avoid double counting when raw=1 is sub-requested by embed view, or when a browser sends sub-range probes after byte 0)
 	if f.StatsEnabled && r.Method == http.MethodGet {
@@ -405,7 +457,8 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		embedColor := resolveEmbedColor(owner, cfg)
 
 		w.Header().Del("X-Frame-Options")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors *; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; font-src 'self' data:")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors *; object-src 'none'; base-uri 'self'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: *; media-src 'self' data: blob: *; connect-src 'self' *; font-src 'self' data:")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		s.renderTemplate(w, r, "embed_file.html", map[string]interface{}{
 			"Config":           cfg,
@@ -438,7 +491,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	st := s.getProvider(f.StorageType)
 	s.mu.RUnlock()
 	if st == nil {
-		s.render404(w)
+		s.render404(w, r)
 		return
 	}
 
@@ -451,8 +504,8 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
-	h.Set("Cross-Origin-Resource-Policy", "same-site")
+	h.Set("Accept-Ranges", "bytes")
+
 	disposition := "attachment"
 	servedMime := "application/octet-stream"
 	if !isDownload && isSafeInlineMIME(mimeType) {
@@ -461,6 +514,18 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Set("Content-Type", servedMime)
 	h.Set("Content-Disposition", formatContentDisposition(disposition, downloadName))
+
+	isMedia := strings.HasPrefix(servedMime, "video/") || strings.HasPrefix(servedMime, "audio/")
+	if isMedia {
+		h.Set("Access-Control-Allow-Origin", "*")
+		h.Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		h.Set("Access-Control-Allow-Headers", "Range, Content-Type, Accept-Encoding")
+		h.Set("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Disposition")
+		h.Set("Cross-Origin-Resource-Policy", "cross-origin")
+	} else {
+		h.Set("Cross-Origin-Resource-Policy", "same-site")
+		h.Set("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'")
+	}
 	if etag := fileETag(f); etag != "" {
 		h.Set("ETag", etag)
 	}
@@ -473,7 +538,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	if sp, ok := st.(storage.SeekableProvider); ok {
 		rsc, err := sp.Open(r.Context(), f.StoragePath)
 		if err != nil {
-			s.render404(w)
+			s.render404(w, r)
 			return
 		}
 		defer rsc.Close()
@@ -498,7 +563,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			ro, err := rp.Head(r.Context(), f.StoragePath)
 			if err != nil {
-				s.render404(w)
+				s.render404(w, r)
 				return
 			}
 			size := ro.ContentLength
@@ -514,7 +579,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 		rangeHeader := strings.TrimSpace(r.Header.Get("Range"))
 		ro, err := rp.GetRange(r.Context(), f.StoragePath, rangeHeader)
 		if err != nil {
-			s.render404(w)
+			s.render404(w, r)
 			return
 		}
 		defer ro.Body.Close()
@@ -547,7 +612,7 @@ func (s *Server) serveFileHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	reader, err := st.Get(r.Context(), f.StoragePath)
 	if err != nil {
-		s.render404(w)
+		s.render404(w, r)
 		return
 	}
 	defer reader.Close()
@@ -570,19 +635,30 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := user.Username
-	filterID := user.ID
-	if user.Role == "admin" {
-		filterID = 0
-	}
-	cursorStr := strings.TrimSpace(r.URL.Query().Get("cursor"))
-	searchQuery := strings.TrimSpace(r.URL.Query().Get("q"))
 
+	filter := strings.TrimSpace(r.URL.Query().Get("filter"))
+	if filter != "others" {
+		filter = "own"
+	}
+
+	searchQuery := strings.TrimSpace(r.URL.Query().Get("q"))
 	opts := db.FilePageOpts{
-		UserID: filterID,
 		Limit:  50,
 		Search: searchQuery,
 	}
 
+	if user.Role == "admin" {
+		if filter == "others" {
+			opts.ExcludeUserID = user.ID
+		} else {
+			opts.UserID = user.ID
+		}
+	} else {
+		filter = "own"
+		opts.UserID = user.ID
+	}
+
+	cursorStr := strings.TrimSpace(r.URL.Query().Get("cursor"))
 	if cursorStr != "" {
 		if curTS, curID, err := db.DecodeCursor(cursorStr); err == nil {
 			opts.CursorTS = &curTS
@@ -596,12 +672,29 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if user.Role == "admin" && len(page.Files) > 0 {
+		if allUsers, err := db.GetAllUsers(r.Context(), database); err == nil {
+			userMap := make(map[int]string, len(allUsers))
+			for _, u := range allUsers {
+				userMap[u.ID] = u.Username
+			}
+			for _, f := range page.Files {
+				if uname, ok := userMap[f.UserID]; ok {
+					f.OwnerUsername = uname
+				}
+			}
+		}
+	}
+
 	var nextURL, prevURL string
 	if page.HasNext {
 		v := url.Values{}
 		v.Set("cursor", page.NextCursor)
 		if searchQuery != "" {
 			v.Set("q", searchQuery)
+		}
+		if user.Role == "admin" && filter != "" {
+			v.Set("filter", filter)
 		}
 		nextURL = "/files?" + v.Encode()
 	}
@@ -610,23 +703,46 @@ func (s *Server) filesHandler(w http.ResponseWriter, r *http.Request) {
 		if searchQuery != "" {
 			v.Set("q", searchQuery)
 		}
+		if user.Role == "admin" && filter != "" {
+			v.Set("filter", filter)
+		}
 		if len(v) > 0 {
 			prevURL = "/files?" + v.Encode()
 		} else {
 			prevURL = "/files"
+			if user.Role == "admin" && filter != "" {
+				prevURL += "?filter=" + filter
+			}
+		}
+	}
+
+	var drives []config.DriveView
+	if user.Role == "admin" && s.cfg != nil {
+		drives = s.cfg.SanitizedDrives()
+		if len(drives) == 0 {
+			drives = []config.DriveView{
+				{
+					ID:      "default",
+					Name:    "Default Storage",
+					Type:    s.cfg.StorageType,
+					Enabled: true,
+				},
+			}
 		}
 	}
 
 	s.renderTemplate(w, r, "files.html", map[string]interface{}{
-		"Title":       "All Files",
-		"Username":    username,
-		"User":        user,
-		"Files":       page.Files,
-		"HasNext":     page.HasNext,
-		"NextURL":     nextURL,
-		"HasPrev":     cursorStr != "",
-		"PrevURL":     prevURL,
-		"SearchQuery": searchQuery,
+		"Title":        "All Files",
+		"Username":     username,
+		"User":         user,
+		"Drives":       drives,
+		"Files":        page.Files,
+		"HasNext":      page.HasNext,
+		"NextURL":      nextURL,
+		"HasPrev":      cursorStr != "",
+		"PrevURL":      prevURL,
+		"SearchQuery":  searchQuery,
+		"ActiveFilter": filter,
 	})
 }
 
@@ -646,7 +762,7 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 		id := queryInt(r, "id", 0)
 		f, err := db.GetFileByID(r.Context(), database, id)
 		if err != nil {
-			s.render404(w)
+			s.render404(w, r)
 			return
 		}
 		if user.Role != "admin" && f.UserID != user.ID {
@@ -687,14 +803,39 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 			s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
 			return
 		}
+		var stats *db.FileStats
+		if f.StatsEnabled {
+			stats, _ = db.GetFileStats(r.Context(), database, f.ID)
+		}
 		customName := strings.TrimSpace(r.FormValue("custom_name"))
 		if len(customName) > maxCustomNameLen {
-			http.Error(w, "Custom name too long", http.StatusBadRequest)
+			s.renderTemplate(w, r, "edit_file.html", map[string]interface{}{
+				"Title":    "Edit File",
+				"Username": username,
+				"User":     user,
+				"File":     f,
+				"Stats":    stats,
+				"Error":    "Custom name too long",
+			}, http.StatusBadRequest)
 			return
 		}
 		urlPath := strings.TrimSpace(r.FormValue("url_path"))
+		explicitURLPath := urlPath != ""
+		if !explicitURLPath {
+			urlPath = slugifyURLPath(f.OriginalName)
+			if urlPath == "" {
+				urlPath = f.URLPath
+			}
+		}
 		if err := validateURLPath(urlPath); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			s.renderTemplate(w, r, "edit_file.html", map[string]interface{}{
+				"Title":    "Edit File",
+				"Username": username,
+				"User":     user,
+				"File":     f,
+				"Stats":    stats,
+				"Error":    err.Error(),
+			}, http.StatusBadRequest)
 			return
 		}
 		isPrivate := r.FormValue("is_private") == "on"
@@ -712,7 +853,22 @@ func (s *Server) editFileHandler(w http.ResponseWriter, r *http.Request) {
 
 		if err := db.UpdateFile(r.Context(), database, id, customName, urlPath, isPrivate, statsEnabled); err != nil {
 			if isUniqueConstraintError(err) {
-				http.Error(w, "URL path already in use", http.StatusConflict)
+				if !explicitURLPath {
+					urlPath = appendRandomURLPathSuffix(urlPath)
+					if retryErr := db.UpdateFile(r.Context(), database, id, customName, urlPath, isPrivate, statsEnabled); retryErr == nil {
+						logger.Action("User '%s' updated file id=%d (custom_name='%s', url_path='%s', private=%t, stats=%t)", username, id, customName, urlPath, isPrivate, statsEnabled)
+						http.Redirect(w, r, "/files", http.StatusFound)
+						return
+					}
+				}
+				s.renderTemplate(w, r, "edit_file.html", map[string]interface{}{
+					"Title":    "Edit File",
+					"Username": username,
+					"User":     user,
+					"File":     f,
+					"Stats":    stats,
+					"Error":    "URL path already in use",
+				}, http.StatusConflict)
 				return
 			}
 			s.internalError(w, r, "Failed to update file in database", err)

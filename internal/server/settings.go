@@ -123,6 +123,7 @@ func (s *Server) settingsStorageHandler(w http.ResponseWriter, r *http.Request) 
 		"User":           user,
 		"Config":         cfg.SanitizedView(),
 		"DrivesJSON":     string(drivesJSONBytes),
+		"DefaultDriveID": cfg.DefaultDriveID,
 		"EnvOnly":        cfg.EnvOnly,
 		"SuccessMessage": successMsg,
 		"ErrorMessage":   errorMsg,
@@ -228,7 +229,7 @@ func (s *Server) parseSettingsActionBody(w http.ResponseWriter, r *http.Request,
 		if strings.HasPrefix(strings.ToLower(ct), "multipart/form-data") {
 			if err := r.ParseMultipartForm(maxLogoUploadBytes); err != nil {
 				if isMaxBytesError(err) {
-					http.Error(w, "Logo file exceeds maximum allowed size (1 MB)", http.StatusRequestEntityTooLarge)
+					http.Redirect(w, r, "/settings/appearance?error=Logo+file+exceeds+maximum+allowed+size+(5+MB)", http.StatusFound)
 					return false
 				}
 				http.Redirect(w, r, "/settings/appearance?error=Logo+file+too+large+or+invalid+form", http.StatusFound)
@@ -304,36 +305,9 @@ func (s *Server) settingsActionStorage(w http.ResponseWriter, r *http.Request, u
 		http.Redirect(w, r, "/settings/storage?error=Cannot+modify+storage+in+ENV-only+mode", http.StatusFound)
 		return
 	}
-	storageType := r.FormValue("storage_type")
-	s.cfg.StorageType = storageType
-	switch storageType {
-	case "local":
-		localPath := r.FormValue("local_path")
-		if localPath == "" {
-			localPath = "./uploads"
-		}
-		s.cfg.LocalStoragePath = localPath
-	case "s3":
-		s.cfg.S3Endpoint = r.FormValue("s3_endpoint")
-		s.cfg.S3Region = r.FormValue("s3_region")
-		s.cfg.S3Bucket = r.FormValue("s3_bucket")
-		s.cfg.S3AccessKey = r.FormValue("s3_access_key")
-		secret := r.FormValue("s3_secret_key")
-		if secret != "" {
-			s.cfg.S3SecretKey = secret
-		}
-		s.cfg.S3UseSSL = r.FormValue("s3_use_ssl") == "on"
-	}
-	if maxUpload, err := strconv.Atoi(r.FormValue("max_upload_size_mb")); err == nil {
-		s.cfg.MaxUploadSizeMB = maxUpload
-	}
-	if threshold, err := strconv.Atoi(r.FormValue("chunk_threshold_mb")); err == nil {
-		s.cfg.ChunkThresholdMB = threshold
-	}
-	if size, err := strconv.Atoi(r.FormValue("chunk_size_mb")); err == nil {
-		s.cfg.ChunkSizeMB = size
-	}
 	drivesJSON := r.FormValue("drives_json")
+	defaultDriveID := strings.TrimSpace(r.FormValue("default_drive_id"))
+
 	if drivesJSON != "" {
 		var newDrives []config.Drive
 		if err := json.Unmarshal([]byte(drivesJSON), &newDrives); err == nil {
@@ -351,21 +325,62 @@ func (s *Server) settingsActionStorage(w http.ResponseWriter, r *http.Request, u
 				}
 			}
 			s.cfg.Drives = newDrives
+			if defaultDriveID != "" {
+				s.cfg.DefaultDriveID = defaultDriveID
+			}
 		} else {
 			logger.Error("Failed to parse drives_json: %v", err)
 		}
-	}
-	_ = s.saveConfigLocked()
-	// Reinit storage
-	st, err := storage.NewProvider(r.Context(), s.cfg)
-	if err == nil {
-		s.storage = st
 	} else {
-		logger.Error("Failed to reinitialize storage: %v", err)
+		// Legacy form fallback if drives_json is not provided
+		storageType := r.FormValue("storage_type")
+		if storageType != "" {
+			s.cfg.StorageType = storageType
+			switch storageType {
+			case "local":
+				localPath := r.FormValue("local_path")
+				if localPath == "" {
+					localPath = "./uploads"
+				}
+				s.cfg.LocalStoragePath = localPath
+			case "s3":
+				s.cfg.S3Endpoint = r.FormValue("s3_endpoint")
+				s.cfg.S3Region = r.FormValue("s3_region")
+				s.cfg.S3Bucket = r.FormValue("s3_bucket")
+				s.cfg.S3AccessKey = r.FormValue("s3_access_key")
+				secret := r.FormValue("s3_secret_key")
+				if secret != "" {
+					s.cfg.S3SecretKey = secret
+				}
+				proto := r.FormValue("s3_protocol")
+				if proto == "" {
+					if r.FormValue("s3_use_ssl") == "on" {
+						proto = "https"
+					} else {
+						proto = "http"
+					}
+				}
+				s.cfg.S3Protocol = proto
+				s.cfg.S3SkipSSLVerify = r.FormValue("s3_skip_ssl_verify") == "on"
+				s.cfg.S3UseSSL = (proto == "https")
+			}
+		}
 	}
+	if maxUpload, err := strconv.Atoi(r.FormValue("max_upload_size_mb")); err == nil {
+		s.cfg.MaxUploadSizeMB = maxUpload
+	}
+	if threshold, err := strconv.Atoi(r.FormValue("chunk_threshold_mb")); err == nil {
+		s.cfg.ChunkThresholdMB = threshold
+	}
+	if size, err := strconv.Atoi(r.FormValue("chunk_size_mb")); err == nil {
+		s.cfg.ChunkSizeMB = size
+	}
+	s.cfg.EnsureDrives()
+	_ = s.saveConfigLocked()
+	// Reinit storage & drives
 	s.initDrives(r.Context())
 	s.mu.Unlock()
-	logger.Action("User '%s' updated storage settings (type=%s, max_upload_size=%dMB, chunk_size=%dMB, chunk_threshold=%dMB)", user.Username, storageType, s.cfg.MaxUploadSizeMB, s.cfg.ChunkSizeMB, s.cfg.ChunkThresholdMB)
+	logger.Action("User '%s' updated storage settings (drives=%d, max_upload_size=%dMB, chunk_size=%dMB, chunk_threshold=%dMB)", user.Username, len(s.cfg.Drives), s.cfg.MaxUploadSizeMB, s.cfg.ChunkSizeMB, s.cfg.ChunkThresholdMB)
 	http.Redirect(w, r, "/settings/storage?success=Storage+settings+saved", http.StatusFound)
 }
 
@@ -456,7 +471,7 @@ func (s *Server) settingsActionAppearance(w http.ResponseWriter, r *http.Request
 			if err == nil {
 				defer file.Close()
 				if header.Size > maxLogoUploadBytes {
-					http.Redirect(w, r, "/settings/appearance?error=Logo+exceeds+maximum+size+of+1+MB", http.StatusFound)
+					http.Redirect(w, r, "/settings/appearance?error=Logo+file+exceeds+maximum+allowed+size+(5+MB)", http.StatusFound)
 					return
 				}
 				ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -464,7 +479,7 @@ func (s *Server) settingsActionAppearance(w http.ResponseWriter, r *http.Request
 					blob, ioErr := io.ReadAll(io.LimitReader(file, maxLogoUploadBytes+1))
 					if ioErr != nil || int64(len(blob)) > maxLogoUploadBytes || len(blob) == 0 {
 						logger.Error("ReadAll/size error for logo: err=%v, len=%d", ioErr, len(blob))
-						http.Redirect(w, r, "/settings/appearance?error=Failed+to+read+logo+file+or+file+too+large", http.StatusFound)
+						http.Redirect(w, r, "/settings/appearance?error=Logo+file+exceeds+maximum+allowed+size+(5+MB)", http.StatusFound)
 						return
 					}
 					if !isValidLogoMagicBytes(ext, blob) {
@@ -552,8 +567,18 @@ func (s *Server) settingsActionEmbed(w http.ResponseWriter, r *http.Request, use
 		http.Redirect(w, r, "/settings/embed?error=Embed+text+exceeds+maximum+length", http.StatusFound)
 		return
 	}
+	embedEnabled := r.FormValue("embed_enabled") == "on"
+	embedSocial := r.FormValue("embed_social") == "on"
+	embedDirect := r.FormValue("embed_direct") == "on"
+	if embedEnabled && !embedSocial && !embedDirect && r.FormValue("embed_social") == "" && r.FormValue("embed_direct") == "" {
+		embedSocial = true
+		embedDirect = true
+	}
+
 	embedCfg := db.EmbedConfig{
-		Enabled:        r.FormValue("embed_enabled") == "on",
+		Enabled:        embedEnabled,
+		SocialMedia:    embedSocial,
+		DirectVisit:    embedDirect,
 		Color:          color,
 		UseAccentColor: r.FormValue("embed_use_accent") == "on",
 		SiteName:       siteName,
@@ -715,15 +740,199 @@ func (s *Server) deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := user.Username
-	targetUser := r.FormValue("username")
+	targetUser := strings.TrimSpace(r.FormValue("username"))
 	if targetUser == username {
 		http.Redirect(w, r, "/settings/subusers?error=Cannot+delete+yourself", http.StatusFound)
 		return
 	}
+
+	targetUserObj, err := db.GetUserByUsername(r.Context(), database, targetUser)
+	if err != nil || targetUserObj == nil {
+		http.Redirect(w, r, "/settings/subusers?error=User+not+found", http.StatusFound)
+		return
+	}
+	if targetUserObj.Role == "admin" {
+		http.Redirect(w, r, "/settings/subusers?error=Cannot+delete+admin+user", http.StatusFound)
+		return
+	}
+
+	// Fetch user's files and delete them from storage
+	userFiles, err := db.GetFilesByUserID(r.Context(), database, targetUserObj.ID)
+	if err != nil {
+		logger.Error("Failed to list files for subuser '%s' before deletion: %v", targetUser, err)
+	}
+	for _, f := range userFiles {
+		if f.StoragePath == "" {
+			continue
+		}
+		st := s.getProvider(f.StorageType)
+		if st == nil {
+			s.mu.RLock()
+			st = s.storage
+			s.mu.RUnlock()
+		}
+		if st != nil {
+			if err := st.Delete(r.Context(), f.StoragePath); err != nil {
+				logger.Error("Failed to delete file %s from storage for user '%s': %v", f.StoragePath, targetUser, err)
+			}
+		}
+	}
+
+	// Delete user and their file records from DB
 	if err := db.DeleteUser(r.Context(), database, targetUser); err != nil {
 		s.internalError(w, r, "Failed to delete subuser from database", err)
 		return
 	}
-	logger.Action("User '%s' deleted subuser '%s'", username, targetUser)
+	logger.Action("User '%s' deleted subuser '%s' and their %d files", username, targetUser, len(userFiles))
 	http.Redirect(w, r, "/settings/subusers?success=User+deleted+successfully", http.StatusFound)
+}
+
+func (s *Server) editUserQuotaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings/subusers", http.StatusSeeOther)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "Invalid form submission", http.StatusBadRequest)
+		return
+	}
+
+	s.mu.RLock()
+	database := s.db
+	s.mu.RUnlock()
+
+	user, err := s.currentUser(r)
+	if err != nil || user.Role != "admin" {
+		s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg})
+		return
+	}
+	username := user.Username
+	targetUser := strings.TrimSpace(r.FormValue("username"))
+	rawQuota := strings.TrimSpace(r.FormValue("quota_mb"))
+	if targetUser == "" {
+		http.Redirect(w, r, "/settings/subusers?error=Username+is+required", http.StatusFound)
+		return
+	}
+	quotaMB, err := strconv.Atoi(rawQuota)
+	if err != nil || quotaMB < 0 {
+		http.Redirect(w, r, "/settings/subusers?error=Invalid+storage+quota", http.StatusFound)
+		return
+	}
+	if err := db.UpdateUserQuota(r.Context(), database, targetUser, quotaMB); err != nil {
+		s.internalError(w, r, "Failed to update subuser quota in database", err)
+		return
+	}
+	logger.Action("User '%s' updated quota for user '%s' to %dMB", username, targetUser, quotaMB)
+	http.Redirect(w, r, "/settings/subusers?success=User+quota+updated+successfully", http.StatusFound)
+}
+
+func (s *Server) settingsPasswordHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Redirect(w, r, "/settings/account", http.StatusSeeOther)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		if isMaxBytesError(err) {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Redirect(w, r, "/settings/account?error=Invalid+form+submission", http.StatusFound)
+		return
+	}
+	user, err := s.currentUser(r)
+	if err != nil || user == nil {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	s.settingsActionPassword(w, r, user)
+}
+
+type testS3Request struct {
+	DriveID       string `json:"drive_id"`
+	Endpoint      string `json:"s3_endpoint"`
+	Region        string `json:"s3_region"`
+	Bucket        string `json:"s3_bucket"`
+	AccessKey     string `json:"s3_access_key"`
+	SecretKey     string `json:"s3_secret_key"`
+	Protocol      string `json:"s3_protocol"`
+	SkipSSLVerify bool   `json:"s3_skip_ssl_verify"`
+}
+
+func (s *Server) adminTestS3Handler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	user, err := s.currentUser(r)
+	if err != nil || user == nil || user.Role != "admin" {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONOrFormBodyBytes)
+	var req testS3Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "Invalid JSON request",
+		})
+		return
+	}
+
+	req.Bucket = strings.TrimSpace(req.Bucket)
+	if req.Bucket == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   "S3 bucket name is required",
+		})
+		return
+	}
+
+	// If secret key is empty and drive_id is provided, look up existing secret from config
+	if req.SecretKey == "" {
+		s.mu.RLock()
+		if s.cfg != nil {
+			for _, d := range s.cfg.Drives {
+				if d.ID == req.DriveID && d.S3SecretKey != "" {
+					req.SecretKey = d.S3SecretKey
+					break
+				}
+			}
+			if req.SecretKey == "" && s.cfg.StorageType == "s3" && s.cfg.S3SecretKey != "" {
+				req.SecretKey = s.cfg.S3SecretKey
+			}
+		}
+		s.mu.RUnlock()
+	}
+
+	if req.Protocol == "" {
+		req.Protocol = "https"
+	}
+
+	err = storage.TestS3Connection(r.Context(), req.Endpoint, req.Region, req.Bucket, req.AccessKey, req.SecretKey, req.Protocol, req.SkipSSLVerify)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		logger.Warn("S3 connection test failed for bucket %q: %v", req.Bucket, err)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "S3 connection successful! Bucket is accessible.",
+	})
 }

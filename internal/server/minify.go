@@ -32,9 +32,18 @@ func formatCSSSingleLine(css []byte) []byte {
 	return []byte(sb.String())
 }
 
+type jsParserState int
+
+const (
+	stateNormal jsParserState = iota
+	stateTemplate
+	stateExpr
+)
+
 // formatJSSingleLine collapses JavaScript lines into a single line while preserving all comments.
 // Single-line comments (// ...) are converted to block comments (/* ... */) so that subsequent
 // statements are not commented out when collapsed into one line.
+// Multi-line template literals (`...`) are tracked so that semicolons are never inserted into template text.
 func formatJSSingleLine(js []byte) []byte {
 	if len(js) == 0 {
 		return nil
@@ -43,19 +52,31 @@ func formatJSSingleLine(js []byte) []byte {
 	var sb strings.Builder
 	sb.Grow(len(js))
 
+	var stack []jsParserState
+	var exprDepths []int
+	inSingle := false
+	inDouble := false
+
+	isTemplateText := func() bool {
+		return len(stack) > 0 && stack[len(stack)-1] == stateTemplate
+	}
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
 
-		// Convert single-line comments to block comments to prevent commenting out trailing code
-		if strings.HasPrefix(trimmed, "//") {
-			commentContent := strings.TrimSpace(strings.TrimPrefix(trimmed, "//"))
-			trimmed = "/* " + commentContent + " */"
-		} else {
-			// If line contains an unquoted inline comment //, check if it's safe to convert
-			trimmed = convertInlineJSComment(trimmed)
+		wasTemplateText := isTemplateText()
+
+		// Convert single-line comments to block comments outside string and template literals
+		if !wasTemplateText && !inSingle && !inDouble && len(stack) == 0 {
+			if strings.HasPrefix(trimmed, "//") {
+				commentContent := strings.TrimSpace(strings.TrimPrefix(trimmed, "//"))
+				trimmed = "/* " + commentContent + " */"
+			} else {
+				trimmed = convertInlineJSComment(trimmed)
+			}
 		}
 
 		if sb.Len() > 0 {
@@ -68,13 +89,24 @@ func formatJSSingleLine(js []byte) []byte {
 				}
 			}
 
+			firstChar := trimmed[0]
+			noSemicolonBefore := wasTemplateText || firstChar == '`' || lastNonSpace == '`' ||
+				firstChar == '}' || firstChar == ')' || firstChar == ']' ||
+				firstChar == ',' || firstChar == '.' || firstChar == ':' || firstChar == '?' ||
+				firstChar == ';' || strings.HasPrefix(trimmed, "else") || strings.HasPrefix(trimmed, "catch") ||
+				strings.HasPrefix(trimmed, "finally") || strings.HasPrefix(trimmed, "while") ||
+				strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "||") || strings.HasPrefix(trimmed, "&&")
+
 			// If previous line does not end with a syntax delimiter, insert semicolon or space
-			if lastNonSpace != '{' && lastNonSpace != '}' && lastNonSpace != ';' &&
+			if !noSemicolonBefore &&
+				lastNonSpace != '{' && lastNonSpace != '}' && lastNonSpace != ';' &&
 				lastNonSpace != ',' && lastNonSpace != '(' && lastNonSpace != '[' &&
 				lastNonSpace != ':' && lastNonSpace != '?' && lastNonSpace != '+' &&
 				lastNonSpace != '-' && lastNonSpace != '=' && lastNonSpace != '*' &&
 				lastNonSpace != '/' && lastNonSpace != '!' && lastNonSpace != '&' &&
-				lastNonSpace != '|' {
+				lastNonSpace != '|' && lastNonSpace != '>' && lastNonSpace != '<' &&
+				lastNonSpace != '%' && lastNonSpace != '^' && lastNonSpace != '~' &&
+				lastNonSpace != '`' {
 				if !strings.HasSuffix(prev, "*/") {
 					sb.WriteByte(';')
 				} else {
@@ -84,6 +116,74 @@ func formatJSSingleLine(js []byte) []byte {
 				sb.WriteByte(' ')
 			}
 		}
+
+		// Update parser state
+		escaped := false
+		for i := 0; i < len(trimmed); i++ {
+			ch := trimmed[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+
+			if inSingle {
+				if ch == '\'' {
+					inSingle = false
+				}
+				continue
+			}
+			if inDouble {
+				if ch == '"' {
+					inDouble = false
+				}
+				continue
+			}
+
+			currState := stateNormal
+			if len(stack) > 0 {
+				currState = stack[len(stack)-1]
+			}
+
+			switch currState {
+			case stateNormal:
+				if ch == '\'' {
+					inSingle = true
+				} else if ch == '"' {
+					inDouble = true
+				} else if ch == '`' {
+					stack = append(stack, stateTemplate)
+				}
+			case stateTemplate:
+				if ch == '`' {
+					stack = stack[:len(stack)-1]
+				} else if ch == '$' && i+1 < len(trimmed) && trimmed[i+1] == '{' {
+					i++
+					stack = append(stack, stateExpr)
+					exprDepths = append(exprDepths, 1)
+				}
+			case stateExpr:
+				if ch == '\'' {
+					inSingle = true
+				} else if ch == '"' {
+					inDouble = true
+				} else if ch == '`' {
+					stack = append(stack, stateTemplate)
+				} else if ch == '{' {
+					exprDepths[len(exprDepths)-1]++
+				} else if ch == '}' {
+					exprDepths[len(exprDepths)-1]--
+					if exprDepths[len(exprDepths)-1] == 0 {
+						stack = stack[:len(stack)-1]
+						exprDepths = exprDepths[:len(exprDepths)-1]
+					}
+				}
+			}
+		}
+
 		sb.WriteString(trimmed)
 	}
 	return []byte(sb.String())

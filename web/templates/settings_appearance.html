@@ -9,21 +9,20 @@
     </div>
 </div>
 
-<!-- Feedback Alerts -->
-{{if .SuccessMessage}}
-<div class="alert alert-success">
-    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .SuccessMessage }}
-</div>
-{{end}}
-{{if .ErrorMessage}}
-<div class="alert alert-error">
-    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .ErrorMessage }}
-</div>
-{{end}}
-
 <div class="settings-overview-container">
+    <!-- Feedback Alerts -->
+    {{if .SuccessMessage}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .SuccessMessage }}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="alert alert-error">
+        <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .ErrorMessage }}
+    </div>
+    {{end}}
     <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
@@ -225,7 +224,7 @@
                         if (preview) {
                             preview.src = e2.target.result;
                         }
-                    }
+                    };
                     reader.readAsDataURL(e.target.files[0]);
                 }
             });

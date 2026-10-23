@@ -25,7 +25,7 @@ const (
 	defaultChunkSizeMB          = 10
 	defaultMaxBodyBytes         = 1 << 20  // 1 MB default limit for non-upload routes
 	maxJSONOrFormBodyBytes      = 64 << 10 // 64 KB limit for small JSON/form routes
-	maxLogoUploadBytes          = 1 << 20  // 1 MB limit for custom logo uploads
+	maxLogoUploadBytes          = 5 << 20  // 5 MB limit for custom logo uploads
 )
 
 // ChunkUpload holds metadata and progress of a chunked file upload
@@ -169,12 +169,14 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.RLock()
-	st := s.getProvider(driveID)
-	storageType := driveID
-	if storageType == "" || storageType == "default" {
-		storageType = s.cfg.StorageType
+	st, actualDriveID, err := s.getUploadProvider(driveID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Storage drive error: %v", err), http.StatusBadRequest)
+		return
 	}
+	storageType := actualDriveID
+
+	s.mu.RLock()
 	database := s.db
 	s.mu.RUnlock()
 	var currentUsed int64
@@ -367,9 +369,12 @@ func (s *Server) chunkUploadInitHandler(w http.ResponseWriter, r *http.Request) 
 	uploadID := newUploadID()
 	storageKey := newStorageKey()
 
-	s.mu.RLock()
-	st := s.getProvider(req.DriveID)
-	s.mu.RUnlock()
+	st, actualDriveID, err := s.getUploadProvider(req.DriveID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Storage drive error: %v", err), http.StatusBadRequest)
+		return
+	}
+	req.DriveID = actualDriveID
 
 	staged, err := s.createStagedUpload(r.Context(), st, uploadID, storageKey, req.TotalSize, chunkSize)
 	if err != nil {
@@ -643,12 +648,17 @@ func (s *Server) chunkUploadCompleteHandler(w http.ResponseWriter, r *http.Reque
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(transferBudget(upload.TotalSize)))
 
-	s.mu.RLock()
-	st := s.getProvider(upload.DriveID)
-	storageType := upload.DriveID
-	if storageType == "" || storageType == "default" {
-		storageType = s.cfg.StorageType
+	st, actualDriveID, err := s.getUploadProvider(upload.DriveID)
+	if err != nil {
+		if upload.Staged != nil {
+			_ = upload.Staged.Abort(r.Context())
+		}
+		http.Error(w, fmt.Sprintf("Storage drive error: %v", err), http.StatusInternalServerError)
+		return
 	}
+	storageType := actualDriveID
+
+	s.mu.RLock()
 	maxSize := int64(s.cfg.MaxUploadSizeMB) * 1024 * 1024
 	database := s.db
 	s.mu.RUnlock()

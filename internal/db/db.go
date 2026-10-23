@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,6 +45,46 @@ func buildSQLiteDSN(rawURL string) string {
 	return base + "?" + q.Encode()
 }
 
+// applyPostgresTLS ensures that the PostgreSQL DSN reflects the desired TLS setting.
+func applyPostgresTLS(rawURL string, useTLS bool) string {
+	if strings.HasPrefix(rawURL, "postgres://") || strings.HasPrefix(rawURL, "postgresql://") {
+		parsed, err := url.Parse(rawURL)
+		if err == nil {
+			q := parsed.Query()
+			sslMode := strings.ToLower(strings.TrimSpace(q.Get("sslmode")))
+			if useTLS {
+				if sslMode == "" || sslMode == "disable" {
+					q.Set("sslmode", "require")
+				}
+			} else {
+				q.Set("sslmode", "disable")
+			}
+			parsed.RawQuery = q.Encode()
+			return parsed.String()
+		}
+	}
+
+	// Key-value DSN style (e.g., "host=localhost port=5432 user=... sslmode=...")
+	if strings.Contains(rawURL, "sslmode=") {
+		re := regexp.MustCompile(`sslmode=\S+`)
+		if useTLS {
+			return re.ReplaceAllStringFunc(rawURL, func(m string) string {
+				val := strings.TrimPrefix(m, "sslmode=")
+				if val == "disable" {
+					return "sslmode=require"
+				}
+				return m
+			})
+		}
+		return re.ReplaceAllString(rawURL, "sslmode=disable")
+	}
+
+	if useTLS {
+		return rawURL + " sslmode=require"
+	}
+	return rawURL + " sslmode=disable"
+}
+
 // InitDB initializes the database connection based on provided configuration
 func InitDB(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 	var driver, dsn string
@@ -55,6 +96,7 @@ func InitDB(ctx context.Context, cfg *config.Config) (*sql.DB, error) {
 		if dsn == "" {
 			return nil, fmt.Errorf("postgres url is empty")
 		}
+		dsn = applyPostgresTLS(dsn, cfg.PostgresTLS || cfg.DBTLS)
 	case "sqlite":
 		driver = "sqlite"
 		dsn = buildSQLiteDSN(cfg.SQLiteURL)

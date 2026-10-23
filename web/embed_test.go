@@ -4,6 +4,8 @@ import (
 	"html/template"
 	"io/fs"
 	"mime"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -61,8 +63,11 @@ func TestStaticFS(t *testing.T) {
 		"fonts/Outfit-Bold.woff2",
 		"fonts/Outfit-ExtraBold.woff2",
 		"icons/bx-check.svg",
+		"icons/bx-loader-alt.svg",
+		"icons/bx-star.svg",
 		"icons/bxs-dashboard.svg",
 		"icons/bxs-folder.svg",
+		"icons/bxs-star.svg",
 	}
 
 	for _, name := range requiredFiles {
@@ -83,6 +88,23 @@ func TestStaticFS(t *testing.T) {
 		t.Errorf("expected at least 40 embedded icons, got %d", len(iconEntries))
 	}
 
+	// Verify all icons referenced in icons.css exist in staticFS
+	iconsCSS, err := fs.ReadFile(staticFS, "icons.css")
+	if err != nil {
+		t.Fatalf("failed to read icons.css: %v", err)
+	}
+	re := regexp.MustCompile(`url\(["']/static/([^"']+)["']\)`)
+	matches := re.FindAllStringSubmatch(string(iconsCSS), -1)
+	for _, m := range matches {
+		relPath := strings.TrimPrefix(m[1], "/")
+		data, err := fs.ReadFile(staticFS, relPath)
+		if err != nil {
+			t.Errorf("icon referenced in icons.css not found in staticFS: %s (%v)", relPath, err)
+		} else if len(data) == 0 {
+			t.Errorf("icon referenced in icons.css is empty: %s", relPath)
+		}
+	}
+
 	// Verify MIME registrations
 	if ct := mime.TypeByExtension(".woff2"); ct != "font/woff2" {
 		t.Errorf("expected mime for .woff2 to be 'font/woff2', got %q", ct)
@@ -95,11 +117,12 @@ func TestStaticFS(t *testing.T) {
 func TestEmbeddedTemplatesParse(t *testing.T) {
 	tmplFS := Templates()
 	funcs := template.FuncMap{
-		"FormatSize":       func(b int64) string { return "1 MB" },
-		"FormatPercent":    func(p float64) string { return "10.0%" },
-		"FormatPercentRaw": func(p float64) string { return "10.0" },
-		"FormatTime":       func(t any) string { return "Jan 01, 2026 12:00" },
-		"T":                func(lang, key string) string { return key },
+		"FormatSize":        func(b int64) string { return "1 MB" },
+		"StorageQuotaBytes": func(quotaMB int) int64 { return int64(quotaMB) * 1024 * 1024 },
+		"FormatPercent":     func(p float64) string { return "10.0%" },
+		"FormatPercentRaw":  func(p float64) string { return "10.0" },
+		"FormatTime":        func(t any) string { return "Jan 01, 2026 12:00" },
+		"T":                 func(lang, key string) string { return key },
 	}
 
 	pages := []string{

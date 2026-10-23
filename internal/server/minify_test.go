@@ -1,6 +1,10 @@
 package server
 
 import (
+	"fileline/internal/config"
+	"fileline/internal/db"
+	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -133,5 +137,71 @@ func TestFormatXMLSingleLine(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "<path d=\"M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z\"/>") {
 		t.Errorf("expected SVG path preserved")
+	}
+}
+
+func TestAllTemplatesRenderJS(t *testing.T) {
+	cfg := config.DefaultConfig()
+	srv := New(&cfg, nil)
+	templates := []string{
+		"dashboard.html",
+		"files.html",
+		"settings.html",
+		"settings_account.html",
+		"settings_appearance.html",
+		"settings_storage.html",
+		"settings_embed.html",
+		"settings_subusers.html",
+		"embed_file.html",
+		"edit_file.html",
+		"login.html",
+		"login_2fa.html",
+		"reset_password.html",
+		"setup.html",
+		"404.html",
+	}
+
+	for _, tmpl := range templates {
+		t.Run(tmpl, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			srv.renderTemplate(rr, nil, tmpl, map[string]interface{}{
+				"Title":          "Test",
+				"Files":          []interface{}{},
+				"TotalUsedBytes": int64(0),
+				"EnabledDrives":  []config.DriveView{},
+				"User":           &db.User{Username: "testuser", Role: "admin"},
+				"Username":       "testuser",
+				"Config":         cfg.SanitizedView(),
+			})
+			html := rr.Body.String()
+			rest := html
+			scriptCount := 0
+			for {
+				start := strings.Index(rest, "<script")
+				if start == -1 {
+					break
+				}
+				tagEnd := strings.Index(rest[start:], ">")
+				if tagEnd == -1 {
+					break
+				}
+				rest = rest[start+tagEnd+1:]
+				end := strings.Index(rest, "</script>")
+				if end == -1 {
+					break
+				}
+				js := strings.TrimSpace(rest[:end])
+				rest = rest[end+9:]
+				if js == "" {
+					continue
+				}
+				scriptCount++
+				cmd := exec.Command("node", "--check")
+				cmd.Stdin = strings.NewReader(js)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("[%s] JS syntax error in script #%d: %v\nOutput: %s\nJS: %s", tmpl, scriptCount, err, out, js)
+				}
+			}
+		})
 	}
 }

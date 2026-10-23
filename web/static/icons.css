@@ -49,6 +49,10 @@
   mask-image: url("/static/icons/bx-list-ul.svg");
   -webkit-mask-image: url("/static/icons/bx-list-ul.svg");
 }
+.bx-loader-alt {
+  mask-image: url("/static/icons/bx-loader-alt.svg");
+  -webkit-mask-image: url("/static/icons/bx-loader-alt.svg");
+}
 .bx-log-in {
   mask-image: url("/static/icons/bx-log-in.svg");
   -webkit-mask-image: url("/static/icons/bx-log-in.svg");
@@ -80,6 +84,10 @@
 .bx-search-alt {
   mask-image: url("/static/icons/bx-search-alt.svg");
   -webkit-mask-image: url("/static/icons/bx-search-alt.svg");
+}
+.bx-star {
+  mask-image: url("/static/icons/bx-star.svg");
+  -webkit-mask-image: url("/static/icons/bx-star.svg");
 }
 .bxs-check-circle {
   mask-image: url("/static/icons/bxs-check-circle.svg");
@@ -164,6 +172,10 @@
 .bxs-shield-alt-2 {
   mask-image: url("/static/icons/bxs-shield-alt-2.svg");
   -webkit-mask-image: url("/static/icons/bxs-shield-alt-2.svg");
+}
+.bxs-star {
+  mask-image: url("/static/icons/bxs-star.svg");
+  -webkit-mask-image: url("/static/icons/bxs-star.svg");
 }
 .bxs-time {
   mask-image: url("/static/icons/bxs-time.svg");

@@ -9,21 +9,20 @@
     </div>
 </div>
 
-<!-- Feedback Alerts -->
-{{if .SuccessMessage}}
-<div class="alert alert-success">
-    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .SuccessMessage }}
-</div>
-{{end}}
-{{if .ErrorMessage}}
-<div class="alert alert-error">
-    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .ErrorMessage }}
-</div>
-{{end}}
-
 <div class="settings-overview-container">
+    <!-- Feedback Alerts -->
+    {{if .SuccessMessage}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .SuccessMessage }}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="alert alert-error">
+        <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .ErrorMessage }}
+    </div>
+    {{end}}
     <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
@@ -56,6 +55,33 @@
             </div>
 
             <div id="embedOptionsContainer" style="{{if not .User.EmbedConfig.Enabled}}opacity: 0.6;{{end}} transition: opacity 0.2s;">
+                <!-- Embed Behavior Toggles (Social Media vs Direct URL Visit) -->
+                <div class="settings-grid-2" style="margin-bottom: 1.5rem;">
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_social" name="embed_social" {{if .User.EmbedConfig.SocialMedia}}checked{{end}}>
+                            <label for="embed_social">
+                                <strong>{{ T .Language "Embed Preview on Social Media" }}</strong>
+                                <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                                    {{ T .Language "Generate rich preview cards when shared on Discord, X (Twitter), Telegram, etc." }}
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="option-card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="embed_direct" name="embed_direct" {{if .User.EmbedConfig.DirectVisit}}checked{{end}}>
+                            <label for="embed_direct">
+                                <strong>{{ T .Language "Embed Preview on Direct URL Visit" }}</strong>
+                                <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                                    {{ T .Language "Open web preview player when visited directly in a browser. If unchecked, direct visits download/stream raw files directly." }}
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Header / Provider & Color -->
                 <div class="settings-grid-2">
                     <div class="form-group">

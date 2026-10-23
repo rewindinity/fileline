@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,10 +17,12 @@ import (
 	fileline_config "fileline/internal/config"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	aws_config "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go/middleware"
 )
 
 // ErrInvalidKey is returned when a storage key is not a single, plain file name
@@ -74,6 +78,20 @@ type RangeProvider interface {
 	Provider
 	GetRange(ctx context.Context, key string, rangeHeader string) (*RangedObject, error)
 	Head(ctx context.Context, key string) (*RangedObject, error)
+}
+
+// StorageItem represents an object in storage discovered during scanning.
+type StorageItem struct {
+	Key  string
+	Size int64
+}
+
+// ListableProvider is an optional extension of Provider for backends that support
+// scanning for unindexed objects and renaming them into internal storage keys.
+type ListableProvider interface {
+	Provider
+	List(ctx context.Context) ([]StorageItem, error)
+	Rename(ctx context.Context, oldKey string, newKey string) error
 }
 
 // LocalProvider implements Provider for local disk storage.
@@ -158,6 +176,49 @@ func (p *LocalProvider) Delete(ctx context.Context, key string) error {
 		return nil
 	}
 	return err
+}
+
+// List returns all regular, non-hidden files in the local storage directory.
+func (p *LocalProvider) List(ctx context.Context) ([]StorageItem, error) {
+	entries, err := os.ReadDir(p.basePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read storage directory: %w", err)
+	}
+	var items []StorageItem
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, StorageItem{
+			Key:  name,
+			Size: info.Size(),
+		})
+	}
+	return items, nil
+}
+
+// Rename atomically renames a file within the local storage directory.
+func (p *LocalProvider) Rename(ctx context.Context, oldKey string, newKey string) error {
+	if err := validateLocalKey(oldKey); err != nil {
+		return err
+	}
+	if err := validateLocalKey(newKey); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(p.basePath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Rename(oldKey, newKey)
 }
 
 var copyBufPool = sync.Pool{
@@ -481,21 +542,74 @@ type S3Provider struct {
 
 const s3OperationTimeout = 15 * time.Minute
 
-func validateS3Endpoint(endpoint string, useSSL, allowInsecure bool) error {
+func cleanS3Endpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+	return strings.TrimRight(endpoint, "/")
+}
+
+func validateS3Endpoint(endpoint string) error {
 	if endpoint == "" {
 		return nil
 	}
-	if strings.Contains(endpoint, "://") {
-		return fmt.Errorf("S3 endpoint must be a host:port without a scheme")
-	}
-	u, err := url.Parse("https://" + endpoint)
-	if err != nil || u.Host != endpoint || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+	clean := cleanS3Endpoint(endpoint)
+	if clean == "" {
 		return fmt.Errorf("invalid S3 endpoint")
 	}
-	if !useSSL && !allowInsecure {
-		return errors.New("S3 endpoint must use HTTPS unless allow_insecure_s3_dev is enabled")
+	u, err := url.Parse("https://" + clean)
+	if err != nil || u.Host != clean || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("invalid S3 endpoint")
 	}
 	return nil
+}
+
+func buildS3Client(ctx context.Context, endpoint, region, bucket, accessKey, secretKey, protocol string, skipSSLVerify bool) (*s3.Client, error) {
+	if err := validateS3Endpoint(endpoint); err != nil {
+		return nil, err
+	}
+	cleanEndpoint := cleanS3Endpoint(endpoint)
+
+	normProto := strings.ToLower(strings.TrimSpace(protocol))
+	if normProto != "http" && normProto != "https" {
+		normProto = "https"
+	}
+
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: skipSSLVerify,
+		},
+	}
+	httpClient := &http.Client{
+		Transport: tr,
+	}
+
+	awsCfg, err := aws_config.LoadDefaultConfig(ctx,
+		aws_config.WithRegion(region),
+		aws_config.WithHTTPClient(httpClient),
+		aws_config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load s3 config: %w", err)
+	}
+
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+		if cleanEndpoint != "" {
+			o.BaseEndpoint = aws.String(fmt.Sprintf("%s://%s", normProto, cleanEndpoint))
+			if normProto == "http" {
+				o.EndpointOptions.DisableHTTPS = true
+			}
+		}
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		o.APIOptions = append(o.APIOptions, func(stack *middleware.Stack) error {
+			return v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware(stack)
+		})
+	})
+
+	return client, nil
 }
 
 func s3Context(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -504,37 +618,18 @@ func s3Context(ctx context.Context) (context.Context, context.CancelFunc) {
 
 // NewS3Provider creates a new S3 storage provider.
 func NewS3Provider(ctx context.Context, cfg *fileline_config.Config) (*S3Provider, error) {
-	if err := validateS3Endpoint(cfg.S3Endpoint, cfg.S3UseSSL, cfg.AllowInsecureS3); err != nil {
+	proto := cfg.S3Protocol
+	if proto == "" {
+		if !cfg.S3UseSSL && cfg.S3Endpoint != "" {
+			proto = "http"
+		} else {
+			proto = "https"
+		}
+	}
+	client, err := buildS3Client(ctx, cfg.S3Endpoint, cfg.S3Region, cfg.S3Bucket, cfg.S3AccessKey, cfg.S3SecretKey, proto, cfg.S3SkipSSLVerify)
+	if err != nil {
 		return nil, err
 	}
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		if cfg.S3Endpoint != "" {
-			schema := "https"
-			if !cfg.S3UseSSL {
-				schema = "http"
-			}
-			return aws.Endpoint{
-				PartitionID:   "aws",
-				URL:           fmt.Sprintf("%s://%s", schema, cfg.S3Endpoint),
-				SigningRegion: cfg.S3Region,
-			}, nil
-		}
-		// fallback to default
-		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-	})
-
-	awsCfg, err := aws_config.LoadDefaultConfig(ctx,
-		aws_config.WithRegion(cfg.S3Region),
-		aws_config.WithEndpointResolverWithOptions(resolver),
-		aws_config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(cfg.S3AccessKey, cfg.S3SecretKey, "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load s3 config: %w", err)
-	}
-
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true // Many S3-compatible providers require this
-	})
 
 	return &S3Provider{
 		client: client,
@@ -543,34 +638,19 @@ func NewS3Provider(ctx context.Context, cfg *fileline_config.Config) (*S3Provide
 }
 
 func NewS3ProviderFromDrive(ctx context.Context, drive fileline_config.Drive) (*S3Provider, error) {
-	if err := validateS3Endpoint(drive.S3Endpoint, drive.S3UseSSL, drive.AllowInsecureS3); err != nil {
+	proto := drive.S3Protocol
+	if proto == "" {
+		if !drive.S3UseSSL && drive.S3Endpoint != "" {
+			proto = "http"
+		} else {
+			proto = "https"
+		}
+	}
+	client, err := buildS3Client(ctx, drive.S3Endpoint, drive.S3Region, drive.S3Bucket, drive.S3AccessKey, drive.S3SecretKey, proto, drive.S3SkipSSLVerify)
+	if err != nil {
 		return nil, err
 	}
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		if drive.S3Endpoint != "" {
-			schema := "https"
-			if !drive.S3UseSSL {
-				schema = "http"
-			}
-			return aws.Endpoint{
-				PartitionID:   "aws",
-				URL:           fmt.Sprintf("%s://%s", schema, drive.S3Endpoint),
-				SigningRegion: drive.S3Region,
-			}, nil
-		}
-		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-	})
-	awsCfg, err := aws_config.LoadDefaultConfig(ctx,
-		aws_config.WithRegion(drive.S3Region),
-		aws_config.WithEndpointResolverWithOptions(resolver),
-		aws_config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(drive.S3AccessKey, drive.S3SecretKey, "")),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load s3 config: %w", err)
-	}
-	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true
-	})
+
 	return &S3Provider{
 		client: client,
 		bucket: drive.S3Bucket,
@@ -651,13 +731,79 @@ func (p *S3Provider) Delete(ctx context.Context, key string) error {
 	return err
 }
 
+// List returns all non-hidden objects in the S3 bucket.
+func (p *S3Provider) List(ctx context.Context) ([]StorageItem, error) {
+	opCtx, cancel := s3Context(ctx)
+	defer cancel()
+
+	var items []StorageItem
+	var continuationToken *string
+	for {
+		input := &s3.ListObjectsV2Input{
+			Bucket:            aws.String(p.bucket),
+			ContinuationToken: continuationToken,
+		}
+		out, err := p.client.ListObjectsV2(opCtx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list s3 objects: %w", err)
+		}
+		for _, obj := range out.Contents {
+			key := aws.ToString(obj.Key)
+			if key == "" || strings.HasPrefix(key, ".") || strings.HasSuffix(key, "/") {
+				continue
+			}
+			var size int64
+			if obj.Size != nil {
+				size = *obj.Size
+			}
+			items = append(items, StorageItem{
+				Key:  key,
+				Size: size,
+			})
+		}
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		continuationToken = out.NextContinuationToken
+	}
+	return items, nil
+}
+
+// Rename copies an S3 object to newKey and deletes oldKey.
+func (p *S3Provider) Rename(ctx context.Context, oldKey string, newKey string) error {
+	opCtx, cancel := s3Context(ctx)
+	defer cancel()
+
+	copySource := fmt.Sprintf("%s/%s", p.bucket, url.PathEscape(oldKey))
+	_, err := p.client.CopyObject(opCtx, &s3.CopyObjectInput{
+		Bucket:     aws.String(p.bucket),
+		CopySource: aws.String(copySource),
+		Key:        aws.String(newKey),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to copy s3 object: %w", err)
+	}
+
+	_, err = p.client.DeleteObject(opCtx, &s3.DeleteObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(oldKey),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete source s3 object after copy: %w", err)
+	}
+	return nil
+}
+
 func (p *S3Provider) CreateStaged(ctx context.Context, uploadID string, storageKey string, totalSize int64, chunkSize int64) (StagedUpload, error) {
 	if chunkSize >= 5*1024*1024 && totalSize >= 5*1024*1024 {
 		out, err := p.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 			Bucket: aws.String(p.bucket),
 			Key:    aws.String(storageKey),
 		})
-		if err == nil && out.UploadId != nil {
+		if err != nil {
+			return nil, fmt.Errorf("failed to initiate S3 multipart upload: %w", err)
+		}
+		if out.UploadId != nil {
 			s := &s3MultipartStagedUpload{
 				client:    p.client,
 				bucket:    p.bucket,
@@ -833,4 +979,61 @@ func NewProviderFromDrive(ctx context.Context, drive fileline_config.Drive) (Pro
 		path = "./uploads"
 	}
 	return NewLocalProvider(path)
+}
+
+// TestS3Connection tests whether an S3 bucket is reachable and accessible with the given credentials and settings.
+func TestS3Connection(ctx context.Context, endpoint, region, bucket, accessKey, secretKey, protocol string, skipSSLVerify bool) error {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		return errors.New("bucket name is required")
+	}
+	client, err := buildS3Client(ctx, endpoint, region, bucket, accessKey, secretKey, protocol, skipSSLVerify)
+	if err != nil {
+		return err
+	}
+
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// Try HeadBucket first
+	_, headErr := client.HeadBucket(opCtx, &s3.HeadBucketInput{
+		Bucket: aws.String(bucket),
+	})
+	if headErr == nil {
+		return nil
+	}
+
+	// Try ListObjectsV2 with MaxKeys: 1 as fallback
+	_, listErr := client.ListObjectsV2(opCtx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		MaxKeys: aws.Int32(1),
+	})
+	if listErr == nil {
+		return nil
+	}
+
+	return fmt.Errorf("failed to access S3 bucket %q: %w", bucket, headErr)
+}
+
+// TestConnection tests whether the S3 bucket is reachable and accessible.
+func (p *S3Provider) TestConnection(ctx context.Context) error {
+	opCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, headErr := p.client.HeadBucket(opCtx, &s3.HeadBucketInput{
+		Bucket: aws.String(p.bucket),
+	})
+	if headErr == nil {
+		return nil
+	}
+
+	_, listErr := p.client.ListObjectsV2(opCtx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(p.bucket),
+		MaxKeys: aws.Int32(1),
+	})
+	if listErr == nil {
+		return nil
+	}
+
+	return fmt.Errorf("failed to access S3 bucket %q: %w", p.bucket, headErr)
 }

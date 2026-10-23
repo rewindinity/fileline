@@ -232,3 +232,92 @@ func TestEnsureDataKey_GeneratesAndPersists(t *testing.T) {
 		t.Errorf("expected loaded DataKey %q to equal saved DataKey %q", loaded.DataKey, cfg.DataKey)
 	}
 }
+
+func TestEnsureDrives_UnifiedPool(t *testing.T) {
+	// 1. Empty drives initializes from legacy fields
+	cfg := DefaultConfig()
+	cfg.StorageType = "s3"
+	cfg.S3Endpoint = "s3.wasabisys.com"
+	cfg.S3Protocol = "http"
+	cfg.S3SkipSSLVerify = true
+	cfg.Drives = nil
+	cfg.EnsureDrives()
+
+	if len(cfg.Drives) != 1 {
+		t.Fatalf("expected 1 drive in pool, got %d", len(cfg.Drives))
+	}
+	d := cfg.Drives[0]
+	if !d.IsDefault || cfg.DefaultDriveID != d.ID {
+		t.Errorf("expected default drive flag set, got is_default=%v, default_drive_id=%s", d.IsDefault, cfg.DefaultDriveID)
+	}
+	if d.Type != "s3" || d.S3Protocol != "http" || !d.S3SkipSSLVerify {
+		t.Errorf("expected drive to inherit s3 settings, got type=%s, proto=%s, skipSSL=%v", d.Type, d.S3Protocol, d.S3SkipSSLVerify)
+	}
+
+	// 2. Multiple drives with primary selection
+	cfg2 := DefaultConfig()
+	cfg2.Drives = []Drive{
+		{ID: "d1", Name: "Local 1", Type: "local", Enabled: true, LocalStoragePath: "/path1"},
+		{ID: "d2", Name: "Local 2", Type: "local", Enabled: true, LocalStoragePath: "/path2"},
+	}
+	cfg2.DefaultDriveID = "d2"
+	cfg2.EnsureDrives()
+
+	if cfg2.Drives[0].IsDefault {
+		t.Errorf("d1 should not be default")
+	}
+	if !cfg2.Drives[1].IsDefault {
+		t.Errorf("d2 should be default")
+	}
+	if cfg2.LocalStoragePath != "/path2" {
+		t.Errorf("expected legacy LocalStoragePath to be synced to /path2, got %s", cfg2.LocalStoragePath)
+	}
+}
+
+func TestPostgresTLS_ConfigDefaultsAndOverrides(t *testing.T) {
+	// Default is false
+	def := DefaultConfig()
+	if def.PostgresTLS {
+		t.Errorf("expected default PostgresTLS to be false, got true")
+	}
+	if def.DBTLS {
+		t.Errorf("expected default DBTLS to be false, got true")
+	}
+
+	// File with postgres_tls: true
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(cfgFile, []byte(`{"db_type": "postgres", "postgres_tls": true}`), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	cfg, err := Load(cfgFile, false)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if !cfg.PostgresTLS || !cfg.DBTLS {
+		t.Errorf("expected PostgresTLS and DBTLS to be true from file")
+	}
+
+	// File with db_tls: true (synced to PostgresTLS)
+	cfgFile2 := filepath.Join(tmpDir, "config2.json")
+	if err := os.WriteFile(cfgFile2, []byte(`{"db_type": "postgres", "db_tls": true}`), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+	cfg2, err := Load(cfgFile2, false)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if !cfg2.PostgresTLS || !cfg2.DBTLS {
+		t.Errorf("expected PostgresTLS and DBTLS to be true from db_tls")
+	}
+
+	// Env override
+	t.Setenv("FL_POSTGRES_TLS", "true")
+	cfgEnv, err := Load("", true)
+	if err != nil {
+		t.Fatalf("failed to load env config: %v", err)
+	}
+	if !cfgEnv.PostgresTLS {
+		t.Errorf("expected PostgresTLS true from FL_POSTGRES_TLS")
+	}
+}

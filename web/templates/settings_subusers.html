@@ -9,21 +9,21 @@
     </div>
 </div>
 
-<!-- Feedback Alerts -->
-{{if .SuccessMessage}}
-<div class="alert alert-success">
-    <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .SuccessMessage }}
-</div>
-{{end}}
-{{if .ErrorMessage}}
-<div class="alert alert-error">
-    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
-    {{ T .Language .ErrorMessage }}
-</div>
-{{end}}
-
 <div class="settings-overview-container">
+    <!-- Feedback Alerts -->
+    {{if .SuccessMessage}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .SuccessMessage }}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="alert alert-error">
+        <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .ErrorMessage }}
+    </div>
+    {{end}}
+
     <!-- Navigation / Back Bar -->
     <div class="settings-back-bar">
         <a href="/settings" class="btn btn-secondary btn-sm">
@@ -44,6 +44,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th style="width: 70px;">{{ T .Language "ID" }}</th>
                         <th>{{ T .Language "Username" }}</th>
                         <th>{{ T .Language "Quota (MB)" }}</th>
                         <th>{{ T .Language "Storage Used" }}</th>
@@ -53,11 +54,24 @@
                 <tbody>
                     {{range .AllUsers}}
                     <tr>
+                        <td>
+                            <span class="badge" style="background: var(--bg-surface-hover); color: var(--text-muted); border: 1px solid var(--border-color); font-size: 0.8rem; font-weight: 600;">
+                                #{{.User.ID}}
+                            </span>
+                        </td>
                         <td style="font-weight: 500;">
                             {{.User.Username}}
                             {{if eq .User.Username "admin"}}<span class="badge badge-private" style="margin-left: 0.5rem;">{{ T $.Language "Admin" }}</span>{{end}}
                         </td>
-                        <td>{{if eq .User.StorageQuotaMB 0}}{{ T $.Language "Unlimited" }}{{else}}{{.User.StorageQuotaMB}}{{end}}</td>
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <span>{{if eq .User.StorageQuotaMB 0}}{{ T $.Language "Unlimited" }}{{else}}{{.User.StorageQuotaMB}}{{end}}</span>
+                                <button type="button" class="btn btn-secondary btn-sm" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="openEditQuotaModal('{{.User.Username}}', {{.User.StorageQuotaMB}})" title="{{ T $.Language "Edit Storage Limit" }}">
+                                    <i class="bx bxs-edit"></i>
+                                    {{ T $.Language "Edit" }}
+                                </button>
+                            </div>
+                        </td>
                         <td>{{.FormattedTotalUsed}}</td>
                         <td style="text-align: right;">
                             {{if ne .User.Username "admin"}}
@@ -102,4 +116,53 @@
         </form>
     </div>
 </div>
+
+<!-- Edit Storage Quota Modal -->
+<div id="editQuotaModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'editQuotaModal')">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="editQuotaModalTitle" style="max-width: 440px;">
+        <div class="modal-header">
+            <h3 id="editQuotaModalTitle" style="margin: 0; font-size: 1.15rem;">{{ T .Language "Edit Storage Limit" }}</h3>
+            <button type="button" class="modal-close" onclick="closeModal('editQuotaModal')" aria-label="{{ T .Language "Close" }}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <form method="POST" action="/settings/users/quota">
+            <input type="hidden" id="editQuotaUsername" name="username">
+            <div class="modal-body" style="padding: 1.25rem 1.5rem;">
+                <p style="margin-top: 0; margin-bottom: 1rem; color: var(--text-secondary);">
+                    {{ T .Language "User" }}: <strong id="editQuotaUsernameDisplay" style="color: var(--text-primary);"></strong>
+                </p>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="editQuotaMB">{{ T .Language "Storage Quota (MB, 0 for unl)" }}</label>
+                    <input type="number" id="editQuotaMB" name="quota_mb" min="0" required>
+                    <small class="text-muted">{{ T .Language "0 for unlimited" }}</small>
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem; padding: 1rem 1.5rem; border-top: 1px solid var(--border-color);">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('editQuotaModal')">{{ T .Language "Cancel" }}</button>
+                <button type="submit" class="btn btn-primary btn-sm"><i class="bx bx-check"></i> {{ T .Language "Save" }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openEditQuotaModal(username, currentQuota) {
+    document.getElementById('editQuotaUsername').value = username;
+    document.getElementById('editQuotaUsernameDisplay').textContent = username;
+    document.getElementById('editQuotaMB').value = currentQuota;
+    openModal('editQuotaModal');
+}
+function openModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('active');
+}
+function closeModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+}
+function handleModalBackdropClick(e, id) {
+    if (e.target.id === id) closeModal(id);
+}
+</script>
 {{end}}

@@ -23,8 +23,9 @@ type File struct {
 	UserID       int
 	UploadedAt   time.Time
 	StatsEnabled bool
-	TotalReads   int64
-	Reads24h     int64
+	TotalReads    int64
+	Reads24h      int64
+	OwnerUsername string
 }
 
 // DeviceStat holds counts and percentage breakdown for a device category
@@ -109,11 +110,12 @@ func GetAllFiles(ctx context.Context, db *sql.DB, userID int) ([]*File, error) {
 
 // FilePageOpts defines filtering and pagination parameters for files listing.
 type FilePageOpts struct {
-	UserID   int
-	CursorTS *time.Time
-	CursorID int
-	Limit    int
-	Search   string
+	UserID        int
+	ExcludeUserID int
+	CursorTS      *time.Time
+	CursorID      int
+	Limit         int
+	Search        string
 }
 
 // FilePage represents a paginated slice of files with keyset navigation cursors.
@@ -187,6 +189,10 @@ func GetFilesPage(ctx context.Context, database *sql.DB, opts FilePageOpts) (*Fi
 		whereClauses = append(whereClauses, fmt.Sprintf("user_id = $%d", argIdx))
 		args = append(args, opts.UserID)
 		argIdx++
+	} else if opts.ExcludeUserID > 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf("user_id != $%d", argIdx))
+		args = append(args, opts.ExcludeUserID)
+		argIdx++
 	}
 
 	if opts.CursorTS != nil && !opts.CursorTS.IsZero() && opts.CursorID > 0 {
@@ -246,6 +252,47 @@ func DeleteFile(ctx context.Context, db *sql.DB, id int) error {
 	_, _ = db.ExecContext(ctx, "DELETE FROM file_reads WHERE file_id = $1", id)
 	_, err := db.ExecContext(ctx, "DELETE FROM files WHERE id = $1", id)
 	return err
+}
+
+// GetFilesByUserID retrieves all files owned by a user
+func GetFilesByUserID(ctx context.Context, database *sql.DB, userID int) ([]*File, error) {
+	rows, err := database.QueryContext(ctx, "SELECT id, original_name, custom_name, url_path, size, storage_type, storage_path FROM files WHERE user_id = $1", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var files []*File
+	for rows.Next() {
+		f := &File{UserID: userID}
+		if err := rows.Scan(&f.ID, &f.OriginalName, &f.CustomName, &f.URLPath, &f.Size, &f.StorageType, &f.StoragePath); err != nil {
+			return nil, err
+		}
+		files = append(files, f)
+	}
+	return files, rows.Err()
+}
+
+// GetAllStoragePaths returns a set of all storage paths (keys) currently in the database
+func GetAllStoragePaths(ctx context.Context, database *sql.DB) (map[string]bool, error) {
+	query := `SELECT storage_path FROM files`
+	rows, err := database.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	paths := make(map[string]bool)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		if p != "" {
+			paths[p] = true
+		}
+	}
+	return paths, rows.Err()
 }
 
 // GetFileByID retrieves a file by its ID

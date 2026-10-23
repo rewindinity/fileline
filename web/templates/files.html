@@ -8,13 +8,32 @@
         <p class="text-muted">{{ T .Language "Manage all your uploaded files" }}</p>
     </div>
     <div class="header-actions" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-        <form method="GET" action="/files" style="display: flex; margin: 0; align-items: center; position: relative;">
-            <input type="text" name="q" value="{{.SearchQuery}}" placeholder="{{ T .Language "Search files..." }}" class="form-control form-control-sm" style="width: 200px; padding: 0.45rem 2rem 0.45rem 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); font-size: 0.875rem;">
+        {{if eq .User.Role "admin"}}
+        <div class="segmented-switch">
+            <a href="/files?filter=own{{if .SearchQuery}}&q={{.SearchQuery}}{{end}}" class="segmented-switch-btn {{if eq .ActiveFilter "own"}}active{{end}}">
+                {{ T .Language "Own Files" }}
+            </a>
+            <a href="/files?filter=others{{if .SearchQuery}}&q={{.SearchQuery}}{{end}}" class="segmented-switch-btn {{if eq .ActiveFilter "others"}}active{{end}}">
+                {{ T .Language "Other Users" }}
+            </a>
+        </div>
+        {{end}}
+        <form method="GET" action="/files" style="display: flex; margin: 0; align-items: center; position: relative; height: 38px;">
+            {{if eq .User.Role "admin"}}
+            <input type="hidden" name="filter" value="{{.ActiveFilter}}">
+            {{end}}
+            <input type="text" name="q" value="{{.SearchQuery}}" placeholder="{{ T .Language "Search files..." }}" class="form-control" style="width: 220px; height: 38px; box-sizing: border-box; padding: 0 2rem 0 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-surface); color: var(--text-primary); font-size: 0.875rem;">
             {{if .SearchQuery}}
-            <a href="/files" style="position: absolute; right: 0.5rem; color: var(--text-muted); text-decoration: none; font-size: 1rem; line-height: 1;" title="{{ T .Language "Clear search" }}">&times;</a>
+            <a href="/files{{if eq .User.Role "admin"}}?filter={{.ActiveFilter}}{{end}}" style="position: absolute; right: 0.6rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); text-decoration: none; font-size: 1.1rem; line-height: 1;" title="{{ T .Language "Clear search" }}">&times;</a>
             {{end}}
         </form>
-        <a href="/" class="btn btn-primary">
+        {{if eq .User.Role "admin"}}
+        <button type="button" class="btn btn-secondary" onclick="openImportModal()" style="height: 38px; box-sizing: border-box; padding: 0 1rem; font-size: 0.875rem; display: inline-flex; align-items: center; gap: 0.4rem;">
+            <i class="bx bx-refresh"></i>
+            {{ T .Language "Scan & Import" }}
+        </button>
+        {{end}}
+        <a href="/" class="btn btn-primary" style="height: 38px; box-sizing: border-box; padding: 0 1rem; font-size: 0.875rem; display: inline-flex; align-items: center; gap: 0.4rem;">
             <img src="/static/icons/bxs-cloud-upload.svg" alt="{{ T .Language "Upload File" }}" style="width: 18px; filter: brightness(0) invert(1);">
             {{ T .Language "Upload File" }}
         </a>
@@ -29,6 +48,9 @@
             <thead>
                 <tr>
                     <th>{{ T .Language "Name" }}</th>
+                    {{if and (eq .User.Role "admin") (eq .ActiveFilter "others")}}
+                    <th>{{ T .Language "Uploader" }}</th>
+                    {{end}}
                     <th>{{ T .Language "URL" }}</th>
                     <th>{{ T .Language "Size" }}</th>
                     <th>{{ T .Language "Privacy" }}</th>
@@ -45,6 +67,13 @@
                             {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
                         </div>
                     </td>
+                    {{if and (eq $.User.Role "admin") (eq $.ActiveFilter "others")}}
+                    <td>
+                        <span class="badge" style="background: var(--bg-surface-hover); color: var(--text-primary); border: 1px solid var(--border-color); font-size: 0.8rem; font-weight: 500;">
+                            {{if .OwnerUsername}}{{.OwnerUsername}}{{else}}#{{.UserID}}{{end}}
+                        </span>
+                    </td>
+                    {{end}}
                     <td><a href="/f/{{.URLPath}}" target="_blank">/f/{{.URLPath}}</a></td>
                     <td>{{FormatSize .Size}}</td>
                     <td>
@@ -74,7 +103,7 @@
                 </tr>
                 {{else}}
                 <tr>
-                    <td colspan="6" class="text-center text-muted" style="padding: 3rem;">
+                    <td colspan="{{if and (eq .User.Role "admin") (eq .ActiveFilter "others")}}7{{else}}6{{end}}" class="text-center text-muted" style="padding: 3rem;">
                         <img src="/static/icons/bx-data.svg" alt="{{ T .Language "No Data" }}" style="width: 48px; opacity: 0.5; margin-bottom: 1rem; filter: brightness(0) invert(0.6);">
                         <br>{{if .SearchQuery}}{{ T .Language "No files match your search query." }}{{else}}{{ T .Language "No files uploaded yet." }}{{end}}
                     </td>
@@ -122,8 +151,8 @@
             </div>
             <!-- Disabled notice -->
             <div id="statsModalDisabled" style="display: none;">
-                <div class="alert" style="background: var(--bg-base); border: 1px solid var(--border-color); color: var(--text-secondary); margin-bottom: 0;">
-                    <img src="/static/icons/bx-info-circle.svg" alt="Info" style="width: 22px; opacity: 0.8;">
+                <div class="alert" style="background: var(--bg-base); border: 1px solid var(--border-color); color: var(--text-secondary); margin-bottom: 0; display: flex; align-items: flex-start; gap: 0.75rem;">
+                    <i class="bx bx-info-circle" style="font-size: 1.35rem; color: var(--accent-primary); flex-shrink: 0; margin-top: 0.1rem;"></i>
                     <div>
                         <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">{{ T .Language "Statistics are currently disabled for this file." }}</strong>
                         {{ T .Language "Enable statistics in file edit settings to start recording reads and user agent analytics." }}
@@ -224,6 +253,82 @@
     </div>
 </div>
 
+{{if eq .User.Role "admin"}}
+<!-- Storage Scan & Import Modal -->
+<div class="modal-overlay" id="importFilesModal" onclick="handleModalBackdropClick(event, 'importFilesModal')">
+    <div class="modal-container" style="max-width: 680px; width: 90%;">
+        <div class="modal-header">
+            <div>
+                <h3 style="margin: 0; font-size: 1.15rem; color: var(--text-primary);">{{ T .Language "Scan Storage for Missing Files" }}</h3>
+                <p class="text-muted" style="margin: 0.25rem 0 0 0; font-size: 0.85rem;">{{ T .Language "Detect files uploaded directly to storage (e.g. via FTP or S3) that are not yet registered in FileLine." }}</p>
+            </div>
+            <button type="button" class="close-btn" onclick="closeModal('importFilesModal')" style="background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer; line-height: 1;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.25rem 1.5rem;">
+            <!-- Drive Selection Bar -->
+            <div style="display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap;">
+                <label for="importDriveSelect" style="font-weight: 500; font-size: 0.875rem; margin: 0;">{{ T .Language "Storage Drives" }}:</label>
+                <select id="importDriveSelect" class="form-control" style="max-width: 260px; padding: 0.4rem 0.75rem; font-size: 0.875rem;" onchange="runStorageScan()">
+                    <option value="all">{{ T .Language "All Drives" }}</option>
+                    {{range .Drives}}
+                    <option value="{{.ID}}">{{.Name}} ({{.Type}})</option>
+                    {{end}}
+                </select>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="runStorageScan()">
+                    <i class="bx bx-refresh"></i>
+                    {{ T .Language "Scan & Import" }}
+                </button>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div id="importScanLoading" style="display: none; text-align: center; padding: 2.5rem 1rem;">
+                <img src="/static/icons/bx-loader-alt.svg" class="spin" style="width: 28px; filter: brightness(0) invert(0.8);">
+                <p class="text-muted" style="margin-top: 0.75rem; font-size: 0.9rem;">{{ T .Language "Scanning storage..." }}</p>
+            </div>
+
+            <!-- Empty / No Files Found -->
+            <div id="importEmptyState" style="display: none; text-align: center; padding: 2.5rem 1rem;">
+                <i class="bx bxs-check-circle" style="font-size: 2.5rem; color: var(--success); opacity: 0.85;"></i>
+                <p class="text-muted" style="margin-top: 0.75rem; font-size: 0.9rem;">{{ T .Language "No unindexed files found in storage." }}</p>
+            </div>
+
+            <!-- Results Table Container -->
+            <div id="importResultsContainer" style="display: none;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                    <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="importSelectAllCheckbox" onchange="toggleSelectAllImport(this.checked)">
+                        <span><strong>{{ T .Language "Select All" }}</strong> (<span id="importFoundCount">0</span>)</span>
+                    </label>
+                </div>
+                <div style="max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.875rem;">
+                        <thead>
+                            <tr style="background: var(--bg-surface); border-bottom: 1px solid var(--border-color); text-align: left;">
+                                <th style="width: 40px; padding: 0.5rem 0.75rem;"></th>
+                                <th style="padding: 0.5rem 0.75rem;">{{ T .Language "Name" }}</th>
+                                <th style="padding: 0.5rem 0.75rem;">{{ T .Language "Size" }}</th>
+                                <th style="padding: 0.5rem 0.75rem;">{{ T .Language "Drive" }}</th>
+                            </tr>
+                        </thead>
+                        <tbody id="importFilesTableBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Import Status / Error Alert -->
+            <div id="importStatusAlert" style="display: none; margin-top: 1rem;" class="alert"></div>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.75rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('importFilesModal')">{{ T .Language "Close" }}</button>
+            <button type="button" class="btn btn-primary btn-sm" id="importSubmitBtn" onclick="submitImportSelected()" disabled>
+                <i class="bx bx-check"></i>
+                {{ T .Language "Import Selected" }}
+            </button>
+        </div>
+    </div>
+</div>
+{{end}}
+
 <script>
     // Modal Management & Keyboard Listeners
     function openModal(modalId) {
@@ -317,6 +422,161 @@
 
         } catch (err) {
             loadingEl.innerHTML = `<p style="color: var(--error); margin: 1rem 0;">${err.message}</p>`;
+        }
+    }
+
+    let scannedFilesList = [];
+
+    function openImportModal() {
+        openModal('importFilesModal');
+        runStorageScan();
+    }
+
+    async function runStorageScan() {
+        const driveSelect = document.getElementById('importDriveSelect');
+        const driveId = driveSelect ? driveSelect.value : 'all';
+
+        const loadingEl = document.getElementById('importScanLoading');
+        const emptyEl = document.getElementById('importEmptyState');
+        const resultsEl = document.getElementById('importResultsContainer');
+        const statusEl = document.getElementById('importStatusAlert');
+        const submitBtn = document.getElementById('importSubmitBtn');
+        const selectAllCb = document.getElementById('importSelectAllCheckbox');
+
+        if (!loadingEl) return;
+
+        loadingEl.style.display = 'block';
+        emptyEl.style.display = 'none';
+        resultsEl.style.display = 'none';
+        statusEl.style.display = 'none';
+        submitBtn.disabled = true;
+        if (selectAllCb) selectAllCb.checked = false;
+
+        try {
+            const res = await fetch(`/api/admin/storage/scan?drive_id=${encodeURIComponent(driveId)}`);
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Failed to scan storage');
+            }
+            const data = await res.json();
+            scannedFilesList = data.files || [];
+
+            loadingEl.style.display = 'none';
+            if (scannedFilesList.length === 0) {
+                emptyEl.style.display = 'block';
+                return;
+            }
+
+            document.getElementById('importFoundCount').textContent = scannedFilesList.length;
+            const tbody = document.getElementById('importFilesTableBody');
+            tbody.innerHTML = '';
+
+            scannedFilesList.forEach((file, idx) => {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid var(--border-color)';
+                tr.innerHTML = `
+                    <td style="padding: 0.5rem 0.75rem; text-align: center;">
+                        <input type="checkbox" class="import-file-cb" data-idx="${idx}" onchange="updateImportSelection()">
+                    </td>
+                    <td style="padding: 0.5rem 0.75rem; word-break: break-all;">
+                        <span style="font-weight: 500;">${escapeHtml(file.key)}</span>
+                    </td>
+                    <td style="padding: 0.5rem 0.75rem; white-space: nowrap; color: var(--text-muted);">
+                        ${escapeHtml(file.formatted_size)}
+                    </td>
+                    <td style="padding: 0.5rem 0.75rem; white-space: nowrap; color: var(--text-muted);">
+                        ${escapeHtml(file.drive_name || file.drive_id)}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            resultsEl.style.display = 'block';
+        } catch (err) {
+            loadingEl.style.display = 'none';
+            statusEl.className = 'alert alert-error';
+            statusEl.textContent = err.message;
+            statusEl.style.display = 'block';
+        }
+    }
+
+    function toggleSelectAllImport(checked) {
+        const cbs = document.querySelectorAll('.import-file-cb');
+        cbs.forEach(cb => cb.checked = checked);
+        updateImportSelection();
+    }
+
+    function updateImportSelection() {
+        const cbs = document.querySelectorAll('.import-file-cb:checked');
+        const submitBtn = document.getElementById('importSubmitBtn');
+        const selectAllCb = document.getElementById('importSelectAllCheckbox');
+        const allCbs = document.querySelectorAll('.import-file-cb');
+
+        if (selectAllCb && allCbs.length > 0) {
+            selectAllCb.checked = cbs.length === allCbs.length;
+        }
+        if (submitBtn) {
+            submitBtn.disabled = cbs.length === 0;
+            submitBtn.innerHTML = `<i class="bx bx-check"></i> {{ T .Language "Import Selected" }} (${cbs.length})`;
+        }
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    async function submitImportSelected() {
+        const selectedCbs = document.querySelectorAll('.import-file-cb:checked');
+        if (selectedCbs.length === 0) return;
+
+        const filesToImport = [];
+        selectedCbs.forEach(cb => {
+            const idx = parseInt(cb.getAttribute('data-idx'), 10);
+            if (!isNaN(idx) && scannedFilesList[idx]) {
+                filesToImport.push({
+                    drive_id: scannedFilesList[idx].drive_id,
+                    key: scannedFilesList[idx].key
+                });
+            }
+        });
+
+        const submitBtn = document.getElementById('importSubmitBtn');
+        const statusEl = document.getElementById('importStatusAlert');
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<img src="/static/icons/bx-loader-alt.svg" class="spin" style="width: 14px; vertical-align: middle; margin-right: 0.35rem;"> {{ T .Language "Importing files..." }}';
+
+        statusEl.style.display = 'none';
+
+        try {
+            const res = await fetch('/api/admin/storage/import', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ files: filesToImport })
+            });
+            const data = await res.json();
+            if (!res.ok || (data.errors && data.errors.length > 0 && data.imported === 0)) {
+                throw new Error((data.errors && data.errors.join(', ')) || 'Import failed');
+            }
+
+            statusEl.className = 'alert alert-success';
+            statusEl.textContent = '{{ T .Language "Files imported successfully." }}';
+            statusEl.style.display = 'block';
+
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+        } catch (err) {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = `<i class="bx bx-check"></i> {{ T .Language "Import Selected" }} (${filesToImport.length})`;
+            statusEl.className = 'alert alert-error';
+            statusEl.textContent = err.message;
+            statusEl.style.display = 'block';
         }
     }
 </script>

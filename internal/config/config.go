@@ -21,14 +21,17 @@ type Drive struct {
 	Name             string `json:"name"`
 	Type             string `json:"type"` // "local" or "s3"
 	Enabled          bool   `json:"enabled"`
+	IsDefault        bool   `json:"is_default"`
 	LocalStoragePath string `json:"local_storage_path"`
 	S3Endpoint       string `json:"s3_endpoint"`
 	S3Region         string `json:"s3_region"`
 	S3Bucket         string `json:"s3_bucket"`
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretKey      string `json:"s3_secret_key"`
-	S3UseSSL         bool   `json:"s3_use_ssl"`
-	AllowInsecureS3  bool   `json:"allow_insecure_s3_dev"`
+	S3Protocol       string `json:"s3_protocol"` // "http" or "https"
+	S3SkipSSLVerify  bool   `json:"s3_skip_ssl_verify"`
+	S3UseSSL         bool   `json:"s3_use_ssl,omitempty"` // legacy
+	AllowInsecureS3  bool   `json:"allow_insecure_s3_dev,omitempty"`
 }
 
 // Config holds the fileline configuration
@@ -36,6 +39,8 @@ type Config struct {
 	DBType            string   `json:"db_type"`
 	SQLiteURL         string   `json:"sqlite_url"`
 	PostgresURL       string   `json:"postgres_url"`
+	PostgresTLS       bool     `json:"postgres_tls"`
+	DBTLS             bool     `json:"db_tls"`
 	Port              int      `json:"port"`
 	SSL               bool     `json:"ssl"`
 	AllowInsecureHTTP bool     `json:"allow_insecure_http_dev"`
@@ -45,17 +50,21 @@ type Config struct {
 	TrustedProxies    []string `json:"trusted_proxies,omitempty"`
 	JWTKey            string   `json:"jwt_key"`
 	DataKey           string   `json:"data_key,omitempty"`
-	// Legacy fields
-	StorageType      string  `json:"storage_type"` // "local" or "s3"
-	LocalStoragePath string  `json:"local_storage_path"`
-	S3Endpoint       string  `json:"s3_endpoint"`
-	S3Region         string  `json:"s3_region"`
-	S3Bucket         string  `json:"s3_bucket"`
-	S3AccessKey      string  `json:"s3_access_key"`
-	S3SecretKey      string  `json:"s3_secret_key"`
-	S3UseSSL         bool    `json:"s3_use_ssl"`
-	AllowInsecureS3  bool    `json:"allow_insecure_s3_dev"`
-	Drives           []Drive `json:"drives"`
+	// Unified Storage Drives & Default
+	DefaultDriveID string  `json:"default_drive_id,omitempty"`
+	Drives         []Drive `json:"drives"`
+	// Legacy storage fields (kept for backward compatibility & sync with default drive)
+	StorageType      string `json:"storage_type,omitempty"` // "local" or "s3"
+	LocalStoragePath string `json:"local_storage_path,omitempty"`
+	S3Endpoint       string `json:"s3_endpoint,omitempty"`
+	S3Region         string `json:"s3_region,omitempty"`
+	S3Bucket         string `json:"s3_bucket,omitempty"`
+	S3AccessKey      string `json:"s3_access_key,omitempty"`
+	S3SecretKey      string `json:"s3_secret_key,omitempty"`
+	S3Protocol       string `json:"s3_protocol,omitempty"` // "http" or "https"
+	S3SkipSSLVerify  bool   `json:"s3_skip_ssl_verify,omitempty"`
+	S3UseSSL         bool   `json:"s3_use_ssl,omitempty"`
+	AllowInsecureS3  bool   `json:"allow_insecure_s3_dev,omitempty"`
 	MaxUploadSizeMB  int     `json:"max_upload_size_mb"`
 	ChunkThresholdMB int     `json:"chunk_threshold_mb"`
 	ChunkSizeMB      int     `json:"chunk_size_mb"`
@@ -77,6 +86,9 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		SQLiteURL:        "data/database.sqlite",
+		PostgresURL:      "",
+		PostgresTLS:      false,
+		DBTLS:            false,
 		Port:             8080,
 		SSL:              false,
 		ReverseProxy:     false,
@@ -97,6 +109,8 @@ func DefaultConfig() Config {
 		BlockIndexing:    true,
 		GzipEnabled:      true,
 		MinifyResponses:  true,
+		DefaultDriveID:   "default",
+		S3Protocol:       "https",
 	}
 }
 
@@ -135,6 +149,11 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 			if err := json.Unmarshal(file, &cfg); err != nil {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}
+			if cfg.DBTLS && !cfg.PostgresTLS {
+				cfg.PostgresTLS = cfg.DBTLS
+			} else if cfg.PostgresTLS && !cfg.DBTLS {
+				cfg.DBTLS = cfg.PostgresTLS
+			}
 			cfg.EnvOnly = envOnly
 			// Ensure secrets are populated in existing config files
 			if err := cfg.EnsureJWTKey(configPath); err != nil {
@@ -157,6 +176,17 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	}
 	if v, ok := os.LookupEnv("FL_POSTGRES_URL"); ok {
 		cfg.PostgresURL = v
+	}
+	if v, ok := os.LookupEnv("FL_POSTGRES_TLS"); ok {
+		if tls, err := strconv.ParseBool(v); err == nil {
+			cfg.PostgresTLS = tls
+			cfg.DBTLS = tls
+		}
+	} else if v, ok := os.LookupEnv("FL_DB_TLS"); ok {
+		if tls, err := strconv.ParseBool(v); err == nil {
+			cfg.PostgresTLS = tls
+			cfg.DBTLS = tls
+		}
 	}
 	if v, ok := os.LookupEnv("FL_PORT"); ok {
 		if port, err := strconv.Atoi(v); err == nil {
@@ -248,6 +278,17 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 	if v, ok := os.LookupEnv("FL_CHUNKS_DIR"); ok {
 		cfg.ChunksDir = v
 	}
+	if v, ok := os.LookupEnv("FL_DEFAULT_DRIVE_ID"); ok {
+		cfg.DefaultDriveID = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("FL_S3_PROTOCOL"); ok {
+		cfg.S3Protocol = strings.TrimSpace(v)
+	}
+	if v, ok := os.LookupEnv("FL_S3_SKIP_SSL_VERIFY"); ok {
+		if skip, err := strconv.ParseBool(v); err == nil {
+			cfg.S3SkipSSLVerify = skip
+		}
+	}
 	if v, ok := os.LookupEnv("FL_THEME"); ok {
 		cfg.Theme = v
 	}
@@ -288,6 +329,7 @@ func Load(configPath string, envOnly bool) (*Config, error) {
 			cfg.MinifyResponses = b
 		}
 	}
+	cfg.EnsureDrives()
 	return &cfg, nil
 }
 
@@ -402,18 +444,123 @@ func (c *Config) Save(configPath string) error {
 	return nil
 }
 
+// EnsureDrives validates and ensures the unified drive pool is populated and has a primary/default drive.
+func (c *Config) EnsureDrives() {
+	if c == nil {
+		return
+	}
+	// Normalize drives protocols & defaults
+	for i := range c.Drives {
+		if c.Drives[i].Type == "" {
+			c.Drives[i].Type = "local"
+		}
+		if c.Drives[i].Type == "s3" {
+			if c.Drives[i].S3Protocol == "" {
+				if !c.Drives[i].S3UseSSL && c.Drives[i].S3Endpoint != "" {
+					c.Drives[i].S3Protocol = "http"
+				} else {
+					c.Drives[i].S3Protocol = "https"
+				}
+			}
+		}
+	}
+
+	if len(c.Drives) == 0 {
+		// Populate initial default drive from legacy fields
+		defType := c.StorageType
+		if defType == "" {
+			defType = "local"
+		}
+		defPath := c.LocalStoragePath
+		if defPath == "" {
+			defPath = "./uploads"
+		}
+		protocol := c.S3Protocol
+		if protocol == "" {
+			if !c.S3UseSSL && c.S3Endpoint != "" {
+				protocol = "http"
+			} else {
+				protocol = "https"
+			}
+		}
+		defDrive := Drive{
+			ID:               "default",
+			Name:             "Default Storage",
+			Type:             defType,
+			Enabled:          true,
+			IsDefault:        true,
+			LocalStoragePath: defPath,
+			S3Endpoint:       c.S3Endpoint,
+			S3Region:         c.S3Region,
+			S3Bucket:         c.S3Bucket,
+			S3AccessKey:      c.S3AccessKey,
+			S3SecretKey:      c.S3SecretKey,
+			S3Protocol:       protocol,
+			S3SkipSSLVerify:  c.S3SkipSSLVerify,
+			S3UseSSL:         (protocol == "https"),
+		}
+		c.Drives = []Drive{defDrive}
+		c.DefaultDriveID = "default"
+	}
+
+	// Ensure exactly one drive is marked as default
+	var defaultIdx = -1
+	for i, d := range c.Drives {
+		if c.DefaultDriveID != "" && d.ID == c.DefaultDriveID {
+			defaultIdx = i
+			break
+		}
+	}
+	if defaultIdx == -1 {
+		for i, d := range c.Drives {
+			if d.IsDefault {
+				defaultIdx = i
+				break
+			}
+		}
+	}
+	if defaultIdx == -1 {
+		defaultIdx = 0
+	}
+
+	for i := range c.Drives {
+		c.Drives[i].IsDefault = (i == defaultIdx)
+	}
+	c.DefaultDriveID = c.Drives[defaultIdx].ID
+
+	// Sync legacy top-level fields with default drive
+	def := c.Drives[defaultIdx]
+	c.StorageType = def.Type
+	switch def.Type {
+	case "local":
+		c.LocalStoragePath = def.LocalStoragePath
+	case "s3":
+		c.S3Endpoint = def.S3Endpoint
+		c.S3Region = def.S3Region
+		c.S3Bucket = def.S3Bucket
+		c.S3AccessKey = def.S3AccessKey
+		c.S3SecretKey = def.S3SecretKey
+		c.S3Protocol = def.S3Protocol
+		c.S3SkipSSLVerify = def.S3SkipSSLVerify
+		c.S3UseSSL = (def.S3Protocol == "https")
+	}
+}
+
 // DriveView is a sanitized representation of Drive safe for rendering into HTML/JS templates
 type DriveView struct {
 	ID               string `json:"id"`
 	Name             string `json:"name"`
 	Type             string `json:"type"`
 	Enabled          bool   `json:"enabled"`
+	IsDefault        bool   `json:"is_default"`
 	LocalStoragePath string `json:"local_storage_path"`
 	S3Endpoint       string `json:"s3_endpoint"`
 	S3Region         string `json:"s3_region"`
 	S3Bucket         string `json:"s3_bucket"`
 	S3AccessKey      string `json:"s3_access_key"`
 	S3SecretSet      bool   `json:"s3_secret_set"`
+	S3Protocol       string `json:"s3_protocol"`
+	S3SkipSSLVerify  bool   `json:"s3_skip_ssl_verify"`
 	S3UseSSL         bool   `json:"s3_use_ssl"`
 }
 
@@ -421,10 +568,13 @@ type DriveView struct {
 type ConfigView struct {
 	DBType            string      `json:"db_type"`
 	SQLiteURL         string      `json:"sqlite_url"`
+	PostgresTLS       bool        `json:"postgres_tls"`
+	DBTLS             bool        `json:"db_tls"`
 	Port              int         `json:"port"`
 	SSL               bool        `json:"ssl"`
 	AllowInsecureHTTP bool        `json:"allow_insecure_http_dev"`
 	ReverseProxy      bool        `json:"reverse_proxy"`
+	DefaultDriveID    string      `json:"default_drive_id,omitempty"`
 	StorageType       string      `json:"storage_type"`
 	LocalStoragePath  string      `json:"local_storage_path"`
 	S3Endpoint        string      `json:"s3_endpoint"`
@@ -432,6 +582,8 @@ type ConfigView struct {
 	S3Bucket          string      `json:"s3_bucket"`
 	S3AccessKey       string      `json:"s3_access_key"`
 	S3SecretSet       bool        `json:"s3_secret_set"`
+	S3Protocol        string      `json:"s3_protocol"`
+	S3SkipSSLVerify   bool        `json:"s3_skip_ssl_verify"`
 	S3UseSSL          bool        `json:"s3_use_ssl"`
 	AllowInsecureS3   bool        `json:"allow_insecure_s3_dev"`
 	Drives            []DriveView `json:"drives"`
@@ -463,12 +615,15 @@ func (c *Config) SanitizedDrives() []DriveView {
 			Name:             d.Name,
 			Type:             d.Type,
 			Enabled:          d.Enabled,
+			IsDefault:        d.IsDefault,
 			LocalStoragePath: d.LocalStoragePath,
 			S3Endpoint:       d.S3Endpoint,
 			S3Region:         d.S3Region,
 			S3Bucket:         d.S3Bucket,
 			S3AccessKey:      d.S3AccessKey,
 			S3SecretSet:      d.S3SecretKey != "",
+			S3Protocol:       d.S3Protocol,
+			S3SkipSSLVerify:  d.S3SkipSSLVerify,
 			S3UseSSL:         d.S3UseSSL,
 		}
 	}
@@ -483,10 +638,13 @@ func (c *Config) SanitizedView() ConfigView {
 	return ConfigView{
 		DBType:            c.DBType,
 		SQLiteURL:         c.SQLiteURL,
+		PostgresTLS:       c.PostgresTLS,
+		DBTLS:             c.DBTLS,
 		Port:              c.Port,
 		SSL:               c.SSL,
 		AllowInsecureHTTP: c.AllowInsecureHTTP,
 		ReverseProxy:      c.ReverseProxy,
+		DefaultDriveID:    c.DefaultDriveID,
 		StorageType:       c.StorageType,
 		LocalStoragePath:  c.LocalStoragePath,
 		S3Endpoint:        c.S3Endpoint,
@@ -494,6 +652,8 @@ func (c *Config) SanitizedView() ConfigView {
 		S3Bucket:          c.S3Bucket,
 		S3AccessKey:       c.S3AccessKey,
 		S3SecretSet:       c.S3SecretKey != "",
+		S3Protocol:        c.S3Protocol,
+		S3SkipSSLVerify:   c.S3SkipSSLVerify,
 		S3UseSSL:          c.S3UseSSL,
 		AllowInsecureS3:   c.AllowInsecureS3,
 		Drives:            c.SanitizedDrives(),

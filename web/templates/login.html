@@ -69,6 +69,10 @@ async function loginPasskey() {
         const cred = await navigator.credentials.get({
             publicKey: options.publicKey
         });
+        if (!cred) {
+            status.innerText = "";
+            return;
+        }
         
         const credential = {
             id: cred.id,
@@ -78,7 +82,7 @@ async function loginPasskey() {
                 authenticatorData: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.authenticatorData))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
                 clientDataJSON: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.clientDataJSON))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
                 signature: btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.signature))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
-                userHandle: cred.response.userHandle ? btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.userHandle))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '') : null
+                userHandle: (cred.response.userHandle && cred.response.userHandle.byteLength > 0) ? btoa(String.fromCharCode.apply(null, new Uint8Array(cred.response.userHandle))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '') : null
             }
         };
 
@@ -100,6 +104,10 @@ async function loginPasskey() {
             window.location.href = "/";
         }
     } catch (e) {
+        if (e.name === 'NotAllowedError' || e.name === 'AbortError') {
+            status.innerText = "";
+            return;
+        }
         console.error(e);
         status.innerText = "{{ T .Language "Error" }}: " + e.message;
         status.style.color = "#ff5252";

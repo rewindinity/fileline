@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
 // EmbedConfig holds personal media preview / Discord embed preferences for a user.
 type EmbedConfig struct {
 	Enabled        bool   `json:"enabled"`
+	SocialMedia    bool   `json:"social_media"`
+	DirectVisit    bool   `json:"direct_visit"`
 	Color          string `json:"color"`
 	UseAccentColor bool   `json:"use_accent_color"`
 	SiteName       string `json:"site_name"`
@@ -24,6 +27,8 @@ type EmbedConfig struct {
 func DefaultEmbedConfig() EmbedConfig {
 	return EmbedConfig{
 		Enabled:        false,
+		SocialMedia:    true,
+		DirectVisit:    true,
 		Color:          "#1d9bf0",
 		UseAccentColor: false,
 		SiteName:       "FileLine",
@@ -41,7 +46,17 @@ func ParseEmbedConfig(raw string) EmbedConfig {
 	if raw == "" {
 		return cfg
 	}
-	_ = json.Unmarshal([]byte(raw), &cfg)
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &rawMap); err == nil {
+		_ = json.Unmarshal([]byte(raw), &cfg)
+		// Backward compatibility: if enabled was set but social_media and direct_visit were not in JSON
+		_, hasSocial := rawMap["social_media"]
+		_, hasDirect := rawMap["direct_visit"]
+		if !hasSocial && !hasDirect && cfg.Enabled {
+			cfg.SocialMedia = true
+			cfg.DirectVisit = true
+		}
+	}
 	if cfg.Color == "" {
 		cfg.Color = "#1d9bf0"
 	}
@@ -303,10 +318,41 @@ func CreateSubuser(ctx context.Context, database *sql.DB, username, passwordHash
 	return err
 }
 
-// DeleteUser deletes a user.
-func DeleteUser(ctx context.Context, database *sql.DB, username string) error {
-	_, err := database.ExecContext(ctx, "DELETE FROM users WHERE username = $1 AND role != 'admin'", username)
+// UpdateUserQuota updates a user's storage quota in megabytes.
+func UpdateUserQuota(ctx context.Context, db *sql.DB, username string, quotaMB int) error {
+	_, err := db.ExecContext(ctx, "UPDATE users SET storage_quota_mb = $1 WHERE username = $2", quotaMB, username)
 	return err
+}
+
+// DeleteUser deletes a user and cleans up their database records (file_reads, files, and users).
+func DeleteUser(ctx context.Context, database *sql.DB, username string) error {
+	u, err := GetUserByUsername(ctx, database, username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return err
+	}
+	if u.Role == "admin" {
+		return errors.New("cannot delete admin user")
+	}
+
+	tx, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM file_reads WHERE file_id IN (SELECT id FROM files WHERE user_id = $1)", u.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM files WHERE user_id = $1", u.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id = $1 AND role != 'admin'", u.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // UpdateUserTheme updates a user's theme and accent preference.
@@ -323,6 +369,10 @@ func UpdateUserLanguage(ctx context.Context, db *sql.DB, username, language stri
 
 // UpdateUserEmbedConfig updates a user's personal media preview / embed configuration.
 func UpdateUserEmbedConfig(ctx context.Context, db *sql.DB, username string, cfg EmbedConfig) error {
+	if cfg.Enabled && !cfg.SocialMedia && !cfg.DirectVisit {
+		cfg.SocialMedia = true
+		cfg.DirectVisit = true
+	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return err

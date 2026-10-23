@@ -17,7 +17,7 @@
     </div>
     <div class="stat-card">
         <div class="stat-label">{{ T .Language "Total Storage Used" }}</div>
-        <div class="stat-value">{{FormatSize .TotalUsedBytes}}</div>
+        <div class="stat-value">{{FormatSize .TotalUsedBytes}}{{if and .User (gt .User.StorageQuotaMB 0)}} / {{FormatSize (StorageQuotaBytes .User.StorageQuotaMB)}}{{end}}</div>
     </div>
 </div>
 
@@ -27,9 +27,9 @@
         <h2>{{ T .Language "Upload File" }}</h2>
     </div>
     
-    <form id="uploadForm" enctype="multipart/form-data">
+    <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data">
         <!-- Drop Zone & File Selection -->
-        <div class="upload-area" id="dropZone">
+        <div class="upload-area" id="dropZone" style="cursor: pointer;">
             <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" class="upload-icon">
             <h3>{{ T .Language "Drag & Drop to Upload" }}</h3>
             <p class="text-muted mb-2">{{ T .Language "or click to browse files" }}</p>
@@ -57,11 +57,11 @@
         </div>
         
         <!-- Storage Drive Selector (if drives configured) -->
-        {{if gt (len .EnabledDrives) 0}}
+        {{if .EnabledDrives}}
         <div class="form-group" style="margin-top: 1rem; margin-bottom: 0;">
             <label for="drive_id">{{ T .Language "Storage Drive" }}</label>
             <select id="drive_id" name="drive_id">
-                <option value="">{{ T $.Language "Default" }} ({{.Config.StorageType}})</option>
+                <option value="">{{ T $.Language "Default" }} ({{if .DefaultDriveName}}{{.DefaultDriveName}}{{else}}{{.Config.StorageType}}{{end}})</option>
                 {{range .EnabledDrives}}
                 <option value="{{.ID}}">{{.Name}}</option>
                 {{end}}
@@ -180,8 +180,8 @@
             </div>
             <!-- Disabled notice -->
             <div id="statsModalDisabled" style="display: none;">
-                <div class="alert" style="background: var(--bg-base); border: 1px solid var(--border-color); color: var(--text-secondary); margin-bottom: 0;">
-                    <img src="/static/icons/bx-info-circle.svg" alt="Info" style="width: 22px; opacity: 0.8;">
+                <div class="alert" style="background: var(--bg-base); border: 1px solid var(--border-color); color: var(--text-secondary); margin-bottom: 0; display: flex; align-items: flex-start; gap: 0.75rem;">
+                    <i class="bx bx-info-circle" style="font-size: 1.35rem; color: var(--accent-primary); flex-shrink: 0; margin-top: 0.1rem;"></i>
                     <div>
                         <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">{{ T .Language "Statistics are currently disabled for this file." }}</strong>
                         {{ T .Language "Enable statistics in file edit settings to start recording reads and user agent analytics." }}
@@ -397,6 +397,12 @@
         }
     });
 
+    dropZone.addEventListener('click', (e) => {
+        if (e.target !== fileInput && e.target.tagName !== 'BUTTON') {
+            fileInput.click();
+        }
+    });
+
     dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
         dropZone.classList.add('dragover');
@@ -459,7 +465,7 @@
                         stats_enabled: statsEnabled,
                         custom_name: customName,
                         url_path: urlPath,
-                        drive_id: driveId
+                        drive_id: driveId,
                     })
                 });
                 
@@ -489,7 +495,7 @@
                 const completeRes = await fetch('/api/upload/complete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ upload_id })
+                    body: JSON.stringify({ upload_id: upload_id }),
                 });
                 
                 if (!completeRes.ok) throw new Error(await completeRes.text());

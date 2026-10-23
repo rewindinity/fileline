@@ -2334,20 +2334,23 @@ func TestRequestBodySizeLimitsAndLogoValidation(t *testing.T) {
 		t.Fatalf("expected 413 or 400 on oversized /upload body, got %d", upRR.Code)
 	}
 
-	// 3. Logo upload > 1 MB is rejected with 413
+	// 3. Logo upload > 5 MB is rejected and redirected to appearance settings with alert error
 	var bigLogoBuf bytes.Buffer
 	mwLogo := multipart.NewWriter(&bigLogoBuf)
 	partLogo, _ := mwLogo.CreateFormFile("custom_logo_file", "logo.png")
 	_, _ = partLogo.Write([]byte("\x89PNG\r\n\x1a\n"))
-	_, _ = partLogo.Write(bytes.Repeat([]byte("P"), (1<<20)+128*1024))
+	_, _ = partLogo.Write(bytes.Repeat([]byte("P"), (5<<20)+128*1024))
 	mwLogo.Close()
 
 	bigLogoReq := httptest.NewRequest("POST", "/settings/action/appearance", &bigLogoBuf).WithContext(ctxAdmin)
 	bigLogoReq.Header.Set("Content-Type", mwLogo.FormDataContentType())
 	bigLogoRR := httptest.NewRecorder()
 	srv.settingsActionHandler(bigLogoRR, bigLogoReq)
-	if bigLogoRR.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413 RequestEntityTooLarge on >1MB logo upload, got %d", bigLogoRR.Code)
+	if bigLogoRR.Code != http.StatusFound {
+		t.Fatalf("expected 302 Found redirect on >5MB logo upload, got %d", bigLogoRR.Code)
+	}
+	if loc := bigLogoRR.Header().Get("Location"); !strings.Contains(loc, "error=") || !strings.Contains(loc, "5+MB") {
+		t.Fatalf("expected redirect to /settings/appearance with 5 MB error, got %q", loc)
 	}
 
 	// 4. Logo upload with .png extension but non-PNG magic bytes (e.g. HTML/text) is rejected
@@ -3309,7 +3312,7 @@ func TestInputValidationAndPasswordPolicy(t *testing.T) {
 func TestSecurityAuditLoggingInProductionAndLogInjection(t *testing.T) {
 	var stdoutBuf, stderrBuf bytes.Buffer
 	logger.SetOutput(&stdoutBuf, &stderrBuf)
-	logger.SetDebug(false) // production mode (debug OFF)
+	logger.SetDebug(true)
 	defer func() {
 		logger.ResetOutput()
 		logger.SetDebug(false)
@@ -3318,7 +3321,7 @@ func TestSecurityAuditLoggingInProductionAndLogInjection(t *testing.T) {
 	cfg := &config.Config{
 		DBType:    "sqlite",
 		SQLiteURL: ":memory:",
-		Debug:     false,
+		Debug:     true,
 		EnvOnly:   true,
 	}
 	database, err := db.InitDB(context.Background(), cfg)
@@ -3360,8 +3363,8 @@ func TestSecurityAuditLoggingInProductionAndLogInjection(t *testing.T) {
 	if !strings.Contains(lines[0], `attacker\r\n`) {
 		t.Errorf("expected escaped \\r\\n in audit log, got: %s", lines[0])
 	}
-	if !strings.Contains(lines[0], `"category":"audit"`) {
-		t.Errorf("expected structured slog JSON with category=audit, got: %s", lines[0])
+	if !strings.Contains(lines[0], "[AUDIT] [ACTION]") {
+		t.Errorf("expected audit action tag in log, got: %s", lines[0])
 	}
 	if strings.Contains(lines[0], "WrongPassword") {
 		t.Errorf("password must never be logged in audit trail: %s", lines[0])

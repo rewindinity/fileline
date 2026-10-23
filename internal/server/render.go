@@ -32,7 +32,7 @@ var gzipWriterPool = sync.Pool{
 	},
 }
 
-func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}, statusCode ...int) {
 	t, ok := s.tmpls[name]
 	if !ok {
 		s.internalError(w, r, "Template not found: "+name, nil)
@@ -111,6 +111,12 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 				lang = user.Language
 			}
 			if uname != "" {
+				if _, hasUsername := m["Username"]; !hasUsername {
+					m["Username"] = uname
+				}
+				if _, hasUser := m["User"]; !hasUser && user != nil {
+					m["User"] = user
+				}
 				if code, ok := s.recoveryCodeStore.LoadAndDelete(uname); ok {
 					m["NewRecoveryCode"] = code
 				}
@@ -147,11 +153,19 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 		body = formatHTMLSingleLine(body)
 	}
 
+	status := http.StatusOK
+	if len(statusCode) > 0 && statusCode[0] > 0 {
+		status = statusCode[0]
+	} else if name == "404.html" {
+		status = http.StatusNotFound
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if gzipEnabled && r != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(status)
 		gz := gzipWriterPool.Get().(*gzip.Writer)
 		gz.Reset(w)
 		_, _ = gz.Write(body)
@@ -161,37 +175,65 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name str
 	}
 
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
 	_, _ = w.Write(body)
 }
 
-func (s *Server) render404(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNotFound)
-	s.renderTemplate(w, nil, "404.html", map[string]interface{}{"Title": "Not Found"})
+func (s *Server) render404(w http.ResponseWriter, req ...*http.Request) {
+	var r *http.Request
+	if len(req) > 0 {
+		r = req[0]
+	}
+	s.renderTemplate(w, r, "404.html", map[string]interface{}{"Title": "Not Found", "Config": s.cfg}, http.StatusNotFound)
 }
 
-func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, errorMsg string) {
+func (s *Server) renderSetupError(w http.ResponseWriter, dbConfigured bool, errorMsg string, statusCode ...int) {
+	s.mu.RLock()
+	var cfgCopy *config.Config
+	if s.cfg != nil {
+		c := *s.cfg
+		cfgCopy = &c
+	}
+	s.mu.RUnlock()
 	s.renderTemplate(w, nil, "setup.html", map[string]interface{}{
 		"Title":        "Setup",
+		"Config":       cfgCopy,
 		"DBConfigured": dbConfigured,
 		"RequireToken": s.setupToken != "",
 		"Error":        errorMsg,
-	})
+	}, statusCode...)
 }
 
 func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+		if user, err := s.currentUser(r); err == nil && user != nil {
+			r = r.WithContext(withUser(r.Context(), user))
+		}
+		s.render404(w, r)
 		return
 	}
-	s.mu.RLock()
-	database := s.db
-	sanitizedDrives := s.cfg.SanitizedDrives()
-	s.mu.RUnlock()
+	configured, err := s.CheckConfigured(r.Context())
+	if err != nil {
+		logger.Error("Database error checking configuration state: %v", err)
+		http.Error(w, "Service Unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !configured {
+		http.Redirect(w, r, "/setup", http.StatusFound)
+		return
+	}
 	user, err := s.currentUser(r)
 	if err != nil || user == nil {
 		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
+	r = r.WithContext(withUser(r.Context(), user))
+
+	s.mu.RLock()
+	database := s.db
+	sanitizedDrives := s.cfg.SanitizedDrives()
+	s.mu.RUnlock()
+
 	username := user.Username
 	filterID := user.ID
 	if user.Role == "admin" {
@@ -204,20 +246,25 @@ func (s *Server) dashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totalUsedBytes, _ := db.GetUserTotalStorage(r.Context(), database, user.ID)
+	var defaultDriveName string
 	var enabledDrives []config.DriveView
 	for _, d := range sanitizedDrives {
-		if d.Enabled {
+		if d.IsDefault || (s.cfg != nil && d.ID == s.cfg.DefaultDriveID) {
+			defaultDriveName = d.Name
+		}
+		if d.Enabled && !d.IsDefault && (s.cfg == nil || d.ID != s.cfg.DefaultDriveID) {
 			enabledDrives = append(enabledDrives, d)
 		}
 	}
 
 	s.renderTemplate(w, r, "dashboard.html", map[string]interface{}{
-		"Title":          "Dashboard",
-		"Username":       username,
-		"User":           user,
-		"Files":          files,
-		"TotalUsedBytes": totalUsedBytes,
-		"EnabledDrives":  enabledDrives,
+		"Title":            "Dashboard",
+		"Username":         username,
+		"User":             user,
+		"Files":            files,
+		"TotalUsedBytes":   totalUsedBytes,
+		"EnabledDrives":    enabledDrives,
+		"DefaultDriveName": defaultDriveName,
 	})
 }
 
