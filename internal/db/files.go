@@ -207,7 +207,6 @@ func GetFilesPage(ctx context.Context, database *sql.DB, opts FilePageOpts) (*Fi
 		likePattern := "%" + search + "%"
 		whereClauses = append(whereClauses, fmt.Sprintf("(original_name LIKE $%d OR custom_name LIKE $%d OR url_path LIKE $%d)", argIdx, argIdx, argIdx))
 		args = append(args, likePattern)
-		argIdx++
 	}
 
 	whereSQL := ""
