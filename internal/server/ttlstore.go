@@ -20,11 +20,10 @@ type ttlEntry[V any] struct {
 
 // ttlStore is a concurrency-safe, bounded in-memory key-value store with per-entry TTL expiration and oldest-first eviction when the capacity cap is reached
 type ttlStore[K comparable, V any] struct {
-	mu       sync.Mutex
-	m        map[K]ttlEntry[V]
-	ttl      time.Duration
-	max      int
-	initOnce sync.Once
+	mu  sync.Mutex
+	m   map[K]ttlEntry[V]
+	ttl time.Duration
+	max int
 }
 
 func newTTLStore[K comparable, V any](ttl time.Duration, max int) ttlStore[K, V] {

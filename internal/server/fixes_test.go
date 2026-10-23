@@ -1188,12 +1188,12 @@ func TestAdminTestS3Handler(t *testing.T) {
 	}
 
 	// 5. Admin request to failing S3 endpoint
-	payloadFail := fmt.Sprintf(`{
+	payloadFail := `{
 		"s3_endpoint": "127.0.0.1:1",
 		"s3_region": "us-east-1",
 		"s3_bucket": "test-bucket",
 		"s3_protocol": "http"
-	}`)
+	}`
 	reqFail := httptest.NewRequest("POST", "/api/admin/storage/test_s3", strings.NewReader(payloadFail)).WithContext(ctx)
 	rrFail := httptest.NewRecorder()
 	srv.adminTestS3Handler(rrFail, reqFail)

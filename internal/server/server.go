@@ -445,8 +445,7 @@ func (s *Server) Start() error {
 			return fmt.Errorf("SSL is enabled but cert or key path is missing")
 		}
 		s.httpServer.TLSConfig = &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			PreferServerCipherSuites: true,
+			MinVersion: tls.VersionTLS12,
 			CurvePreferences: []tls.CurveID{
 				tls.CurveP256,
 				tls.X25519,

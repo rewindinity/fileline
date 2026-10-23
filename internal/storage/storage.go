@@ -833,7 +833,6 @@ type s3MultipartStagedUpload struct {
 	key       string
 	uploadID  string
 	totalSize int64
-	chunkSize int64
 	parts     map[int]string
 	closed    bool
 	active    int
