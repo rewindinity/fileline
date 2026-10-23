@@ -1,0 +1,168 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Page Header -->
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+    </div>
+</div>
+
+<div class="settings-overview-container">
+    <!-- Feedback Alerts -->
+    {{if .SuccessMessage}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .SuccessMessage }}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="alert alert-error">
+        <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .ErrorMessage }}
+    </div>
+    {{end}}
+
+    <!-- Navigation / Back Bar -->
+    <div class="settings-back-bar">
+        <a href="/settings" class="btn btn-secondary btn-sm">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Settings" }}
+        </a>
+    </div>
+
+    <!-- Users Management Card -->
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>{{ T .Language "Users Management" }}</h2>
+        </div>
+        
+        <!-- Existing Users List -->
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Existing Users" }}</h3>
+        <div class="table-responsive" style="margin-bottom: 2rem;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 70px;">{{ T .Language "ID" }}</th>
+                        <th>{{ T .Language "Username" }}</th>
+                        <th>{{ T .Language "Quota (MB)" }}</th>
+                        <th>{{ T .Language "Storage Used" }}</th>
+                        <th style="text-align: right;">{{ T .Language "Action" }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .AllUsers}}
+                    <tr>
+                        <td>
+                            <span class="badge" style="background: var(--bg-surface-hover); color: var(--text-muted); border: 1px solid var(--border-color); font-size: 0.8rem; font-weight: 600;">
+                                #{{.User.ID}}
+                            </span>
+                        </td>
+                        <td style="font-weight: 500;">
+                            {{.User.Username}}
+                            {{if eq .User.Username "admin"}}<span class="badge badge-private" style="margin-left: 0.5rem;">{{ T $.Language "Admin" }}</span>{{end}}
+                        </td>
+                        <td>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <span>{{if eq .User.StorageQuotaMB 0}}{{ T $.Language "Unlimited" }}{{else}}{{.User.StorageQuotaMB}}{{end}}</span>
+                                <button type="button" class="btn btn-secondary btn-sm" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;" onclick="openEditQuotaModal('{{.User.Username}}', {{.User.StorageQuotaMB}})" title="{{ T $.Language "Edit Storage Limit" }}">
+                                    <i class="bx bxs-edit"></i>
+                                    {{ T $.Language "Edit" }}
+                                </button>
+                            </div>
+                        </td>
+                        <td>{{.FormattedTotalUsed}}</td>
+                        <td style="text-align: right;">
+                            {{if ne .User.Username "admin"}}
+                            <form method="POST" action="/settings/users/delete" style="margin: 0;" onsubmit="return confirm('{{ T $.Language "Delete user" }} {{.User.Username}} {{ T $.Language "and ALL their files? This cannot be undone." }}')">
+                                <input type="hidden" name="username" value="{{.User.Username}}">
+                                <button type="submit" class="btn btn-danger btn-sm">
+                                    <i class="bx bx-trash-alt"></i>
+                                    {{ T $.Language "Delete" }}
+                                </button>
+                            </form>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <!-- Add Subuser -->
+        <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Add Subuser" }}</h3>
+        <form method="POST" action="/settings/users/add">
+            <div class="settings-grid-3" style="align-items: end;">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Username" }}</label>
+                    <input type="text" name="new_username" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Password" }}</label>
+                    <input type="password" name="new_password" required>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label>{{ T .Language "Storage Quota (MB, 0 for unl)" }}</label>
+                    <input type="number" name="new_quota" value="5120" required>
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary mt-1">
+                <i class="bx bx-plus-circle"></i>
+                {{ T .Language "Create User" }}
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Storage Quota Modal -->
+<div id="editQuotaModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'editQuotaModal')">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="editQuotaModalTitle" style="max-width: 440px;">
+        <div class="modal-header">
+            <h3 id="editQuotaModalTitle" style="margin: 0; font-size: 1.15rem;">{{ T .Language "Edit Storage Limit" }}</h3>
+            <button type="button" class="modal-close" onclick="closeModal('editQuotaModal')" aria-label="{{ T .Language "Close" }}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <form method="POST" action="/settings/users/quota">
+            <input type="hidden" id="editQuotaUsername" name="username">
+            <div class="modal-body" style="padding: 1.25rem 1.5rem;">
+                <p style="margin-top: 0; margin-bottom: 1rem; color: var(--text-secondary);">
+                    {{ T .Language "User" }}: <strong id="editQuotaUsernameDisplay" style="color: var(--text-primary);"></strong>
+                </p>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label for="editQuotaMB">{{ T .Language "Storage Quota (MB, 0 for unl)" }}</label>
+                    <input type="number" id="editQuotaMB" name="quota_mb" min="0" required>
+                    <small class="text-muted">{{ T .Language "0 for unlimited" }}</small>
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.75rem; padding: 1rem 1.5rem; border-top: 1px solid var(--border-color);">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal('editQuotaModal')">{{ T .Language "Cancel" }}</button>
+                <button type="submit" class="btn btn-primary btn-sm"><i class="bx bx-check"></i> {{ T .Language "Save" }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openEditQuotaModal(username, currentQuota) {
+    document.getElementById('editQuotaUsername').value = username;
+    document.getElementById('editQuotaUsernameDisplay').textContent = username;
+    document.getElementById('editQuotaMB').value = currentQuota;
+    openModal('editQuotaModal');
+}
+function openModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('active');
+}
+function closeModal(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+}
+function handleModalBackdropClick(e, id) {
+    if (e.target.id === id) closeModal(id);
+}
+</script>
+{{end}}

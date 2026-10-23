@@ -1,4 +1,4 @@
-FROM golang:1.26.2-trixie AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS builder
 
 WORKDIR /src
 
@@ -7,21 +7,26 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/fileline .
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/fileline ./cmd/server && \
+    mkdir -p /out/app/data /out/app/uploads /out/app/chunks && \
+    chmod 0750 /out/app/data /out/app/uploads /out/app/chunks
 
-FROM debian:trixie-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    tzdata \
-    && rm -rf /var/lib/apt/lists/*
+FROM gcr.io/distroless/static-debian13:nonroot
 
 WORKDIR /app
 
+COPY --from=builder --chown=65532:65532 /out/app /app
 COPY --from=builder /out/fileline /usr/local/bin/fileline
 
-RUN mkdir -p /app/uploads /app/chunks
+USER 65532:65532
 
-EXPOSE 8080
+EXPOSE 8080 443
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/fileline", "-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/fileline"]

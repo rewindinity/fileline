@@ -1,0 +1,89 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Page Header & Navigation Bar -->
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Edit File" }}</h1>
+        <p class="text-muted">{{ T .Language "Update file details" }}</p>
+    </div>
+    <div class="header-actions">
+        <a href="/files" class="btn btn-secondary">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Files" }}
+        </a>
+    </div>
+</div>
+
+<!-- Feedback Alerts -->
+{{if or .Error .ErrorMessage}}
+<div class="alert alert-error" style="max-width: 650px; margin: 0 auto 1.5rem auto;">
+    <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+    <span>{{ T .Language (or .Error .ErrorMessage) }}</span>
+</div>
+{{end}}
+
+<!-- Edit File Form Card -->
+<div class="card" style="max-width: 650px; margin: 0 auto;">
+    <form method="POST" action="/edit">
+        <input type="hidden" name="id" value="{{.File.ID}}">
+        
+        <!-- File Metadata Fields -->
+        <div class="form-group">
+            <label>{{ T .Language "Original Name" }} <span class="text-muted">({{ T .Language "Read-only" }})</span></label>
+            <input type="text" value="{{.File.OriginalName}}" readonly style="background-color: var(--bg-base); opacity: 0.7; cursor: not-allowed;">
+        </div>
+        
+        <div class="form-group">
+            <label for="custom_name">{{ T .Language "Custom Name" }}</label>
+            <input type="text" id="custom_name" name="custom_name" value="{{.File.CustomName}}">
+        </div>
+        
+        <div class="form-group">
+            <label for="url_path">{{ T .Language "URL Path" }}</label>
+            <input type="text" id="url_path" name="url_path" value="{{.File.URLPath}}">
+        </div>
+        
+        <!-- Privacy & Analytics Options -->
+        <div class="options-grid">
+            <div class="option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="is_private" name="is_private" {{if .File.IsPrivate}}checked{{end}}>
+                    <label for="is_private">{{ T .Language "Private File (requires login)" }}</label>
+                </div>
+            </div>
+
+            <div class="option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="stats_enabled" name="stats_enabled" {{if .File.StatsEnabled}}checked{{end}}>
+                    <label for="stats_enabled">{{ T .Language "Enable statistics" }} <span class="text-muted" style="font-size: 0.85rem; font-weight: 400;">({{ T .Language "tracks reads & user agents" }})</span></label>
+                </div>
+            </div>
+        </div>
+        <p class="text-muted" style="font-size: 0.825rem; margin-top: -0.75rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.35rem;">
+            <i class="bx bx-info-circle" style="color: var(--accent-primary); opacity: 0.85;"></i>
+            {{ T .Language "Activating or deactivating statistics resets recorded stats in database." }}
+        </p>
+
+        <!-- Reset Reading Statistics Box (Shown only if statistics are enabled) -->
+        {{if .File.StatsEnabled}}
+        <div class="file-reset-stats-box">
+            <div>
+                <strong style="font-size: 0.925rem; display: block; color: var(--text-primary);">{{ T .Language "Reset Statistics" }}</strong>
+                <span class="text-muted" style="font-size: 0.825rem;">{{ T .Language "Clear all recorded reads and device data for this file in database." }}</span>
+            </div>
+            <button type="submit" name="reset_stats" value="1" class="btn btn-danger btn-sm" onclick="return confirm('{{ T $.Language "Are you sure you want to reset all reading statistics for this file?" }}')">
+                <i class="bx bx-trash-alt"></i>
+                {{ T $.Language "Reset Statistics" }}
+            </button>
+        </div>
+        {{end}}
+        
+        <!-- Form Actions -->
+        <div style="display: flex; gap: 1rem;">
+            <a href="/files" class="btn btn-secondary" style="flex: 1;">{{ T .Language "Cancel" }}</a>
+            <button type="submit" class="btn btn-primary" style="flex: 1;">{{ T .Language "Save Changes" }}</button>
+        </div>
+    </form>
+</div>
+{{end}}

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="{{if .Language}}{{.Language}}{{else}}en{{end}}">
+<!-- Document Head -->
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {{if and .Config .Config.BlockIndexing}}
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    <meta name="bingbot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+    {{end}}
+    <title>{{if .Title}}{{ T .Language .Title }}{{else}}FileLine{{end}} - FileLine</title>
+    <link rel="icon" href="/logo?v={{.Config.CustomLogo}}">
+    <link rel="stylesheet" href="/static/icons.css">
+    <link rel="stylesheet" href="/static/css/themes.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    {{block "head" .}}{{end}}
+    
+    <!-- Theme & Accent Dynamic Calculation -->
+    {{$theme := .Config.Theme}}
+    {{$accentHex := .Config.CustomAccentHex}}
+
+    {{if .User}}
+        {{if and .User.Theme (ne .User.Theme "global")}}
+            {{$theme = .User.Theme}}
+        {{end}}
+        {{if and .User.Accent (ne .User.Accent "global")}}
+            {{$accentHex = .User.Accent}}
+        {{end}}
+    {{end}}
+    
+    {{if eq $theme ""}}{{$theme = "dark-blue"}}{{end}}
+    {{if eq $theme "dark"}}{{$theme = "dark-blue"}}{{end}}
+    {{if eq $theme "light"}}{{$theme = "light-blue"}}{{end}}
+    
+    {{if eq $accentHex ""}}{{$accentHex = "#2563eb"}}{{end}}
+            
+</head>
+<body class="theme-{{$theme}}" style="--accent-primary: {{$accentHex}};">
+    <!----- Authenticated Layout ----->
+    {{if .Username}}
+    <!-- Top Navigation Bar -->
+    <header class="top-navbar">
+        <div class="nav-container">
+            <a href="/" class="brand">
+                <img src="/logo?v={{.Config.CustomLogo}}" alt="FileLine Logo" class="logo-img">
+                <span>FileLine</span>
+            </a>
+            
+            <button class="mobile-nav-toggle" id="mobileNavBtn">
+                <img src="/static/icons/bx-list-ul.svg" alt="{{ T .Language "Menu" }}" style="width: 24px; filter: brightness(0) invert(1);">
+            </button>
+            
+            <nav class="nav-links" id="navLinks">
+                <a href="/" class="nav-item {{if eq .Title "Dashboard"}}active{{end}}">
+                    <img src="/static/icons/bxs-dashboard.svg" alt="{{ T .Language "Dashboard" }}">
+                    {{ T .Language "Dashboard" }}
+                </a>
+                <a href="/files" class="nav-item {{if or (eq .Title "My Files") (eq .Title "All Files") (eq .Title "Files")}}active{{end}}">
+                    <img src="/static/icons/bxs-folder.svg" alt="{{ T .Language "Files" }}">
+                    {{ T .Language "Files" }}
+                </a>
+                <a href="/settings" class="nav-item {{if eq .Title "Settings"}}active{{end}}">
+                    <img src="/static/icons/bxs-cog.svg" alt="{{ T .Language "Settings" }}">
+                    {{ T .Language "Settings" }}
+                </a>
+                <form method="POST" action="/logout" style="display: contents;">
+                    <button type="submit" class="nav-item" style="color: var(--error); background: none; border: none; cursor: pointer; font: inherit;">
+                        <img src="/static/icons/bx-log-out.svg" alt="{{ T .Language "Logout" }}" style="filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+                        {{ T .Language "Logout" }} ({{.Username}})
+                    </button>
+                </form>
+            </nav>
+        </div>
+    </header>
+    
+    <!-- Main Content Layout -->
+    <div class="app-layout">
+        <main class="main-content">
+            {{block "content" .}}{{end}}
+        </main>
+    </div>
+    
+    {{if .NewRecoveryCode}}
+    <!-- Initial / Newly Generated Recovery Code Modal -->
+    <div id="newRecoveryCodeModal" class="modal-overlay active">
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="recoveryModalTitle">
+            <div class="modal-header">
+                <h3 id="recoveryModalTitle">{{ T .Language "Your Recovery Code" }}</h3>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted" style="margin-bottom: 1rem;">{{ T .Language "Save this recovery code in a safe place. You can use it to reset your password if you forget it." }}</p>
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; background: var(--bg-base); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-color);">
+                    <code id="initialRecoveryCodeText" style="font-family: monospace; font-size: 1.2rem; font-weight: 700; color: var(--accent-primary); letter-spacing: 0.08em; word-break: break-all;">{{.NewRecoveryCode}}</code>
+                    <button type="button" class="btn btn-secondary btn-sm" onclick="copyInitialRecoveryCode(this)">
+                        <img src="/static/icons/bx-copy.svg" alt="Copy" style="width: 16px; filter: brightness(0) invert(0.8);">
+                        <span>{{ T .Language "Copy" }}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="acknowledgeRecoveryCode()">{{ T .Language "I have saved this code" }}</button>
+            </div>
+        </div>
+    </div>
+    <script>
+        function copyInitialRecoveryCode(btn) {
+            const code = document.getElementById('initialRecoveryCodeText').innerText;
+            navigator.clipboard.writeText(code).then(() => {
+                const span = btn.querySelector('span');
+                if (span) {
+                    const orig = span.innerText;
+                    span.innerText = '{{ T .Language "Copied!" }}';
+                    setTimeout(() => { span.innerText = orig; }, 2000);
+                }
+            });
+        }
+        function acknowledgeRecoveryCode() {
+            fetch('/settings/recovery/ack', { method: 'POST' }).catch(() => {});
+            const modal = document.getElementById('newRecoveryCodeModal');
+            if (modal) modal.classList.remove('active');
+        }
+    </script>
+    {{end}}
+
+    <!-- Mobile Navigation Toggle Script -->
+    <script>
+        document.getElementById('mobileNavBtn')?.addEventListener('click', function() {
+            document.getElementById('navLinks').classList.toggle('show');
+        });
+    </script>
+    {{else}}
+    <!----- Guest / Authentication Layout ----->
+    <div class="auth-layout">
+        <div class="auth-card">
+            <!-- Auth Card Header -->
+            <div class="auth-header">
+                <img src="/logo?v={{.Config.CustomLogo}}" alt="FileLine Logo" style="width: 48px; margin-bottom: 1rem;" class="logo-img">
+                <h1>FileLine</h1>
+                <p class="text-muted">{{if .Title}}{{ T .Language .Title }}{{end}}</p>
+            </div>
+            <!-- Auth Content Area -->
+            {{block "content" .}}{{end}}
+        </div>
+    </div>
+    {{end}}
+</body>
+</html>

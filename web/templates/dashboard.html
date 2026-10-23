@@ -1,0 +1,544 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Page Header & Greeting -->
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Dashboard" }}</h1>
+        <p class="text-muted">{{ T .Language "Welcome back" }}, {{.Username}}</p>
+    </div>
+</div>
+
+<!-- Storage & Files Quick Overview Stats -->
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">{{ T .Language "Total Files (Recent)" }}</div>
+        <div class="stat-value">{{len .Files}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">{{ T .Language "Total Storage Used" }}</div>
+        <div class="stat-value">{{FormatSize .TotalUsedBytes}}{{if and .User (gt .User.StorageQuotaMB 0)}} / {{FormatSize (StorageQuotaBytes .User.StorageQuotaMB)}}{{end}}</div>
+    </div>
+</div>
+
+<!-- File Upload Card -->
+<div class="card">
+    <div class="card-header">
+        <h2>{{ T .Language "Upload File" }}</h2>
+    </div>
+    
+    <form id="uploadForm" method="POST" action="/upload" enctype="multipart/form-data">
+        <!-- Drop Zone & File Selection -->
+        <div class="upload-area" id="dropZone" style="cursor: pointer;">
+            <img src="/static/icons/bxs-cloud-upload.svg" alt="Upload" class="upload-icon">
+            <h3>{{ T .Language "Drag & Drop to Upload" }}</h3>
+            <p class="text-muted mb-2">{{ T .Language "or click to browse files" }}</p>
+            <input type="file" id="file" name="file" required style="display: none;">
+            <button type="button" class="btn btn-primary" onclick="document.getElementById('file').click()">{{ T .Language "Select File" }}</button>
+            <p id="fileNameDisplay" style="margin-top: 1rem; font-weight: 500;"></p>
+        </div>
+
+        <!-- Upload Progress Indicator -->
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+        <p id="progressStatus" style="margin-top: 0.5rem; font-size: 0.875rem; color: var(--accent-primary); font-weight: 500;"></p>
+
+        <!-- File Metadata Customization (Name & URL) -->
+        <div class="settings-grid-2" style="gap: 1.5rem; margin-top: 1.5rem;">
+            <div class="form-group">
+                <label for="custom_name">{{ T .Language "Custom Name" }} <span class="text-muted" style="font-weight: 400;">({{ T .Language "optional" }})</span></label>
+                <input type="text" id="custom_name" name="custom_name" placeholder="{{ T .Language "Leave blank to use original name" }}">
+            </div>
+            <div class="form-group">
+                <label for="url_path">{{ T .Language "Custom URL Path" }} <span class="text-muted" style="font-weight: 400;">({{ T .Language "optional" }})</span></label>
+                <input type="text" id="url_path" name="url_path" placeholder="{{ T .Language "e.g. 'cat44' for /f/cat44" }}">
+            </div>
+        </div>
+        
+        <!-- Storage Drive Selector (if drives configured) -->
+        {{if .EnabledDrives}}
+        <div class="form-group" style="margin-top: 1rem; margin-bottom: 0;">
+            <label for="drive_id">{{ T .Language "Storage Drive" }}</label>
+            <select id="drive_id" name="drive_id">
+                <option value="">{{ T $.Language "Default" }} ({{if .DefaultDriveName}}{{.DefaultDriveName}}{{else}}{{.Config.StorageType}}{{end}})</option>
+                {{range .EnabledDrives}}
+                <option value="{{.ID}}">{{.Name}}</option>
+                {{end}}
+            </select>
+        </div>
+        {{end}}
+
+        <!-- Privacy & Analytics Options -->
+        <div class="upload-options-grid">
+            <div class="upload-option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="is_private" name="is_private">
+                    <label for="is_private">{{ T .Language "Private File (Requires login to download)" }}</label>
+                </div>
+            </div>
+
+            <div class="upload-option-card">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="stats_enabled" name="stats_enabled">
+                    <label for="stats_enabled">{{ T .Language "Enable Statistics" }} <span class="text-muted" style="font-size: 0.85rem; font-weight: 400;">({{ T .Language "tracks reads & user agents" }})</span></label>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Form Actions -->
+        <div class="upload-actions-bar">
+            <button type="submit" id="uploadBtn" class="btn btn-primary">
+                <i class="bx bxs-cloud-upload"></i>
+                {{ T .Language "Upload" }}
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Recent Files Card -->
+<div class="card">
+    <div class="card-header">
+        <h2>{{ T .Language "Recent Files" }}</h2>
+        <a href="/files" class="btn btn-secondary btn-sm">{{ T .Language "View All" }}</a>
+    </div>
+    <div class="table-responsive">
+        <table>
+            <thead>
+                <tr>
+                    <th>{{ T .Language "Name" }}</th>
+                    <th>{{ T .Language "URL" }}</th>
+                    <th>{{ T .Language "Size" }}</th>
+                    <th>{{ T .Language "Privacy" }}</th>
+                    <th>{{ T .Language "Date" }}</th>
+                    <th style="text-align: right;">{{ T .Language "Actions" }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Files}}
+                <tr>
+                    <td>
+                        <div class="file-name-cell">
+                            <img src="/static/icons/bxs-file.svg" alt="{{ T $.Language "File" }}">
+                            {{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}
+                        </div>
+                    </td>
+                    <td><a href="/f/{{.URLPath}}" target="_blank">/f/{{.URLPath}}</a></td>
+                    <td>{{FormatSize .Size}}</td>
+                    <td>
+                        {{if .IsPrivate}}
+                        <span class="badge badge-private">{{ T $.Language "Private" }}</span>
+                        {{else}}
+                        <span class="badge badge-public">{{ T $.Language "Public" }}</span>
+                        {{end}}
+                    </td>
+                    <td>{{.UploadedAt.Format "Jan 02, 2006"}}</td>
+                    <td style="text-align: right;">
+                        <div class="actions" style="justify-content: flex-end;">
+                            <button type="button" class="icon-btn" data-file-id="{{.ID}}" data-file-name="{{if .CustomName}}{{.CustomName}}{{else}}{{.OriginalName}}{{end}}" onclick="openStatsModal(this)" title="{{if .StatsEnabled}}{{ T $.Language "View Statistics" }}{{else}}{{ T $.Language "Statistics Disabled" }}{{end}}" {{if not .StatsEnabled}}style="opacity: 0.45;"{{end}}>
+                                <img src="/static/icons/bx-data.svg" alt="{{ T $.Language "Stats" }}">
+                            </button>
+                            <a href="/edit?id={{.ID}}" class="icon-btn" title="{{ T $.Language "Edit" }}">
+                                <img src="/static/icons/bxs-edit.svg" alt="{{ T $.Language "Edit" }}">
+                            </a>
+                            <form method="POST" action="/delete" style="margin: 0; display: inline-block;" onsubmit="return confirm('{{ T $.Language "Are you sure you want to delete this file?" }}')">
+                                <input type="hidden" name="id" value="{{.ID}}">
+                                <button type="submit" class="icon-btn" title="{{ T $.Language "Delete" }}">
+                                    <img src="/static/icons/bxs-trash.svg" alt="{{ T $.Language "Delete" }}">
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6" class="text-center text-muted" style="padding: 2rem;">{{ T .Language "No files uploaded yet." }}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- File Statistics Modal -->
+<div id="fileStatsModal" class="modal-overlay" onclick="handleModalBackdropClick(event, 'fileStatsModal')">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="statsModalTitle" style="max-width: 540px;">
+        <div class="modal-header">
+            <div style="display: flex; align-items: center; gap: 0.5rem; overflow: hidden;">
+                <img src="/static/icons/bx-data.svg" alt="Stats" style="width: 20px; filter: brightness(0) invert(0.8);">
+                <h3 id="statsModalTitle" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin: 0;">{{ T .Language "File Reading Statistics" }}</h3>
+            </div>
+            <button type="button" class="modal-close" onclick="closeModal('fileStatsModal')" aria-label="{{ T .Language "Close" }}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+        <div class="modal-body" style="padding: 1.25rem 1.5rem;">
+            <!-- Loading -->
+            <div id="statsModalLoading" style="text-align: center; padding: 2.5rem 1rem;">
+                <img src="/static/icons/bx-loader-alt.svg" class="spin" style="width: 28px; filter: brightness(0) invert(0.8);">
+                <p class="text-muted" style="margin-top: 0.75rem; font-size: 0.9rem;">{{ T .Language "Loading statistics..." }}</p>
+            </div>
+            <!-- Disabled notice -->
+            <div id="statsModalDisabled" style="display: none;">
+                <div class="alert" style="background: var(--bg-base); border: 1px solid var(--border-color); color: var(--text-secondary); margin-bottom: 0; display: flex; align-items: flex-start; gap: 0.75rem;">
+                    <i class="bx bx-info-circle" style="font-size: 1.35rem; color: var(--accent-primary); flex-shrink: 0; margin-top: 0.1rem;"></i>
+                    <div>
+                        <strong style="color: var(--text-primary); display: block; margin-bottom: 0.25rem;">{{ T .Language "Statistics are currently disabled for this file." }}</strong>
+                        {{ T .Language "Enable statistics in file edit settings to start recording reads and user agent analytics." }}
+                    </div>
+                </div>
+            </div>
+            <!-- Stats Content -->
+            <div id="statsModalContent" style="display: none;">
+                <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.25rem;">
+                    <div class="stat-card" style="padding: 1rem;">
+                        <div class="stat-label" style="font-size: 0.75rem;">{{ T .Language "Total Reads" }}</div>
+                        <div class="stat-value" id="statsTotalReads" style="font-size: 1.5rem;">0</div>
+                    </div>
+                    <div class="stat-card" style="padding: 1rem;">
+                        <div class="stat-label" style="font-size: 0.75rem;">{{ T .Language "Last 24 Hours" }}</div>
+                        <div class="stat-value" id="statsReads24h" style="font-size: 1.5rem;">0</div>
+                    </div>
+                    <div class="stat-card" style="padding: 1rem;">
+                        <div class="stat-label" style="font-size: 0.75rem;">{{ T .Language "Last Read" }}</div>
+                        <div class="stat-value" id="statsLastRead" style="font-size: 0.95rem; line-height: 1.3; font-weight: 600;">{{ T .Language "Never" }}</div>
+                    </div>
+                </div>
+
+                <h4 style="font-size: 0.875rem; font-weight: 600; margin-bottom: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary);">
+                    {{ T .Language "User Agent Breakdown" }}
+                </h4>
+
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <!-- Mobile -->
+                    <div class="ua-stat-row">
+                        <div class="ua-stat-header">
+                            <span class="ua-stat-label">
+                                <span class="device-icon device-icon-mobile"></span>
+                                {{ T .Language "Mobile Devices" }}
+                            </span>
+                            <span class="ua-stat-val" id="statsMobileVal">0 (0.0%)</span>
+                        </div>
+                        <div class="ua-bar-bg"><div class="ua-bar-fill" id="statsMobileBar" style="background: #3b82f6; width: 0%;"></div></div>
+                    </div>
+
+                    <!-- PC -->
+                    <div class="ua-stat-row">
+                        <div class="ua-stat-header">
+                            <span class="ua-stat-label">
+                                <span class="device-icon device-icon-desktop"></span>
+                                {{ T .Language "PC / Desktop" }}
+                            </span>
+                            <span class="ua-stat-val" id="statsPCVal">0 (0.0%)</span>
+                        </div>
+                        <div class="ua-bar-bg"><div class="ua-bar-fill" id="statsPCBar" style="background: #10b981; width: 0%;"></div></div>
+                    </div>
+
+                    <!-- Tablet -->
+                    <div class="ua-stat-row">
+                        <div class="ua-stat-header">
+                            <span class="ua-stat-label">
+                                <span class="device-icon device-icon-tablet"></span>
+                                {{ T .Language "Tablets" }}
+                            </span>
+                            <span class="ua-stat-val" id="statsTabletVal">0 (0.0%)</span>
+                        </div>
+                        <div class="ua-bar-bg"><div class="ua-bar-fill" id="statsTabletBar" style="background: #8b5cf6; width: 0%;"></div></div>
+                    </div>
+
+                    <!-- Bots -->
+                    <div class="ua-stat-row">
+                        <div class="ua-stat-header">
+                            <span class="ua-stat-label">
+                                <span class="device-icon device-icon-bot"></span>
+                                {{ T .Language "Bots & Crawlers" }}
+                            </span>
+                            <span class="ua-stat-val" id="statsBotVal">0 (0.0%)</span>
+                        </div>
+                        <div class="ua-bar-bg"><div class="ua-bar-fill" id="statsBotBar" style="background: #f59e0b; width: 0%;"></div></div>
+                    </div>
+
+                    <!-- Uncategorized -->
+                    <div class="ua-stat-row">
+                        <div class="ua-stat-header">
+                            <span class="ua-stat-label">
+                                <span class="device-icon device-icon-unknown"></span>
+                                {{ T .Language "Uncategorized Requests" }}
+                            </span>
+                            <span class="ua-stat-val" id="statsUnknownVal">0 (0.0%)</span>
+                        </div>
+                        <div class="ua-bar-bg"><div class="ua-bar-fill" id="statsUnknownBar" style="background: #6b7280; width: 0%;"></div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.75rem;">
+            <a href="#" id="statsEditFileLink" class="btn btn-secondary btn-sm">
+                <i class="bx bxs-edit"></i>
+                {{ T .Language "Edit File" }}
+            </a>
+            <button type="button" class="btn btn-primary btn-sm" onclick="closeModal('fileStatsModal')">{{ T .Language "Close" }}</button>
+        </div>
+    </div>
+</div>
+
+<!-- Dashboard JavaScript -->
+<script>
+    // Modal Management & Keyboard Listeners
+    function openModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (!modal) return;
+        modal.classList.remove('active');
+        if (!document.querySelector('.modal-overlay.active')) {
+            document.body.style.overflow = '';
+        }
+    }
+
+    function handleModalBackdropClick(event, modalId) {
+        if (event.target.id === modalId) {
+            closeModal(modalId);
+        }
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            const activeModal = document.querySelector('.modal-overlay.active');
+            if (activeModal) {
+                closeModal(activeModal.id);
+            }
+        }
+    });
+
+    // File Reading Statistics Loader
+    async function openStatsModal(btnOrId, name) {
+        let id, fileName;
+        if (typeof btnOrId === 'object' && btnOrId !== null) {
+            id = btnOrId.getAttribute('data-file-id');
+            fileName = btnOrId.getAttribute('data-file-name');
+        } else {
+            id = btnOrId;
+            fileName = name || '';
+        }
+
+        const titleEl = document.getElementById('statsModalTitle');
+        const editLink = document.getElementById('statsEditFileLink');
+        const loadingEl = document.getElementById('statsModalLoading');
+        const disabledEl = document.getElementById('statsModalDisabled');
+        const contentEl = document.getElementById('statsModalContent');
+
+        titleEl.textContent = fileName || '{{ T .Language "File Reading Statistics" }}';
+        titleEl.title = fileName || '';
+        editLink.href = `/edit?id=${id}`;
+
+        loadingEl.style.display = 'block';
+        loadingEl.innerHTML = '<img src="/static/icons/bx-loader-alt.svg" class="spin" style="width: 28px; filter: brightness(0) invert(0.8);"><p class="text-muted" style="margin-top: 0.75rem; font-size: 0.9rem;">{{ T .Language "Loading statistics..." }}</p>';
+        disabledEl.style.display = 'none';
+        contentEl.style.display = 'none';
+
+        openModal('fileStatsModal');
+
+        try {
+            const res = await fetch(`/api/files/stats?id=${id}`);
+            if (!res.ok) throw new Error('{{ T .Language "Failed to load statistics" }}');
+            const data = await res.json();
+
+            loadingEl.style.display = 'none';
+
+            if (!data.stats_enabled) {
+                disabledEl.style.display = 'block';
+                return;
+            }
+
+            contentEl.style.display = 'block';
+            document.getElementById('statsTotalReads').textContent = (data.total_reads || 0).toLocaleString();
+            document.getElementById('statsReads24h').textContent = (data.reads_24h || 0).toLocaleString();
+            document.getElementById('statsLastRead').textContent = data.last_read_formatted || '{{ T .Language "Never" }}';
+
+            const setUARow = (valId, barId, stat) => {
+                const count = stat ? (stat.count || 0) : 0;
+                const pct = stat ? (stat.percentage || 0) : 0;
+                document.getElementById(valId).textContent = `${count} (${pct.toFixed(1)}%)`;
+                document.getElementById(barId).style.width = `${Math.min(100, Math.max(0, pct))}%`;
+            };
+
+            setUARow('statsMobileVal', 'statsMobileBar', data.mobile);
+            setUARow('statsPCVal', 'statsPCBar', data.pc);
+            setUARow('statsTabletVal', 'statsTabletBar', data.tablet);
+            setUARow('statsBotVal', 'statsBotBar', data.bots);
+            setUARow('statsUnknownVal', 'statsUnknownBar', data.unknown);
+
+        } catch (err) {
+            loadingEl.innerHTML = `<p style="color: var(--error); margin: 1rem 0;">${err.message}</p>`;
+        }
+    }
+
+    // Drag & Drop File Input Handlers
+    const uploadForm = document.getElementById('uploadForm');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const progressStatus = document.getElementById('progressStatus');
+    const fileInput = document.getElementById('file');
+    const fileNameDisplay = document.getElementById('fileNameDisplay');
+    const dropZone = document.getElementById('dropZone');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar');
+
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) {
+            fileNameDisplay.textContent = '{{ T .Language "Selected" }}: ' + e.target.files[0].name + ' (' + Math.round(e.target.files[0].size/1024) + ' KB)';
+        } else {
+            fileNameDisplay.textContent = '';
+        }
+    });
+
+    dropZone.addEventListener('click', (e) => {
+        if (e.target !== fileInput && e.target.tagName !== 'BUTTON') {
+            fileInput.click();
+        }
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+    });
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('dragover');
+        if (e.dataTransfer.files.length) {
+            fileInput.files = e.dataTransfer.files;
+            fileInput.dispatchEvent(new Event('change'));
+        }
+    });
+
+    // File Upload Form Submission (Regular & Chunked)
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!fileInput.files.length) return;
+
+        const file = fileInput.files[0];
+        const customName = document.getElementById('custom_name').value;
+        const urlPath = document.getElementById('url_path').value;
+        const isPrivate = document.getElementById('is_private').checked;
+        const statsEnabled = document.getElementById('stats_enabled').checked;
+        const driveSelect = document.getElementById('drive_id');
+        const driveId = driveSelect ? driveSelect.value : '';
+
+        const maxUploadSize = {{.Config.MaxUploadSizeMB}} * 1024 * 1024;
+        const chunkThreshold = {{.Config.ChunkThresholdMB}} * 1024 * 1024;
+        const chunkSize = {{.Config.ChunkSizeMB}} * 1024 * 1024;
+
+        if (maxUploadSize > 0 && file.size > maxUploadSize) {
+            alert('{{ T .Language "File is too large. Maximum size is" }} ' + {{.Config.MaxUploadSizeMB}} + ' MB');
+            return;
+        }
+
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = '<img src="/static/icons/bx-loader-alt.svg" class="spin" style="width:16px;"> {{ T .Language "Uploading..." }}';
+        progressContainer.style.display = 'block';
+
+        if (file.size > chunkThreshold) {
+            // Chunked upload
+            progressStatus.innerText = '{{ T .Language "Initializing..." }}';
+            progressBar.style.width = '5%';
+            
+            try {
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                
+                const initRes = await fetch('/api/upload/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        file_name: file.name,
+                        total_size: file.size,
+                        total_chunks: totalChunks,
+                        is_private: isPrivate,
+                        stats_enabled: statsEnabled,
+                        custom_name: customName,
+                        url_path: urlPath,
+                        drive_id: driveId,
+                    })
+                });
+                
+                if (!initRes.ok) throw new Error(await initRes.text());
+                const { upload_id } = await initRes.json();
+                
+                for (let i = 0; i < totalChunks; i++) {
+                    progressStatus.innerText = '{{ T .Language "Uploading chunk" }} ' + (i + 1) + ' {{ T .Language "of" }} ' + totalChunks + '...';
+                    progressBar.style.width = `${5 + (90 * (i / totalChunks))}%`;
+                    
+                    const start = i * chunkSize;
+                    const end = Math.min(start + chunkSize, file.size);
+                    const chunk = file.slice(start, end);
+                    
+                    const formData = new FormData();
+                    formData.append('upload_id', upload_id);
+                    formData.append('chunk_index', i);
+                    formData.append('chunk', chunk);
+                    
+                    const chunkRes = await fetch('/api/upload/chunk', { method: 'POST', body: formData });
+                    if (!chunkRes.ok) throw new Error('{{ T .Language "Failed to upload chunk" }} ' + i);
+                }
+                
+                progressStatus.innerText = '{{ T .Language "Finalizing upload..." }}';
+                progressBar.style.width = '98%';
+                
+                const completeRes = await fetch('/api/upload/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ upload_id: upload_id }),
+                });
+                
+                if (!completeRes.ok) throw new Error(await completeRes.text());
+                
+                progressBar.style.width = '100%';
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = '{{ T .Language "Error" }}: ' + err.message;
+                progressStatus.style.color = 'var(--error)';
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = '<i class="bx bxs-cloud-upload"></i> {{ T .Language "Upload" }}';
+            }
+        } else {
+            // Regular upload
+            progressStatus.innerText = '{{ T .Language "Uploading..." }}';
+            progressBar.style.width = '50%';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('custom_name', customName);
+            formData.append('url_path', urlPath);
+            if (driveId) formData.append('drive_id', driveId);
+            if (isPrivate) formData.append('is_private', 'on');
+            if (statsEnabled) formData.append('stats_enabled', 'on');
+            
+            try {
+                const res = await fetch('/upload', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error(await res.text());
+                progressBar.style.width = '100%';
+                window.location.reload();
+            } catch (err) {
+                progressStatus.innerText = '{{ T .Language "Error" }}: ' + err.message;
+                progressStatus.style.color = 'var(--error)';
+                uploadBtn.disabled = false;
+                uploadBtn.innerHTML = '<i class="bx bxs-cloud-upload"></i> {{ T .Language "Upload" }}';
+            }
+        }
+    });
+</script>
+
+<!-- Spinner Animation Styles -->
+<style>
+@keyframes spin { 100% { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; filter: brightness(0) invert(1); }
+</style>
+{{end}}

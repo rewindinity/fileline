@@ -1,295 +1,456 @@
 # FileLine
 
-FileLine is a lightweight self-hosted file host for quickly sharing files with public or private links.
+<p align="center">
+  <img src="web/static/logo.svg" alt="FileLine Logo" width="120" height="120">
+</p>
+
+<p align="center">
+  <strong>Fast, self-hosted, secure file sharing platform built with Go.</strong>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#running-with-docker-compose-recommended">Docker Compose</a> •
+  <a href="#running-with-systemd-linux-service">Systemd</a> •
+  <a href="#running-as-standalone-binary">Standalone Binary</a> •
+  <a href="#web-setup-wizard">Web Setup</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#storage--databases">Storage & Databases</a> •
+  <a href="#reverse-proxy-https">Reverse Proxy</a> •
+  <a href="#building-from-source">Build from Source</a>
+</p>
+
+---
 
 ## Features
 
-- Fast setup (single binary + `config.json`)
-- Public and private file links
-- 2FA (TOTP)
-- Passkey login (WebAuthn)
-- Password reset with one-time recovery code
-- Theme, accent color, and custom logo
-- Responsive UI (desktop/mobile/tablet)
-- Chunked upload for large files
-- Multi-drive storage: local disk (default), optional S3/FTP/SFTP drives
+- **🚀 Single Static Binary**: Zero runtime dependencies. HTML, CSS, JavaScript, and fonts are compiled directly into the binary via `embed.FS`.
+- **⚡ 3-Minute Web Setup Wizard**: No manual configuration files required on first boot. Configure everything right from your browser.
+- **🔒 Secure Authentication**: Hardware Passkeys (**WebAuthn / FIDO2**), **TOTP 2FA** (Google Authenticator, Bitwarden), and emergency recovery codes.
+- **📦 Dual Database Support**: Embedded **SQLite** with Write-Ahead Logging (zero setup) or production **PostgreSQL**.
+- **📁 Flexible Storage**: Store files locally or connect to S3-compatible cloud storage (**Cloudflare R2**, **MinIO**, **AWS S3**, **Wasabi**, **Backblaze B2**).
+- **🧩 Resumable Chunked Uploads**: Transfer multi-gigabyte files reliably with client-side chunking without browser or server memory bloat.
+- **👥 Multi-User & Quotas**: Create subuser accounts with custom storage quotas and drive permissions.
+- **🎨 Rich Media Embeds**: Shareable links generate rich preview cards for Discord, Twitter/X, and Telegram with customizable themes and accents.
+- **🛡️ Bot Privacy Protection**: Automatic bot indexing defense (`noindex, nofollow`, `robots.txt`) to keep shares private.
 
-## Supported databases
+---
 
-| Database       | Best use case                                   |
-| -------------- | ----------------------------------------------- |
-| **SQLite**     | Small/single-node deployments, easiest startup  |
-| **PostgreSQL** | Production workloads, higher write concurrency  |
-| **MongoDB**    | Production workloads, flexible document storage |
+## Running with Docker Compose (Recommended)
 
-## Project structure
+Docker Compose is the easiest and quickest way to deploy FileLine.
 
-```text
-fileline/
-├── main.go                 # Server entrypoint and route wiring
-├── auth/                   # Sessions, CSRF, rate limiting, upload limiting
-├── database/               # Database backends (sqlite, postgresql, mongodb) + config loading
-├── handlers/               # HTTP handlers (setup, auth, files, settings, APIs)
-├── models/                 # Shared data models and constants
-├── templates/              # HTML templates
-├── static/                 # CSS, JS, fonts, logos
-├── storage/                # Storage backends (local, S3, FTP, SFTP)
-├── translations/           # UI translations (en, pl, de, fr, cz)
-├── uploads/                # Uploaded files (runtime data)
-└── chunks/                 # Temporary chunk-upload data (runtime data)
+### 1. Create `docker-compose.yml`
+
+```yaml
+services:
+  fileline:
+    image: ghcr.io/rewindinity/fileline:latest
+    container_name: fileline
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./chunks:/app/chunks
 ```
 
-## Running FileLine
-
-### Option 1: Use prebuilt binaries
-
-Download from [Releases](https://github.com/rewindinity/fileline/releases), then run:
-
-```bash
-# Linux / macOS
-chmod +x fileline-linux-amd64
-./fileline-linux-amd64
-
-# Windows
-fileline-windows-amd64.exe
-```
-
-### Option 2: Build from source
-
-Requirements: Go (version from `go.mod`)
-
-```bash
-git clone https://github.com/rewindinity/fileline.git
-cd fileline
-go build -o fileline .
-./fileline
-
-# Enable verbose request/debug logging
-./fileline --debug
-```
-
-### Option 3: Docker (public image)
-
-Public image:
-
-`ghcr.io/rewindinity/fileline:latest`
-
-```bash
-docker pull ghcr.io/rewindinity/fileline:latest
-docker run -d \
-  --name fileline \
-  -p 8080:8080 \
-  -v "$(pwd)/fileline-data:/app" \
-  --restart unless-stopped \
-  ghcr.io/rewindinity/fileline:latest
-```
-
-### Option 4: Docker Compose
-
-Use the public image:
+### 2. Start the Service
 
 ```bash
 docker compose up -d
 ```
 
-This stores runtime data in `./fileline-data` (including `config.json`, `database.sqlite`, `uploads/`, and `chunks/`).
+### 3. Retrieve Your Setup Token
 
-For local development with local source files mounted:
+Check the container logs to find the one-time setup token:
 
 ```bash
-docker compose -f docker-compose-dev.yml up
+docker compose logs -f
 ```
 
-After startup, open:
+Navigate to `http://<SERVER_IP>:8080/setup` to finish onboarding.
 
-`http://localhost:8080/setup`
+---
 
-## Configuration (`config.json`)
+## Running with Systemd (Linux Service)
 
-`config.json` is created automatically on first run with defaults:
+For bare-metal servers or Linux VPS instances, running FileLine as a standard systemd service is straightforward.
+
+### 1. Create a System User & Directories
+
+```bash
+# Create a dedicated system user
+sudo useradd -r -s /usr/sbin/nologin -d /var/lib/fileline fileline
+
+# Create application directories
+sudo mkdir -p /var/lib/fileline/data /var/lib/fileline/uploads /var/lib/fileline/chunks
+sudo chown -R fileline:fileline /var/lib/fileline
+
+# Place the compiled binary
+sudo cp fileline /usr/local/bin/fileline
+sudo chmod 755 /usr/local/bin/fileline
+```
+
+### 2. Create the Service File
+
+Create `/etc/systemd/system/fileline.service`:
+
+```ini
+[Unit]
+Description=FileLine File Sharing Service
+After=network.target
+
+[Service]
+Type=simple
+User=fileline
+Group=fileline
+WorkingDirectory=/var/lib/fileline
+ExecStart=/usr/local/bin/fileline -config /var/lib/fileline/data/config.json
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 3. Enable and Start
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now fileline
+```
+
+Check the logs to grab your one-time setup token:
+
+```bash
+journalctl -u fileline -f
+```
+
+---
+
+## Running as Standalone Binary
+
+For local testing or quick evaluation:
+
+```bash
+# 1. Download release binary (Linux x86_64 example)
+curl -LO https://github.com/rewindinity/fileline/releases/latest/download/fileline-linux-amd64
+chmod +x fileline-linux-amd64
+mv fileline-linux-amd64 fileline
+
+# 2. Run
+./fileline
+```
+
+FileLine will automatically generate default directories, encryption keys, and print the setup URL to your console.
+
+---
+
+## Web Setup Wizard
+
+Once FileLine is started (via Docker, Systemd, or binary):
+
+1. Open `http://localhost:8080/setup` (or `http://<YOUR_SERVER_IP>:8080/setup`).
+2. Paste the **One-time setup token** printed in your console or container logs.
+3. Choose your database (**SQLite** is ready out of the box; PostgreSQL is also supported).
+4. Select your storage type (**Local Disk** or S3 Object Storage).
+5. Set your administrator username and password, then click **Complete Setup**.
+6. Done! Log in and start sharing files.
+
+---
+
+## Configuration
+
+FileLine resolves its configuration from `data/config.json` (or via `-config <path>` / `FL_CONFIG_PATH`). Most settings can be adjusted through the web admin panel under **Settings**, or configured directly in the JSON file or via environment variables.
+
+### Basic `config.json`
+
+For most standalone or single-user instances:
 
 ```json
 {
   "port": 8080,
-  "database_type": "sqlite"
+  "domain": "files.example.com",
+  "storage_type": "local",
+  "local_storage_path": "./uploads",
+  "chunks_dir": "./chunks",
+  "max_upload_size_mb": 2048,
+  "theme": "dark-blue",
+  "accent": "blue",
+  "default_language": "en"
 }
 ```
 
-### Common fields
+### Advanced `config.json`
 
-| Field             | Type   | Default  | Notes                                           |
-| ----------------- | ------ | -------- | ----------------------------------------------- |
-| `port`            | int    | `8080`   | HTTP/HTTPS listen port                          |
-| `domain`          | string | empty    | Public domain; recommended for passkeys and TLS |
-| `ssl_enabled`     | bool   | `false`  | Enable built-in HTTPS                           |
-| `cert_base64`     | string | empty    | Base64-encoded PEM certificate                  |
-| `key_base64`      | string | empty    | Base64-encoded PEM private key                  |
-| `is_behind_proxy` | bool   | `false`  | Trust `X-Real-IP` / `X-Forwarded-For` headers   |
-| `database_type`   | string | `sqlite` | `sqlite`, `postgresql`, or `mongodb`            |
-
-### Database fields by backend
-
-| Backend      | Required fields                     |
-| ------------ | ----------------------------------- |
-| `sqlite`     | none                                |
-| `postgresql` | `pg_host`, `pg_user`, `pg_database` |
-| `mongodb`    | `mongo_url`                         |
-
-`postgresql` field format:
-
-- `pg_host`: `host:port` (example: `localhost:5432`)
-- `pg_user`: `user:password` (example: `fileline:secret`)
-- `pg_database`: database name (example: `fileline`)
-
-### Database configuration examples
-
-#### SQLite
+For production environments, reverse proxies, S3 cloud storage, multi-drive arrays, and performance tuning:
 
 ```json
 {
+  "db_type": "sqlite",
+  "sqlite_url": "data/database.sqlite",
+  "postgres_url": "",
   "port": 8080,
-  "database_type": "sqlite"
+  "domain": "files.example.com",
+  "ssl": false,
+  "ssl_cert_path": "",
+  "ssl_key_path": "",
+  "reverse_proxy": true,
+  "trusted_proxies": ["127.0.0.1/32", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  "allow_insecure_http_dev": false,
+  "storage_type": "local",
+  "local_storage_path": "./uploads",
+  "chunks_dir": "./chunks",
+  "max_upload_size_mb": 4096,
+  "chunk_threshold_mb": 50,
+  "chunk_size_mb": 10,
+  "s3_endpoint": "",
+  "s3_region": "",
+  "s3_bucket": "",
+  "s3_access_key": "",
+  "s3_secret_key": "",
+  "s3_use_ssl": true,
+  "drives": [
+    {
+      "id": "nvme_drive",
+      "name": "Fast Local NVMe",
+      "type": "local",
+      "enabled": true,
+      "local_storage_path": "/mnt/nvme/uploads"
+    },
+    {
+      "id": "r2_cold",
+      "name": "Cloudflare R2 Cold Storage",
+      "type": "s3",
+      "enabled": true,
+      "s3_endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+      "s3_region": "auto",
+      "s3_bucket": "archive-bucket",
+      "s3_access_key": "YOUR_R2_KEY",
+      "s3_secret_key": "YOUR_R2_SECRET",
+      "s3_use_ssl": true
+    }
+  ],
+  "theme": "dark-blue",
+  "accent": "blue",
+  "custom_accent_hex": "#2563eb",
+  "custom_logo": "/static/logo.svg",
+  "default_language": "en",
+  "block_indexing": true,
+  "gzip_enabled": true,
+  "minify_responses": true,
+  "debug": false
 }
 ```
 
-SQLite data is stored in `database.sqlite` in the working directory.
+### Full Configuration Reference
 
-#### PostgreSQL
+| Parameter            | Type       | Default                  | Description                                                                                          |
+| :------------------- | :--------- | :----------------------- | :--------------------------------------------------------------------------------------------------- |
+| `db_type`            | `string`   | `"sqlite"`               | Database backend: `"sqlite"` or `"postgres"`. When empty, boots into setup wizard.                   |
+| `sqlite_url`         | `string`   | `"data/database.sqlite"` | Path to SQLite database file. Automatically uses WAL mode.                                           |
+| `postgres_url`       | `string`   | `""`                     | PostgreSQL connection string (e.g. `postgres://user:pass@host:5432/db?sslmode=disable`).             |
+| `port`               | `integer`  | `8080`                   | Port the HTTP(S) server listens on.                                                                  |
+| `domain`             | `string`   | `"localhost"`            | Canonical domain or IP. Required for WebAuthn/Passkey registration and share link generation.        |
+| `ssl`                | `boolean`  | `false`                  | Enables built-in TLS listener (requires `ssl_cert_path` and `ssl_key_path`).                         |
+| `ssl_cert_path`      | `string`   | `""`                     | Path to TLS certificate file (`fullchain.pem`).                                                      |
+| `ssl_key_path`       | `string`   | `""`                     | Path to TLS private key file (`privkey.pem`).                                                        |
+| `reverse_proxy`      | `boolean`  | `false`                  | Enables processing of `X-Forwarded-*` headers when placed behind Caddy, Nginx, or Traefik.           |
+| `trusted_proxies`    | `[]string` | `[]`                     | CIDR blocks of trusted reverse proxies. Prevents IP spoofing in brute-force rate limiters.           |
+| `storage_type`       | `string`   | `"local"`                | Primary storage backend: `"local"` or `"s3"`.                                                        |
+| `local_storage_path` | `string`   | `"./uploads"`            | Directory for stored files (sandboxed with Go 1.24+ `os.Root` to prevent path traversal).            |
+| `chunks_dir`         | `string`   | `"./chunks"`             | Directory used for temporary chunk assembly during large uploads.                                    |
+| `max_upload_size_mb` | `integer`  | `1024`                   | Maximum upload size in megabytes (`0` for unlimited).                                                |
+| `chunk_threshold_mb` | `integer`  | `50`                     | Files larger than this threshold are uploaded in chunks by the browser.                              |
+| `chunk_size_mb`      | `integer`  | `10`                     | Size of each upload chunk in megabytes.                                                              |
+| `s3_endpoint`        | `string`   | `""`                     | S3 API endpoint URL (for Cloudflare R2, MinIO, AWS S3, Wasabi, B2).                                  |
+| `s3_region`          | `string`   | `""`                     | S3 region (e.g. `auto`, `us-east-1`, `eu-central-1`).                                                |
+| `s3_bucket`          | `string`   | `""`                     | S3 bucket name.                                                                                      |
+| `s3_access_key`      | `string`   | `""`                     | S3 access key ID.                                                                                    |
+| `s3_secret_key`      | `string`   | `""`                     | S3 secret access key.                                                                                |
+| `s3_use_ssl`         | `boolean`  | `true`                   | Whether to communicate with S3 over HTTPS.                                                           |
+| `drives`             | `[]object` | `[]`                     | Secondary storage drives. Subusers can be allocated to specific drives with quotas.                  |
+| `theme`              | `string`   | `"dark-blue"`            | Visual theme: `"dark-blue"`, `"dark"`, `"light"`, `"purple"`, `"emerald"`, `"nord"`.                 |
+| `accent`             | `string`   | `"blue"`                 | UI accent color name.                                                                                |
+| `custom_accent_hex`  | `string`   | `"#2563eb"`              | Custom HEX accent color code.                                                                        |
+| `custom_logo`        | `string`   | `"/static/logo.svg"`     | Path or URL to custom logo image.                                                                    |
+| `default_language`   | `string`   | `"en"`                   | Default interface language (`"en"`, `"pl"`, `"de"`, `"fr"`, `"es"`, `"it"`, `"nl"`, `"cz"`, `"sk"`). |
+| `block_indexing`     | `boolean`  | `true`                   | Emits `X-Robots-Tag: noindex, nofollow` and serves a restrictive `robots.txt` to block web crawlers. |
+| `gzip_enabled`       | `boolean`  | `true`                   | Compresses HTTP responses with gzip.                                                                 |
+| `minify_responses`   | `boolean`  | `true`                   | Dynamically minifies HTML, CSS, and JS output for faster loading.                                    |
+| `debug`              | `boolean`  | `false`                  | Enables verbose HTTP debug and audit logging.                                                        |
+
+### Environment Variables Matrix
+
+All settings can be overridden via environment variables (or configured purely with env vars using `FL_ENV_ONLY=true`):
+
+| Environment Variable    | Equivalent JSON Key  | Description                                                                |
+| :---------------------- | :------------------- | :------------------------------------------------------------------------- |
+| `FL_CONFIG_PATH`        | _(none)_             | Custom path to configuration file (default: `data/config.json`)            |
+| `FL_ENV_ONLY`           | _(none)_             | When `true`, ignores `config.json` and configures exclusively via env vars |
+| `FL_PORT`               | `port`               | HTTP listen port                                                           |
+| `FL_DOMAIN`             | `domain`             | Canonical domain name                                                      |
+| `FL_DB_TYPE`            | `db_type`            | `"sqlite"` or `"postgres"`                                                 |
+| `FL_SQLITE_URL`         | `sqlite_url`         | SQLite database file path                                                  |
+| `FL_POSTGRES_URL`       | `postgres_url`       | PostgreSQL connection string                                               |
+| `FL_STORAGE_TYPE`       | `storage_type`       | `"local"` or `"s3"`                                                        |
+| `FL_LOCAL_STORAGE_PATH` | `local_storage_path` | Local upload storage path                                                  |
+| `FL_CHUNKS_DIR`         | `chunks_dir`         | Chunk staging directory                                                    |
+| `FL_MAX_UPLOAD_SIZE_MB` | `max_upload_size_mb` | Maximum allowed upload size (MB)                                           |
+| `FL_CHUNK_THRESHOLD_MB` | `chunk_threshold_mb` | Chunking threshold (MB)                                                    |
+| `FL_CHUNK_SIZE_MB`      | `chunk_size_mb`      | Upload chunk size (MB)                                                     |
+| `FL_REVERSE_PROXY`      | `reverse_proxy`      | Enable reverse proxy mode (`true`/`false`)                                 |
+| `FL_TRUSTED_PROXIES`    | `trusted_proxies`    | Comma-separated list of trusted proxy CIDRs                                |
+| `FL_SSL`                | `ssl`                | Enable built-in TLS (`true`/`false`)                                       |
+| `FL_SSL_CERT_PATH`      | `ssl_cert_path`      | TLS certificate path                                                       |
+| `FL_SSL_KEY_PATH`       | `ssl_key_path`       | TLS private key path                                                       |
+| `FL_JWT_KEY`            | `jwt_key`            | 256-bit secret for signing session JWT tokens                              |
+| `FL_DATA_KEY`           | `data_key`           | 256-bit AES-GCM secret for encrypting 2FA secrets at rest                  |
+| `FL_BLOCK_INDEXING`     | `block_indexing`     | Block search engine indexing (`true`/`false`)                              |
+| `FL_DEBUG`              | `debug`              | Verbose debug logging (`true`/`false`)                                     |
+
+### CLI Flags
+
+| Flag             | Shorthand   | Description                                                                             |
+| :--------------- | :---------- | :-------------------------------------------------------------------------------------- |
+| `-config <path>` | `-c <path>` | Path to configuration file (default: `data/config.json`)                                |
+| `-envonly`       | `-env-only` | Rely strictly on environment variables, ignoring `config.json`                          |
+| `-healthcheck`   | _(none)_    | Queries `/health` and returns exit code `0` (healthy) or `1` (for Docker health checks) |
+| `-debug`         | `-d`        | Enable verbose HTTP debug output and security audit logs                                |
+| `-version`       | `-v`        | Print the FileLine version and exit                                                     |
+
+---
+
+## Storage & Databases
+
+### S3-Compatible Object Storage
+
+FileLine natively supports S3 providers like Cloudflare R2, MinIO, or AWS S3. You can configure them during the setup wizard or via `config.json`:
 
 ```json
 {
-  "port": 8080,
-  "database_type": "postgresql",
-  "pg_host": "localhost:5432",
-  "pg_user": "fileline:secret",
-  "pg_database": "fileline"
+  "storage_type": "s3",
+  "s3_endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+  "s3_region": "auto",
+  "s3_bucket": "my-bucket",
+  "s3_access_key": "YOUR_ACCESS_KEY",
+  "s3_secret_key": "YOUR_SECRET_KEY",
+  "s3_use_ssl": true
 }
 ```
 
-#### MongoDB
+### PostgreSQL Database
+
+For larger teams or multi-node setups, FileLine supports PostgreSQL:
 
 ```json
 {
-  "port": 8080,
-  "database_type": "mongodb",
-  "mongo_url": "mongodb://localhost:27017/fileline"
+  "db_type": "postgres",
+  "postgres_url": "postgres://user:password@localhost:5432/fileline?sslmode=disable"
 }
 ```
 
-With authentication:
+Migrations are executed automatically on application launch.
+
+---
+
+## Reverse Proxy (HTTPS)
+
+When exposing FileLine to the internet, putting it behind a reverse proxy provides HTTPS encryption.
+
+### Option A: Caddy
+
+Caddy automatically provisions and renews SSL certificates:
+
+```caddy
+files.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+In `data/config.json`:
 
 ```json
 {
-  "port": 8080,
-  "database_type": "mongodb",
-  "mongo_url": "mongodb://fileline:secret@localhost:27017/fileline?authSource=admin"
+  "domain": "files.example.com",
+  "reverse_proxy": true,
+  "trusted_proxies": ["127.0.0.1/32"]
 }
 ```
 
-### Reverse proxy setup example
-
-```json
-{
-  "port": 8080,
-  "ssl_enabled": false,
-  "is_behind_proxy": true,
-  "database_type": "sqlite"
-}
-```
-
-Example nginx config:
+### Option B: Nginx
 
 ```nginx
 server {
-    listen 443 ssl;
+    listen 80;
+    server_name files.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
     server_name files.example.com;
 
-    ssl_certificate     /etc/letsencrypt/live/files.example.com/fullchain.pem;
+    ssl_certificate /etc/letsencrypt/live/files.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/files.example.com/privkey.pem;
 
-    client_max_body_size 10G;
+    client_max_body_size 0;
 
     location / {
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host $host;
-        proxy_set_header   X-Real-IP $remote_addr;
-        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+
+        # Disable buffering for chunked streaming
+        proxy_request_buffering off;
+        proxy_buffering off;
     }
 }
 ```
 
-### Built-in HTTPS (without reverse proxy)
+---
 
-```json
-{
-  "port": 443,
-  "domain": "files.example.com",
-  "ssl_enabled": true,
-  "cert_base64": "<base64-pem-cert>",
-  "key_base64": "<base64-pem-key>",
-  "is_behind_proxy": false,
-  "database_type": "sqlite"
-}
-```
+## Building from Source
 
-## Storage drives
+### Prerequisites
 
-FileLine always includes a local `local` drive (stored in `uploads/`).
-
-You can add optional external drives in **Settings -> Storage Drives**:
-
-- S3 (`s3-main`)
-- FTP (`ftp-main`)
-- SFTP (`sftp-main`)
-
-When at least one external drive is configured, the upload form shows an **Upload Drive** selector.
-All uploads/downloads/deletes are proxied through FileLine; links remain `/f/<link>` regardless of backend.
-
-## Custom translations
-
-Translations are embedded into the binary from `translations/*.json` (`go:embed`), so adding a new language requires a source rebuild.
-
-1. Copy `translations/en.json` to a new file like `translations/de.json`.
-2. Keep the same JSON structure and keys, and translate only the values for example:
-   `"uploading": "your translation",`
-3. Add a display label for the language itself within the settings object into all translation files:
-
-```
-"settings": {
-  "language_de": "Deutsch"
-}
-```
-
-4. You need to inform the Go backend about the new file and allow the new language code.
-
-- `translations/i18n.go`: Add the new filename to the files slice inside the _Load()_ function:
-  `files := []string{"en.json", "pl.json", "de.json", "fr.json", "cz.json"}`
-- Validation: Add the language code (e.g., "de") to the validLangs slice in both:
-  - `handlers/setup.go`
-  - `handlers/settings.go`
-
-5. Update UI Templates (Frontend)
-   Add the new language option to the selection menus in your HTML templates.
-
-- `templates/setup.html`:
-  - `<option value="de" {{if eq .Lang "de"}}selected{{end}}>Deutsch</option>`
-- `templates/settings.html`:
-  - `<option value="de" {{if eq .Settings.Language "de"}}selected{{end}}> {{if .T.settings}}{{index .T.settings "language_de"}}{{else}}Deutsch{{end}} </option>`
-
-6. Rebuild and restart:
+- **Go 1.24** or newer
+- Git
 
 ```bash
-go build -o fileline .
-./fileline
+git clone https://github.com/rewindinity/fileline.git
+cd fileline
+
+# Compile for your current host
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fileline ./cmd/server
 ```
 
-## TODO
+### Cross-Compilation Examples
 
-- [ ] Fix issues with passkey login behind reserve proxy
-- [ ] Migrate from `go.mongodb.org/mongo-driver`(deprecated) to `go.mongodb.org/mongo-driver/v2`
+You can cross-compile FileLine for all supported targets without external toolchains:
 
-## Credits
+```bash
+# Linux (amd64)
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fileline-linux-amd64 ./cmd/server
 
-- Font (Outfit) - [fonts.google.com](https://fonts.google.com)
-- Icons - [boxicons v2](https://v2.boxicons.com)
+# Linux (arm64 - Raspberry Pi, ARM VPS)
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fileline-linux-arm64 ./cmd/server
+
+# Windows (amd64)
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fileline-windows-amd64.exe ./cmd/server
+
+# macOS (Apple Silicon arm64 - M1/M2/M3/M4)
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o fileline-macos-arm64 ./cmd/server
+```
+
+---
+
+## License
+
+This project is open-source software licensed under the [MIT License](LICENSE).

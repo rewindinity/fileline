@@ -4,33 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  build:
-    name: Build (${{ matrix.asset_name }})
-    runs-on: ${{ matrix.runner }}
-
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            asset_name: linux-amd64
-
-          - runner: ubuntu-latest
-            goos: linux
-            goarch: arm64
-            asset_name: linux-arm64
-            cc: aarch64-linux-gnu-gcc
-
-          - runner: macos-latest
-            goos: darwin
-            goarch: arm64
-            asset_name: macos-arm
+  verify:
+    name: Verify (vet, staticcheck, race tests, govulncheck)
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
@@ -42,34 +25,124 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install ARM64 cross-compiler (Linux ARM64 only)
-        if: matrix.goarch == 'arm64' && matrix.goos == 'linux'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.6.1 ./...
+
+      - name: Run tests with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  build-binaries:
+    name: Build Binary (${{ matrix.asset_name }})
+    runs-on: ubuntu-latest
+    needs: verify
+
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            asset_name: linux-amd64
+
+          - goos: linux
+            goarch: arm64
+            asset_name: linux-arm64
+
+          - goos: windows
+            goarch: amd64
+            asset_name: windows-amd64
+
+          - goos: darwin
+            goarch: arm64
+            asset_name: macos-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-          CC: ${{ matrix.cc }}
+          CGO_ENABLED: 0
         run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+          fi
           go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
-            -o "fileline-${{ matrix.asset_name }}" \
-            .
+            -o "fileline-${{ matrix.asset_name }}${EXT}" \
+            ./cmd/server
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fileline-${{ matrix.asset_name }}
-          path: fileline-${{ matrix.asset_name }}
+          path: fileline-${{ matrix.asset_name }}*
           retention-days: 1
 
-  release:
-    name: Create Release
+  build-docker:
+    name: Build & Push Docker Image
     runs-on: ubuntu-latest
-    needs: build
+    needs: verify
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}},strict=false
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-binaries, build-docker]
 
     steps:
       - name: Download all artifacts
@@ -77,17 +150,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
-      - name: Generate checksums and build release body
-        id: checksums
-        working-directory: dist
-        run: |
-          echo "## SHA256 Checksums" > notes.md
-          echo "" >> notes.md
-          echo '```' >> notes.md
-          sha256sum fileline-* >> notes.md
-          echo '```' >> notes.md
-          echo "notes_path=$PWD/notes.md" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -97,6 +159,5 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
-          body_path: ${{ steps.checksums.outputs.notes_path }}
           files: |
             dist/fileline-*

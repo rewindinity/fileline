@@ -1,0 +1,177 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Feedback Alerts -->
+<div>
+    {{if .Error}}
+    <div class="alert alert-error">
+        <img src="/static/icons/bxs-error-circle.svg" alt="{{ T .Language "Error" }}" style="width: 20px; filter: brightness(0) saturate(100%) invert(35%) sepia(90%) saturate(3000%) hue-rotate(345deg) brightness(100%) contrast(100%);">
+        {{ T .Language .Error }}
+    </div>
+    {{end}}
+    
+    <!-- Initial Setup Wizard Form -->
+    <form method="POST" action="/setup">
+        {{if .RequireToken}}
+        <div class="form-group">
+            <label for="setup_token">{{ T .Language "Setup Token (printed in server logs on first boot)" }}</label>
+            <input type="password" id="setup_token" name="setup_token" value="{{.SetupToken}}" autocomplete="off" required>
+        </div>
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+        {{end}}
+
+        <!-- Database Configuration -->
+        {{if not .DBConfigured}}
+        <div class="form-group">
+            <label for="db_type">{{ T .Language "Database Type" }}</label>
+            <select id="db_type" name="db_type" onchange="toggleDBFields()">
+                <option value="sqlite">SQLite</option>
+                <option value="postgres">PostgreSQL</option>
+            </select>
+        </div>
+
+        <!-- Database: SQLite Configuration -->
+        <div id="sqlite_fields">
+            <div class="form-group">
+                <label for="sqlite_url">{{ T .Language "SQLite File Path" }}</label>
+                <input type="text" id="sqlite_url" name="sqlite_url" value="data/database.sqlite">
+            </div>
+        </div>
+
+        <!-- Database: PostgreSQL Configuration -->
+        <div id="postgres_fields" style="display: none;">
+            <div class="form-group">
+                <label for="pg_host">{{ T .Language "Host" }}</label>
+                <input type="text" id="pg_host" name="pg_host" value="localhost">
+            </div>
+            <div class="form-group">
+                <label for="pg_port">{{ T .Language "Port" }}</label>
+                <input type="text" id="pg_port" name="pg_port" value="5432">
+            </div>
+            <div class="form-group">
+                <label for="pg_user">{{ T .Language "User" }}</label>
+                <input type="text" id="pg_user" name="pg_user" value="postgres">
+            </div>
+            <div class="form-group">
+                <label for="pg_password">{{ T .Language "Password" }}</label>
+                <input type="password" id="pg_password" name="pg_password">
+            </div>
+            <div class="form-group">
+                <label for="pg_db">{{ T .Language "Database Name" }}</label>
+                <input type="text" id="pg_db" name="pg_db" value="fileline">
+            </div>
+            <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="pg_tls" name="pg_tls" {{if and .Config .Config.PostgresTLS}}checked{{end}}>
+                    <label for="pg_tls">{{ T .Language "Use TLS connection" }}</label>
+                </div>
+            </div>
+        </div>
+        {{else}}
+        <p class="text-muted text-center" style="color: var(--success);">{{ T .Language "Database configured via environment variables." }}</p>
+        {{end}}
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <!-- Storage Configuration -->
+        <h2>{{ T .Language "Storage Configuration" }}</h2>
+        <div class="form-group">
+            <label for="storage_type">{{ T .Language "Storage Type" }}</label>
+            <select id="storage_type" name="storage_type" onchange="toggleStorageFields()">
+                <option value="local">{{ T $.Language "Local Disk" }}</option>
+                <option value="s3">{{ T $.Language "S3 / Object Storage" }}</option>
+            </select>
+        </div>
+
+        <!-- Storage: Local Storage Settings -->
+        <div id="local_storage_fields">
+            <div class="form-group">
+                <label for="local_path">{{ T .Language "Uploads Path" }}</label>
+                <input type="text" id="local_path" name="local_path" value="./uploads">
+            </div>
+        </div>
+
+        <!-- Storage: S3 / Object Storage Settings -->
+        <div id="s3_storage_fields" style="display: none;">
+            <div class="form-group">
+                <label for="s3_endpoint">{{ T .Language "S3 Endpoint URL (e.g. s3.amazonaws.com)" }}</label>
+                <input type="text" id="s3_endpoint" name="s3_endpoint">
+            </div>
+            <div class="form-group">
+                <label for="s3_region">{{ T .Language "S3 Region (e.g. us-east-1)" }}</label>
+                <input type="text" id="s3_region" name="s3_region">
+            </div>
+            <div class="form-group">
+                <label for="s3_bucket">{{ T .Language "S3 Bucket Name" }}</label>
+                <input type="text" id="s3_bucket" name="s3_bucket">
+            </div>
+            <div class="form-group">
+                <label for="s3_access_key">{{ T .Language "Access Key" }}</label>
+                <input type="text" id="s3_access_key" name="s3_access_key">
+            </div>
+            <div class="form-group">
+                <label for="s3_secret_key">{{ T .Language "Secret Key" }}</label>
+                <input type="password" id="s3_secret_key" name="s3_secret_key">
+            </div>
+            <div class="form-group" style="margin-top: 1rem;">
+                <label for="s3_protocol">{{ T .Language "Protocol" }}</label>
+                <select id="s3_protocol" name="s3_protocol">
+                    <option value="https" selected>HTTPS</option>
+                    <option value="http">HTTP</option>
+                </select>
+            </div>
+            <div class="option-card" style="margin-top: 1.25rem; margin-bottom: 0;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="s3_skip_ssl_verify" name="s3_skip_ssl_verify">
+                    <label for="s3_skip_ssl_verify">{{ T .Language "Skip SSL certificate verification (e.g. self-signed certificates)" }}</label>
+                </div>
+            </div>
+        </div>
+
+        <hr style="border-color: var(--border-color); margin: 2rem 0;">
+
+        <!-- Admin Account -->
+        <h2>{{ T .Language "Admin Account" }}</h2>
+        <div class="form-group">
+            <label for="username">{{ T .Language "Admin Username" }}</label>
+            <input type="text" id="username" name="username" required>
+        </div>
+        <div class="form-group">
+            <label for="password">{{ T .Language "Admin Password" }}</label>
+            <input type="password" id="password" name="password" required>
+        </div>
+
+        <!-- Form Submit Action -->
+        <button type="submit" class="btn btn-primary btn-block">{{ T .Language "Complete Setup" }}</button>
+    </form>
+</div>
+
+{{if not .DBConfigured}}
+<script>
+// Database Fields Toggle (SQLite or PostgreSQL)
+function toggleDBFields() {
+    const type = document.getElementById('db_type').value;
+    if (type === 'sqlite') {
+        document.getElementById('sqlite_fields').style.display = 'block';
+        document.getElementById('postgres_fields').style.display = 'none';
+    } else {
+        document.getElementById('sqlite_fields').style.display = 'none';
+        document.getElementById('postgres_fields').style.display = 'block';
+    }
+}
+</script>
+{{end}}
+<script>
+// Storage Fields Toggle (Local or S3)
+function toggleStorageFields() {
+    const type = document.getElementById('storage_type').value;
+    if (type === 'local') {
+        document.getElementById('local_storage_fields').style.display = 'block';
+        document.getElementById('s3_storage_fields').style.display = 'none';
+    } else {
+        document.getElementById('local_storage_fields').style.display = 'none';
+        document.getElementById('s3_storage_fields').style.display = 'block';
+    }
+}
+</script>
+{{end}}

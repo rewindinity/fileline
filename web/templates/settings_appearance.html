@@ -1,0 +1,245 @@
+{{template "base.html" .}}
+
+{{define "content"}}
+<!-- Page Header -->
+<div class="page-header">
+    <div>
+        <h1 style="margin-bottom: 0.25rem;">{{ T .Language "Settings" }}</h1>
+        <p class="text-muted">{{ T .Language "Manage your account and server configuration" }}</p>
+    </div>
+</div>
+
+<div class="settings-overview-container">
+    <!-- Feedback Alerts -->
+    {{if .SuccessMessage}}
+    <div class="alert alert-success">
+        <i class="bx bxs-check-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .SuccessMessage }}
+    </div>
+    {{end}}
+    {{if .ErrorMessage}}
+    <div class="alert alert-error">
+        <i class="bx bxs-error-circle" style="font-size: 1.25rem;"></i>
+        {{ T .Language .ErrorMessage }}
+    </div>
+    {{end}}
+    <!-- Navigation / Back Bar -->
+    <div class="settings-back-bar">
+        <a href="/settings" class="btn btn-secondary btn-sm">
+            <i class="bx bx-arrow-back"></i>
+            {{ T .Language "Back to Settings" }}
+        </a>
+    </div>
+
+    <!-- Appearance Settings Card -->
+    <div class="card">
+        <div class="card-header" style="margin-bottom: 2rem;">
+            <h2>{{ T .Language "Appearance" }}</h2>
+        </div>
+        
+        <!-- Appearance Configuration Form -->
+        <form method="POST" action="/settings/action/appearance" enctype="multipart/form-data">
+            <!-- Personal Preferences -->
+            <div class="settings-grid-2">
+                <div class="form-group">
+                    <label for="language">{{ T .Language "Language" }}</label>
+                    <select id="language" name="language">
+                        <option value="global" {{if or (not .User.Language) (eq .User.Language "global")}}selected{{end}}>{{ T $.Language "Use Global Default" }}</option>
+                        {{range .Languages}}
+                            <option value="{{.}}" {{if eq $.User.Language .}}selected{{end}}>{{index $.LanguageNames .}}</option>
+                        {{end}}
+                    </select>
+                </div>
+            </div>
+
+            <div class="settings-grid-2">
+                <div class="form-group">
+                    <label for="theme">{{ T .Language "Theme" }}</label>
+                    <select id="theme" name="theme">
+                        <option value="global" {{if or (not .User.Theme) (eq .User.Theme "global")}}selected{{end}}>{{ T $.Language "Use Global Default" }}</option>
+                        <option value="dark-blue" {{if eq .User.Theme "dark-blue"}}selected{{end}}>{{ T $.Language "Dark Blue" }}</option>
+                        <option value="dark-green" {{if eq .User.Theme "dark-green"}}selected{{end}}>{{ T $.Language "Dark Green" }}</option>
+                        <option value="dark-red" {{if eq .User.Theme "dark-red"}}selected{{end}}>{{ T $.Language "Dark Red" }}</option>
+                        <option value="dark-orange" {{if eq .User.Theme "dark-orange"}}selected{{end}}>{{ T $.Language "Dark Orange" }}</option>
+                        <option value="dark-purple" {{if eq .User.Theme "dark-purple"}}selected{{end}}>{{ T $.Language "Dark Purple" }}</option>
+                        <option value="oled" {{if eq .User.Theme "oled"}}selected{{end}}>{{ T $.Language "OLED Dark" }}</option>
+                        <option value="light-blue" {{if eq .User.Theme "light-blue"}}selected{{end}}>{{ T $.Language "Light Blue" }}</option>
+                        <option value="light-green" {{if eq .User.Theme "light-green"}}selected{{end}}>{{ T $.Language "Light Green" }}</option>
+                        <option value="light-red" {{if eq .User.Theme "light-red"}}selected{{end}}>{{ T $.Language "Light Red" }}</option>
+                        <option value="light-orange" {{if eq .User.Theme "light-orange"}}selected{{end}}>{{ T $.Language "Light Orange" }}</option>
+                        <option value="light-purple" {{if eq .User.Theme "light-purple"}}selected{{end}}>{{ T $.Language "Light Purple" }}</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>{{ T .Language "Personal Accent Color" }}</label>
+                    <div class="option-card" style="margin-bottom: 0;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1.125rem;">
+                            <div class="checkbox-group" style="margin-bottom: 0;">
+                                <input type="checkbox" id="use_global_accent" name="use_global_accent" {{if or (not .User.Accent) (eq .User.Accent "global")}}checked{{end}} onchange="togglePersonalAccent()">
+                                <label for="use_global_accent">{{ T .Language "Use Global Default" }}</label>
+                            </div>
+                            
+                            <div id="personal_accent_container" style="display: flex; gap: 0.5rem; align-items: center; {{if or (not .User.Accent) (eq .User.Accent "global")}}display: none;{{end}}">
+                                <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-surface); gap: 0.5rem;">
+                                    <input type="color" id="accent" name="accent" value="{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('personal_hex_display').innerText = this.value.toUpperCase()">
+                                    <span id="personal_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{if ne .User.Accent "global"}}{{.User.Accent}}{{else}}{{.Config.CustomAccentHex}}{{end}}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Global Default Appearance (Admin Only) -->
+            {{if eq .User.Role "admin"}}
+            <hr style="border-color: var(--border-color); margin: 2rem 0;">
+            <h3 class="text-muted" style="font-size: 1rem; margin-bottom: 1rem;">{{ T .Language "Global Default Appearance (Admin Only)" }}</h3>
+            <p class="text-muted mb-2">{{ T .Language "These settings apply to users who have their theme/accent set to \"Global Default\"." }}</p>
+            
+            <div class="settings-grid-2">
+                <div class="form-group">
+                    <label for="global_theme">{{ T .Language "Global Theme" }}</label>
+                    <select id="global_theme" name="global_theme">
+                        <option value="dark-blue" {{if eq .Config.Theme "dark-blue"}}selected{{end}}>{{ T $.Language "Dark Blue" }}</option>
+                        <option value="dark-green" {{if eq .Config.Theme "dark-green"}}selected{{end}}>{{ T $.Language "Dark Green" }}</option>
+                        <option value="dark-red" {{if eq .Config.Theme "dark-red"}}selected{{end}}>{{ T $.Language "Dark Red" }}</option>
+                        <option value="dark-orange" {{if eq .Config.Theme "dark-orange"}}selected{{end}}>{{ T $.Language "Dark Orange" }}</option>
+                        <option value="dark-purple" {{if eq .Config.Theme "dark-purple"}}selected{{end}}>{{ T $.Language "Dark Purple" }}</option>
+                        <option value="oled" {{if eq .Config.Theme "oled"}}selected{{end}}>{{ T $.Language "OLED Dark" }}</option>
+                        <option value="light-blue" {{if eq .Config.Theme "light-blue"}}selected{{end}}>{{ T $.Language "Light Blue" }}</option>
+                        <option value="light-green" {{if eq .Config.Theme "light-green"}}selected{{end}}>{{ T $.Language "Light Green" }}</option>
+                        <option value="light-red" {{if eq .Config.Theme "light-red"}}selected{{end}}>{{ T $.Language "Light Red" }}</option>
+                        <option value="light-orange" {{if eq .Config.Theme "light-orange"}}selected{{end}}>{{ T $.Language "Light Orange" }}</option>
+                        <option value="light-purple" {{if eq .Config.Theme "light-purple"}}selected{{end}}>{{ T $.Language "Light Purple" }}</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="global_language">{{ T .Language "Global Language" }}</label>
+                    <select id="global_language" name="global_language">
+                        {{range .Languages}}
+                            <option value="{{.}}" {{if eq $.Config.DefaultLanguage .}}selected{{end}}>{{index $.LanguageNames .}}</option>
+                        {{end}}
+                    </select>
+                </div>
+            </div>
+
+            <div class="settings-grid-2">
+                <div class="form-group">
+                    <label for="custom_accent_hex">{{ T .Language "Global Accent Color (Web Palette)" }}</label>
+                    <div style="display: flex; align-items: center; margin-top: 0.5rem;">
+                        <div style="display: flex; align-items: center; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 0.25rem 0.5rem; background: var(--bg-base); gap: 0.5rem;">
+                            <input type="color" id="custom_accent_hex" name="custom_accent_hex" value="{{.Config.CustomAccentHex}}" style="width: 24px; height: 24px; padding: 0; border: none; border-radius: 2px; background: none; cursor: pointer;" oninput="document.getElementById('global_hex_display').innerText = this.value.toUpperCase()">
+                            <span id="global_hex_display" style="font-family: monospace; font-size: 0.85rem; color: var(--text-secondary);">{{.Config.CustomAccentHex}}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Custom Server Logo Upload & Preview -->
+            <div class="form-group settings-logo-upload-box">
+                <div class="settings-logo-preview-wrap">
+                    <img src="/logo?v={{.Config.CustomLogo}}" alt="{{ T .Language "Current Logo" }}" id="logo_preview" class="logo-img">
+                </div>
+                <div style="flex-grow: 1; min-width: 0;">
+                    <label for="custom_logo_file" style="margin-bottom: 0.25rem; display: block; color: var(--text-primary); font-weight: 500;">{{ T .Language "Custom Server Logo" }}</label>
+                    <p style="font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 0.75rem 0;">{{ T .Language "Recommended: SVG or PNG, transparent background. Applies to login and nav." }}</p>
+                    <input type="file" id="custom_logo_file" name="custom_logo_file" accept="image/*">
+                    {{if and (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
+                    <div style="margin-top: 0.75rem;">
+                        <button type="submit" form="removeLogoForm" class="btn btn-danger btn-sm">
+                            <i class="bx bx-trash-alt"></i>
+                            {{ T $.Language "Remove Custom Logo" }}
+                        </button>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+
+            <!-- Search Engine Indexing Protection (Admin Only) -->
+            <input type="hidden" name="block_indexing_present" value="1">
+            <div class="option-card" style="margin-bottom: 1.5rem;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="block_indexing" name="block_indexing" {{if .Config.BlockIndexing}}checked{{end}}>
+                    <label for="block_indexing">
+                        <strong>{{ T .Language "Block Search Engine Indexing" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Protects the instance from search engines via noindex meta tags, X-Robots-Tag headers, and blocking crawler user-agents." }}
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Performance & Compression (Admin Only) -->
+            <input type="hidden" name="compression_settings_present" value="1">
+            <div class="option-card" style="margin-bottom: 1.5rem;">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="gzip_enabled" name="gzip_enabled" {{if .Config.GzipEnabled}}checked{{end}}>
+                    <label for="gzip_enabled">
+                        <strong>{{ T .Language "Enable Gzip Compression" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Compress static assets (fonts, CSS, JS, SVG, HTML) and dynamic responses. Disable if running behind a reverse proxy (e.g. Nginx, Cloudflare) that already handles compression." }}
+                        </span>
+                    </label>
+                </div>
+                <div class="checkbox-group" style="margin-top: 1rem;">
+                    <input type="checkbox" id="minify_responses" name="minify_responses" {{if .Config.MinifyResponses}}checked{{end}}>
+                    <label for="minify_responses">
+                        <strong>{{ T .Language "Single-Line Response Optimization" }}</strong>
+                        <span class="text-muted" style="display: block; font-size: 0.825rem; font-weight: 400; margin-top: 0.15rem;">
+                            {{ T .Language "Serve CSS, JS, and HTML as a continuous single line to reduce bandwidth transfer." }}
+                        </span>
+                    </label>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Form Submit Action -->
+            <button type="submit" class="btn btn-primary">{{ T .Language "Save Appearance" }}</button>
+        </form>
+        
+        <!-- Logo Removal Helper Form (Admin Only) -->
+        {{if and (eq .User.Role "admin") (ne .Config.CustomLogo "") (ne .Config.CustomLogo "/static/logo.svg")}}
+        <form id="removeLogoForm" method="POST" action="/settings/appearance/remove_logo" style="display: none;"></form>
+        {{end}}
+    </div>
+    
+    <script>
+    document.addEventListener("DOMContentLoaded", function() {
+        // Uppercase hex preview strings
+        var p = document.getElementById('personal_hex_display');
+        var g = document.getElementById('global_hex_display');
+        if (p) p.innerText = p.innerText.toUpperCase();
+        if (g) g.innerText = g.innerText.toUpperCase();
+
+        // Real-time preview for uploaded logo file
+        var logoInput = document.getElementById('custom_logo_file');
+        if (logoInput) {
+            logoInput.addEventListener('change', function(e) {
+                if (e.target.files && e.target.files[0]) {
+                    var reader = new FileReader();
+                    reader.onload = function(e2) {
+                        var preview = document.getElementById('logo_preview');
+                        if (preview) {
+                            preview.src = e2.target.result;
+                        }
+                    };
+                    reader.readAsDataURL(e.target.files[0]);
+                }
+            });
+        }
+    });
+
+    // Toggle personal accent color picker container
+    function togglePersonalAccent() {
+        var cb = document.getElementById('use_global_accent');
+        var container = document.getElementById('personal_accent_container');
+        if (cb && container) {
+            container.style.display = cb.checked ? 'none' : 'flex';
+        }
+    }
+    </script>
+
+</div>
+{{end}}
